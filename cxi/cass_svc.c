@@ -122,6 +122,9 @@ static void copy_rsrc_use(struct cxi_dev *dev, struct cxi_rsrc_use *rsrcs,
 	for (type = 0; type < CXI_RSRC_TYPE_MAX; type++) {
 		rtype = stype_to_rtype(type, 0);
 		if (type == CXI_RSRC_TYPE_TLE) {
+			if (svc_priv->rgroup->pools.tle_pool_id == -1)
+				continue;
+
 			cass_read(hw,
 				  C_CQ_STS_TLE_IN_USE(svc_priv->rgroup->pools.tle_pool_id),
 				  &tle_in_use, sizeof(tle_in_use));
