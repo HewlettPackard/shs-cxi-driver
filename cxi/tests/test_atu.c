@@ -1299,12 +1299,12 @@ static int test_sgtable3(struct tdev *tdev)
 	}
 
 	offset = (u64)sg_virt(sgt.sgl) - (u64)page_address(sg_page(sgt.sgl));
-	test_append_le(tdev, len, sg_md, offset);
+	test_append_le(tdev, snd_mem.length, sg_md, offset);
 
 	for (i = 0, b = (u32 *)snd_mem.buffer; i < snd_mem.length / sizeof(u32); i++)
 		b[i] = i;
 
-	rc = test_do_put(tdev, &snd_mem, len, 0, 0, tdev->index_ext);
+	rc = test_do_put(tdev, &snd_mem, snd_mem.length, 0, 0, tdev->index_ext);
 	if (rc < 0) {
 		pr_err("test_do_put failed %d\n", rc);
 		goto unmap_sg;
