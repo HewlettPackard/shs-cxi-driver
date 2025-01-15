@@ -193,11 +193,10 @@ elif command -v yum > /dev/null; then
                 url="${ARTI_URL}/radeon-amdgpu-remote/${AMDGPU_VERSION}/${OS_TYPE}/8.9/main/${TARGET_ARCH}/"
                 ;;
             9.4)
-                url="${ARTI_URL}/radeon-amdgpu-remote/${AMDGPU_VERSION}/${OS_TYPE}/9.3/main/${TARGET_ARCH}/"
+                url="${ARTI_URL}/radeon-amdgpu-remote/${AMDGPU_VERSION}/${OS_TYPE}/9.4/main/${TARGET_ARCH}/"
                 ;;
             9.5)
-                url="${ARTI_URL}/uss-internal-third-party-rpm-local/amdgpu_driver/dev/master/rhel_9_5/"
-                ## Update link to radeon-amdgpu-remote/6.3 when available.
+                url="${ARTI_URL}/radeon-amdgpu-remote/${AMDGPU_VERSION}/${OS_TYPE}/9.5/main/${TARGET_ARCH}/"
                 ;;
             *)
                 echo "GPU software versions not defined for OS version \"${OS_VERSION}\""
