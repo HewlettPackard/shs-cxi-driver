@@ -1780,7 +1780,7 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	/* Get (optional) event wait object reference */
 	if (cmd->event_wait) {
 		wait_obj = idr_find(&client->wait_idr, cmd->event_wait);
-		if (wait_obj == NULL) {
+		if (wait_obj == NULL || wait_obj->wait->going_away) {
 			read_unlock(&client->res_lock);
 			rc = -EINVAL;
 			goto free_eq_obj;
@@ -1796,7 +1796,7 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	/* Get (optional) status wait object reference */
 	if (cmd->status_wait) {
 		wait_obj = idr_find(&client->wait_idr, cmd->status_wait);
-		if (wait_obj == NULL) {
+		if (wait_obj == NULL || wait_obj->wait->going_away) {
 			read_unlock(&client->res_lock);
 			rc = -EINVAL;
 			goto free_eq_obj;
@@ -2444,7 +2444,7 @@ static int cxi_user_wait_free(struct user_client *client,
 	write_lock(&client->res_lock);
 
 	wait_obj = idr_find(&client->wait_idr, cmd->wait);
-	if (wait_obj == NULL) {
+	if (wait_obj == NULL || wait_obj->wait->going_away) {
 		write_unlock(&client->res_lock);
 		return -EINVAL;
 	}
@@ -2454,11 +2454,19 @@ static int cxi_user_wait_free(struct user_client *client,
 		return -EBUSY;
 	}
 
-	idr_remove(&client->wait_idr, cmd->wait);
+	/* going_away protects that object from being used again. This
+	 * protects against a race, where we need to remove the sysfs
+	 * entry before the IDR, which can't be done under lock.
+	 */
+	wait_obj->wait->going_away = true;
 
 	write_unlock(&client->res_lock);
 
 	free_wait_obj(0, wait_obj, client);
+
+	write_lock(&client->res_lock);
+	idr_remove(&client->wait_idr, cmd->wait);
+	write_unlock(&client->res_lock);
 
 	return 0;
 }

@@ -55,6 +55,7 @@ struct ucxi_wait {
 	/* Entry for that wait object in sysfs. */
 	struct kobject kobj;
 	struct kernfs_node *dirent;
+	bool going_away;
 };
 
 /* Keep track of user clients. One instance is created for every
