@@ -1348,31 +1348,17 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 	int j = 0;
 	int ret;
 	bool inval;
-	ulong start;
-	ulong end;
-	ulong cur = 0;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
 	struct cass_ac *cac = md_priv->cac;
 	size_t plen = BIT(cac->page_shift);
 	size_t hlen = BIT(cac->huge_shift);
 
-	/* For dmabuf, start mirroring at the dmabuf_offset instead of
-	 * the start of the buffer.
-	 */
-	if (md_priv->dmabuf_length) {
-		start = md_priv->dmabuf_offset;
-		end = md_priv->dmabuf_offset + md_priv->dmabuf_length;
-	} else {
-		start = 0;
-		end = md_priv->md.len;
-	}
-
 	mutex_lock(&md_priv->cac->ac_mutex);
 
 	i = 0;
 	for_each_sgtable_dma_sg(md_priv->sgt, sg, j) {
-		size_t len = sg_dma_len(sg);
+		long len = sg_dma_len(sg);
 		dma_addr_t dma_addr = sg_dma_address(sg);
 
 		atu_debug("dma_addr:%llx len:%lx\n", dma_addr, len);
@@ -1380,30 +1366,22 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 		while (len > 0) {
 			bool is_hp = ffsl(dma_addr) >= cac->huge_shift &&
 					ffsl(iova) >= cac->huge_shift &&
-					len >= hlen &&
-					(cur + len) <= end;
+					len >= hlen;
 			size_t inc = is_hp ? hlen : plen;
 
-			if (start < (cur + inc) && cur < end) {
-				atu_debug("iova:%llx dma_addr:%llx inc:%lx cur:%lx\n",
-					  iova, dma_addr, inc, cur);
-				ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-							   md_priv->flags,
-							   is_hp, &inval);
-				if (ret)
-					goto mirror_error;
+			atu_debug("iova:%llx dma_addr:%llx inc:%lx\n",
+				  iova, dma_addr, inc);
+			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
+						   md_priv->flags,
+						   is_hp, &inval);
+			if (ret)
+				goto mirror_error;
 
-				iova += inc;
-			}
-
+			iova += inc;
 			dma_addr += inc;
-			cur += inc;
 			len -= inc;
 			i += KPFN_INC(cac, is_hp);
 		}
-
-		if (cur >= end)
-			break;
 	}
 
 	mutex_unlock(&md_priv->cac->ac_mutex);
@@ -1411,13 +1389,12 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 	return 0;
 
 mirror_error:
-	if (i < md_priv->sgt->nents) {
-		pr_err("Error populating %d PTEs at index %d\n",
-		       md_priv->sgt->nents, i);
+	if (i) {
+		pr_err("Error populating length 0x%lx at index %d\n",
+		       md_priv->md.len, i);
 
 		/* Clean up previously populated ptes. */
-		cass_clear_range(md_priv, md_priv->md.iova,
-				 BIT(cac->page_shift) * i);
+		cass_clear_range(md_priv, md_priv->md.iova, md_priv->md.len);
 	}
 
 	mutex_unlock(&md_priv->cac->ac_mutex);

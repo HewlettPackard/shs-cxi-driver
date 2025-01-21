@@ -266,6 +266,7 @@ struct cxi_md_priv {
 	struct cass_ac *cac;
 	struct page **pages;
 	struct sg_table *sgt;
+	struct sg_table *dmabuf_sgt;
 	struct device *device;
 
 	/* DMA buffer file descriptor. This is passed in by user-space. */

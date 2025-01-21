@@ -61,13 +61,90 @@ void cxi_dmabuf_put_pages(struct cxi_md_priv *md_priv)
 	refcount_dec(&md_priv->refcount);
 
 	dma_resv_lock(md_priv->dmabuf->resv, NULL);
-	dma_buf_unmap_attachment(md_priv->dmabuf_attach, md_priv->sgt,
+	dma_buf_unmap_attachment(md_priv->dmabuf_attach, md_priv->dmabuf_sgt,
 				 DMA_BIDIRECTIONAL);
 	dma_resv_unlock(md_priv->dmabuf->resv);
 
 	dma_buf_detach(md_priv->dmabuf, md_priv->dmabuf_attach);
 	dma_buf_put(md_priv->dmabuf);
+	md_priv->dmabuf_sgt = NULL;
+
+	/* cass_dma_unmap_pages does a dma_unmap but this sgt
+	 * has not been dma mapped free the table here.
+	 */
+	sg_free_table(md_priv->sgt);
+	kfree(md_priv->sgt);
 	md_priv->sgt = NULL;
+}
+
+/**
+ * cp_md_sgtable - Copy dmabuf sgt entries bounded by dmabuf offset and
+ *                 length to a new sg table for use by the mirroring
+ *                 subsystem.
+ */
+static int cp_md_sgtable(struct cxi_md_priv *md_priv)
+{
+	int i;
+	int rc;
+	ulong end;
+	ulong start;
+	ulong cur = 0;
+	int nents = 0;
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	struct scatterlist *nsg;
+
+	sgt = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
+	if (!sgt)
+		return -ENOMEM;
+
+	rc = sg_alloc_table(sgt, md_priv->dmabuf_sgt->nents, GFP_KERNEL);
+	if (rc)
+		goto sg_alloc_error;
+
+	start = ALIGN_DOWN(md_priv->dmabuf_offset, PAGE_SIZE);
+	end = PAGE_ALIGN(md_priv->dmabuf_offset + md_priv->dmabuf_length);
+
+	nsg = sgt->sgl;
+	for_each_sgtable_dma_sg(md_priv->dmabuf_sgt, sg, i) {
+		ulong len = sg_dma_len(sg);
+
+		if (start >= cur + len) {
+			cur += len;
+			continue;
+		}
+
+		sg_dma_address(nsg) = sg_dma_address(sg);
+		sg_dma_len(nsg) = len;
+		nents++;
+
+		if (cur <= start) {
+			ulong offset = start - cur;
+
+			sg_dma_address(nsg) += offset;
+			sg_dma_len(nsg) -= offset;
+		}
+
+		if (cur < end && end <= cur + len) {
+			ulong trim = cur + len - end;
+
+			sg_dma_len(nsg) -= trim;
+			break;
+		}
+
+		cur += len;
+		nsg = sg_next(nsg);
+	}
+
+	sgt->nents = nents;
+	md_priv->sgt = sgt;
+
+	return 0;
+
+sg_alloc_error:
+	kfree(sgt);
+
+	return rc;
 }
 
 int cxi_dmabuf_get_pages(struct ac_map_opts *m_opts)
@@ -113,17 +190,21 @@ int cxi_dmabuf_get_pages(struct ac_map_opts *m_opts)
 
 	dma_resv_lock(md_priv->dmabuf->resv, NULL);
 
-	md_priv->sgt = dma_buf_map_attachment(md_priv->dmabuf_attach,
+	md_priv->dmabuf_sgt = dma_buf_map_attachment(md_priv->dmabuf_attach,
 					      DMA_BIDIRECTIONAL);
-	if (IS_ERR(md_priv->sgt)) {
-		rc = PTR_ERR(md_priv->sgt);
+	if (IS_ERR(md_priv->dmabuf_sgt)) {
+		rc = PTR_ERR(md_priv->dmabuf_sgt);
 		DMABUF_MD_DEBUG(md_priv,
 				"dma_buf_map_attachment failed: rc=%d\n", rc);
 		goto err_release_unlock_attach;
 	}
 
 	DMABUF_MD_DEBUG(md_priv, "DMA buf SGT nents=%u\n",
-			md_priv->sgt->nents);
+			md_priv->dmabuf_sgt->nents);
+
+	rc = cp_md_sgtable(md_priv);
+	if (rc)
+		goto err_unmap_attach;
 
 	/*
 	 * Although the sg list is valid now, the content of the pages
@@ -139,7 +220,7 @@ int cxi_dmabuf_get_pages(struct ac_map_opts *m_opts)
 		if (rc) {
 			DMABUF_MD_DEBUG(md_priv,
 					"dma_resv_wait_timeout failed: rc = %d\n", rc);
-			goto err_unmap_attach;
+			goto err_free_sgt;
 		}
 	}
 #else
@@ -149,7 +230,7 @@ int cxi_dmabuf_get_pages(struct ac_map_opts *m_opts)
 		if (rc) {
 			DMABUF_MD_DEBUG(md_priv,
 					"dma_fence_wait failed: rc = %d\n", rc);
-			goto err_unmap_attach;
+			goto err_free_sgt;
 		}
 	}
 #endif  /* defined(HAVE_GET_SINGLETON) */
@@ -161,8 +242,12 @@ int cxi_dmabuf_get_pages(struct ac_map_opts *m_opts)
 
 	return 0;
 
+err_free_sgt:
+	sg_free_table(md_priv->sgt);
+	kfree(md_priv->sgt);
+	md_priv->sgt = NULL;
 err_unmap_attach:
-	dma_buf_unmap_attachment(md_priv->dmabuf_attach, md_priv->sgt,
+	dma_buf_unmap_attachment(md_priv->dmabuf_attach, md_priv->dmabuf_sgt,
 				 DMA_BIDIRECTIONAL);
 err_release_unlock_attach:
 	dma_resv_unlock(md_priv->dmabuf->resv);
