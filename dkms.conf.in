@@ -92,7 +92,7 @@ fi
 SLINGSHOT_BASE_LINK_SYMVERS=${dkms_tree}/cray-slingshot-base-link/kernel-${kernelver}-${arch}/module/Module.symvers
 SL_SYMVERS=${dkms_tree}/sl-driver/kernel-${kernelver}-${arch}/module/Module.symvers.sl
 
-BUILD_DEPENDS=("cray-slingshot-base-link", "sl-driver")
+BUILD_DEPENDS=("cray-slingshot-base-link" "sl-driver")
 if [ -n "$PATH_GPU_AMD" ]; then
     BUILD_DEPENDS+=("amdgpu")
 fi
