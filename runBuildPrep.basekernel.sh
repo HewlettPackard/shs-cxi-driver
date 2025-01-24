@@ -170,7 +170,7 @@ elif command -v yum > /dev/null; then
             ;;
         9.5)
             AMDGPU_VERSION="6.3"
-            NVIDIA_VERSION="550.90.07"
+            NVIDIA_VERSION="565.57.01"
             ;;
         *)
             echo "GPU software versions not defined for OS version \"${OS_VERSION}\""
