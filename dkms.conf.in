@@ -117,8 +117,8 @@ SHS_MAKE_ARGS=" \
     KBUILD_EXTRA_SYMBOLS='${SLINGSHOT_BASE_LINK_SYMVERS} ${SL_SYMVERS}' \
 "
 
-MAKE="'make' ${SHS_MAKE_ARGS} modules"
-CLEAN="'make' ${SHS_MAKE_ARGS} clean"
+MAKE="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} modules"
+CLEAN="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} clean"
 AUTOINSTALL='yes'
 
 #
