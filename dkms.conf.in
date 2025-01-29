@@ -16,9 +16,10 @@ SHS_DKMS_BUILDROOT="$SHS_DKMS_PACKAGEROOT/build"
 # _IF_ a different version of the GPU is needed or desired, then set the
 # appropriate variable in the dkms-aux.conf file.
 #
-if [ -f ${SHS_DKMS_BUILDROOT}/dkms.aux.conf ] && [ -r ${SHS_DKMS_BUILDROOT}/dkms.aux.conf ]
+SHS_DKMS_AUX_CONF=${source_tree}/${PACKAGE_NAME}-${PACKAGE_VERSION}/dkms.aux.conf
+if [ -f ${SHS_DKMS_AUX_CONF} ] && [ -r ${SHS_DKMS_AUX_CONF} ]
 then
-    . ${SHS_DKMS_BUILDROOT}/dkms.aux.conf
+    . ${SHS_DKMS_AUX_CONF}
 fi
 
 if [ ${DISABLE_GPU_AMD:-0} -eq 0 ]
