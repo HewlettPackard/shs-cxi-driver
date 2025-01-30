@@ -98,7 +98,14 @@ if [ -n "$PATH_GPU_AMD" ]; then
     BUILD_DEPENDS+=("amdgpu")
 fi
 if [ -n "$PATH_GPU_NVIDIA" ]; then
-    BUILD_DEPENDS+=("nvidia")
+    case "$PATH_GPU_NVIDIA" in
+        *nvidia-open*)
+            BUILD_DEPENDS+=("nvidia-open")
+            ;;
+        *)
+            BUILD_DEPENDS+=("nvidia")
+            ;;
+    esac
 fi
 if [ -n "$PATH_GPU_INTEL" ]; then
     BUILD_DEPENDS+=("intel-dmabuf")
