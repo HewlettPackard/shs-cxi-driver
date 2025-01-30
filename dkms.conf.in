@@ -1,3 +1,7 @@
+#
+# Copyright 2025 Hewlett Packard Enterprise Development LP
+#
+
 ## Global options
 PACKAGE_NAME="@PACKAGE_NAME@"
 # Package version should change with each new version
