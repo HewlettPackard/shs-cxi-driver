@@ -1,4 +1,4 @@
-# Copyright 2021 Hewlett Packard Enterprise Development LP
+# Copyright 2021,2025 Hewlett Packard Enterprise Development LP
 %define release_extra 0
 
 %{!?dkms_source_tree:%define dkms_source_tree /usr/src}
@@ -172,14 +172,22 @@ mkdir -p %{buildroot}/%{dkms_source_dir}
 cp -r source/* %{buildroot}/%{dkms_source_dir}
 
 sed \
-    -e '/^$/d' \
-    -e '/^#/d' \
     -e 's/@PACKAGE_NAME@/%{name}/g' \
     -e 's/@PACKAGE_VERSION@/%{version}-%{release}/g' \
+    -e 's,@SHS_DKMS_AUX_DIR@,/etc/slingshot/dkms.conf.d,g' \
     %{buildroot}/%{dkms_source_dir}/dkms.conf.in \
     > %{buildroot}/%{dkms_source_dir}/dkms.conf
 
 rm %{buildroot}/%{dkms_source_dir}/dkms.conf.in
+
+sed \
+    -e 's/@PACKAGE_NAME@/%{name}/g' \
+    -e 's/@PACKAGE_VERSION@/%{version}-%{release}/g' \
+    -e 's,@SHS_DKMS_AUX_DIR@,/etc/slingshot/dkms.conf.d,g' \
+    %{buildroot}/%{dkms_source_dir}/dkms-aux-template.in \
+    > %{buildroot}/%{dkms_source_dir}/dkms-aux-template
+
+rm %{buildroot}/%{dkms_source_dir}/dkms-aux-template.in
 
 echo "%dir %{dkms_source_dir}" > dkms-files
 echo "%{dkms_source_dir}" >> dkms-files
