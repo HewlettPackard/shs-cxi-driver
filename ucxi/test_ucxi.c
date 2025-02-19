@@ -45,12 +45,6 @@ int main(void)
 	struct cass_dev *dev;
 	int retry;
 	int rc;
-	unsigned int rgroup_id;
-	struct ucxi_rgroup_attr  rgroup_attr = {
-		.cntr_pool_id = 1,
-		.system_service = false,
-		.name = "ucxi test service",
-	};
 	struct cxi_svc_desc svc_desc = {
 		.resource_limits = false,
 	};
@@ -74,14 +68,6 @@ int main(void)
 	}
 	printf("SVC Allocated: %d\n", rc);
 	svc_desc.svc_id = rc;
-
-	/* Get a Resource Group */
-	rc = alloc_rgroup(dev, &rgroup_attr, &rgroup_id);
-	if (rc) {
-		fprintf(stderr, "cannot get a Resource Group. rc: %d\n", rc);
-		return 1;
-	}
-	printf("Resource Group Allocated: %u\n", rgroup_id);
 
 	rc = set_svc_lpr(dev, svc_desc.svc_id, LPR);
 	if (rc <= 0) {
@@ -325,7 +311,6 @@ int main(void)
 	destroy_domain(dev, domain);
 	free_ct(dev, ct);
 	destroy_lni(dev, lni);
-	release_rgroup(dev, rgroup_id);
 	svc_destroy(dev, svc_desc.svc_id);
 
 	close_device(dev);

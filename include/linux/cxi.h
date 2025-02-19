@@ -309,6 +309,7 @@ struct cxi_rxtx_profile_list {
 };
 
 /* Common parts of RX and TX Profiles */
+#define CXI_VNI_NAME_LEN    64
 
 struct cxi_rxtx_vni_attr {
 	uint16_t         match;
