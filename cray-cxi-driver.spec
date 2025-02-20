@@ -50,11 +50,7 @@ BuildRequires:  sl-driver-devel
 BuildRequires: nvidia-gpu-build
 %endif
 %endif
-%if 0%{?sle_version}
 BuildRequires: cuda-drivers
-%else
-BuildRequires: nvidia-kmod-headers nvidia-driver-devel
-%endif
 %endif
 
 %if %{with amdgpu}
