@@ -218,22 +218,48 @@ fi
 #
 # dependencies
 #
+# CXI driver has hard dependencies on some other SHS components and soft
+# dependencies on GPUs.  The GPU may or may not be installed as DKMS items.
+# Only add GPUS to BUILD_DEPENDS when then are recognized in DKMS.  The
+# implementation is purposely checking only for the GPU package-name and
+# omitting its version that would be contained in PATH_GPU_...
+#
 BUILD_DEPENDS=("cray-slingshot-base-link" "sl-driver")
 if [ -n "${PATH_GPU_AMD}" ]
 then
-    BUILD_DEPENDS+=("amdgpu")
+    amd_version=$(echo "${PATH_GPU_AMD}" | sed -e 's,^.*/amdgpu-\(.*\)$,\1,g')
+    count=$(dkms status -m amdgpu -v ${amd_version} 2>/dev/null | wc -l)
+    if [ ${count} -ne 0 ]
+    then
+        BUILD_DEPENDS+=("amdgpu")
+    fi
 fi
 if [ -n "${PATH_GPU_INTEL}" ]
 then
-    BUILD_DEPENDS+=("intel-dmabuf")
+    intel_dmabuf_version=$(echo "${PATH_GPU_INTEL}" | sed -e 's,^.*/intel-dmabuf-\(.*\)$,\1,g')
+    count=$(dkms status -m intel-dmabuf -v ${intel_dmabuf_version} 2>/dev/null | wc -l)
+    if [ ${count} -ne 0 ]
+    then
+        BUILD_DEPENDS+=("intel-dmabuf")
+    fi
 fi
 if [ -n "${PATH_GPU_NVIDIA}" ]
 then
-    BUILD_DEPENDS+=("nvidia")
+    nvidia_version=$(echo "${PATH_GPU_NVIDIA}" | sed -e 's,^.*/nvidia-\([^/]*\)/.*$,\1,g')
+    count=$(dkms status -m nvidia -v ${nvidia_version} 2>/dev/null | wc -l)
+    if [ ${count} -ne 0 ]
+    then
+        BUILD_DEPENDS+=("nvidia")
+    fi
 fi
 if [ -n "${PATH_GPU_NVIDIA_OPEN}" ]
 then
-    BUILD_DEPENDS+=("nvidia-open")
+    nvidia_open_version=$(echo "${PATH_GPU_NVIDIA_OPEN}" | sed -e 's,^.*/nvidia-open-\([^/]*\)/.*$,\1,g')
+    count=$(dkms status -m nvidia-open -v ${nvidia_open_version} 2>/dev/null | wc -l)
+    if [ ${count} -ne 0 ]
+    then
+        BUILD_DEPENDS+=("nvidia-open")
+    fi
 fi
 
 #
