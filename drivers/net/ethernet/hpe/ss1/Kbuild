@@ -9,7 +9,7 @@ cxi-ss1-objs := cxi_core.o cass_core.o cass_lni.o cass_rmu.o cass_eq.o \
 		 cass_cpt.o cass_cq.o cass_pt.o cass_atu.o cass_ct.o \
 		 cass_errors.o cass_sriov.o cass_nta.o cass_ptp.o \
 		 cass_hni.o cass_eth.o cass_ats.o cass_uc.o \
-		 cass_hmm.o cxi_qos_profiles.o cass_tc.o cass_svc.o cass_telem.o \
+		 cass_hmm.o cxi_qos_profiles.o cass_tc.o cass_svc.o cxi_config.o cass_telem.o \
 		 cxi_link.o cass_sbl.o cass_sl.o cass_sl_io.o \
 		 cass_sysfs.o cass_sbus.o cass_phy.o cass_p2p.o cass_dmac.o \
 		 cass_link.o cass_link_misc.o cass_port_misc.o cass_lmon.o \

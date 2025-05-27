@@ -235,6 +235,12 @@ static int __init cxi_init(void)
 		goto err_class_reg;
 	}
 
+	rc = cxi_configfs_subsys_init();
+	if (rc) {
+		pr_err("Error while registering configfs subsystem\n");
+		goto err_class_reg;
+	}
+
 	rc = hw_register();
 	if (rc < 0) {
 		pr_err("Driver registration failed\n");
@@ -266,6 +272,7 @@ static void __exit cxi_exit(void)
 {
 	hw_unregister();
 	class_unregister(&cxi_class);
+	cxi_configfs_exit();
 	debugfs_remove(cxi_debug_dir);
 	cxi_p2p_fini();
 }

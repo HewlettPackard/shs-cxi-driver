@@ -2,6 +2,8 @@
 
 # Setup script run in the VM, used by the testit.sh script.
 
+modprobe configfs
+mount -t configfs none /sys/kernel/config
 modprobe ptp
 modprobe iommu_v2 >/dev/null 2>/dev/null || modprobe amd_iommu_v2 >/dev/null 2>/dev/null
 insmod ../../slingshot_base_link/cxi-sbl.ko

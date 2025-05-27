@@ -30,7 +30,7 @@ test_expect_success "Run test program" "
 
 test_expect_success "Test error injection" "
 	echo 200 > /sys/kernel/debug/cxi/cxi0/atu/error_inject &&
-	../../../ucxi/test_ucxi_atu -drn 15 &> ../$(basename "$0").output3 &&
+	../../../ucxi/test_ucxi_atu -Drn 15 &> ../$(basename "$0").output3 &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 

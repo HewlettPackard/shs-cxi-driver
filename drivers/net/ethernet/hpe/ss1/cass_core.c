@@ -1128,6 +1128,12 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (rc)
 		goto rgroup_fini;
 
+	rc = cxi_configfs_device_init(hw);
+	if (rc) {
+		pr_err("configfs initialize failed\n");
+		goto configfs_fini;
+	}
+
 	if (!is_physfn) {
 		struct cxi_get_dev_properties_cmd cmd = {
 			.op = CXI_OP_GET_DEV_PROPERTIES,
@@ -1181,6 +1187,11 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	return 0;
+
+configfs_fini:
+	cxi_configfs_cleanup(hw);
+	cxi_configfs_fini();
+
 
 vf_fini:
 	if (!is_physfn)

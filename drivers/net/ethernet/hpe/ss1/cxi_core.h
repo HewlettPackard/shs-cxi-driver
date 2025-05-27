@@ -162,6 +162,8 @@ extern struct dentry *cxi_debug_dir;
 extern void cass_disable_device(struct pci_dev *pdev);
 extern int hw_register(void);
 extern void hw_unregister(void);
+extern int cxi_configfs_subsys_init(void);
+extern void cxi_configfs_exit(void);
 
 void cxi_add_device(struct cxi_dev *cdev);
 void cxi_remove_device(struct cxi_dev *cdev);

@@ -30,6 +30,9 @@ do {					\
 } while (0)
 
 
+static int svc_id = CXI_DEFAULT_SVC_ID;
+static int vni_in = 10;
+char dev_name[10];
 static int nbuffers = 800;
 static size_t default_len = DEF_LEN;
 static int debug;
@@ -43,27 +46,30 @@ struct test_data {
 
 static void help(void)
 {
-	printf("test_ucxi_atu [-dfh -l length -n num -rR]\n");
-	printf("\td - turn on debug (default is off)\n");
+	printf("test_ucxi_atu [-dfh -l length -n num -rR -s rgroup id -d device -v vni]\n");
+	printf("\tD - turn on debug (default is off)\n");
 	printf("\tf - fault pages (default is pin)\n");
 	printf("\tl - length of buffers (default %ld)\n", default_len);
+	printf("\ts - resource group or service id\n");
+	printf("\td - device - cxi0-3\n");
+	printf("\tv - vni to use\n");
 	printf("\tn - number of buffers (default %d)\n", nbuffers);
 	printf("\tr - random length buffers from %ld to %ld (default off)\n",
-		MIN_LEN, MAX_LEN);
+	       MIN_LEN, MAX_LEN);
 	printf("\tR - randomize pinning (default off)\n");
 	printf("\th - this message\n");
 }
 
-static int test_init(struct cass_dev **dev, int *lni)
+static int test_init(struct cass_dev **dev, int *lni, int rg_id, const char *devn)
 {
-	*dev = open_device("cxi0");
+	*dev = open_device(devn);
 	if (*dev == NULL) {
-		fprintf(stderr, "cannot open cxi0\n");
+		fprintf(stderr, "cannot open %s\n", devn);
 		return 1;
 	}
 
 	/* Get an LNI */
-	*lni = alloc_lni(*dev, CXI_DEFAULT_SVC_ID);
+	*lni = alloc_lni(*dev, rg_id);
 	if (*lni < 0) {
 		fprintf(stderr, "cannot get an LNI\n");
 		return 1;
@@ -100,9 +106,11 @@ int main(int argc, char **argv)
 	int random_len = 0;
 	long total_allocd = 0;
 
-	while ((opt = getopt(argc, argv, "dhl:n:r")) != -1) {
+	strcpy(dev_name, "cxi0");
+
+	while ((opt = getopt(argc, argv, "Dhv:s:d:l:n:r")) != -1) {
 		switch (opt) {
-		case 'd':
+		case 'D':
 			debug++;
 			break;
 		case 'l':
@@ -113,6 +121,18 @@ int main(int argc, char **argv)
 			break;
 		case 'r':
 			random_len = 1;
+			break;
+		case 's':
+			svc_id = atoi(optarg);
+			printf("rgroup/service id %d\n", svc_id);
+			break;
+		case 'v':
+			vni_in = atoi(optarg);
+			printf("VNI %d\n", vni_in);
+			break;
+		case 'd':
+			strncpy(dev_name, optarg, ARRAY_SIZE(dev_name) - 1);
+			dev_name[ARRAY_SIZE(dev_name) - 1] = '\0';
 			break;
 		case 'h':
 			help();
@@ -127,7 +147,7 @@ int main(int argc, char **argv)
 	else
 		printf("buffer length %ld\n", default_len);
 
-	rc = test_init(&dev, &lni);
+	rc = test_init(&dev, &lni, svc_id, dev_name);
 	if (rc)
 		return rc;
 
@@ -199,14 +219,14 @@ int main(int argc, char **argv)
 	}
 
 	/* Get a domain */
-	domain = alloc_domain(dev, lni, 10, 40, 1024);
+	domain = alloc_domain(dev, lni, vni_in, 40, 1024);
 	if (domain < 0) {
-		fprintf(stderr, "cannot get a domain\n");
+		fprintf(stderr, "cannot get a domain rc:%d\n", domain);
 		return 1;
 	}
 	DPRINT("Domain allocated: %d\n", domain);
 
-	cp = alloc_cp(dev, lni, 1, CXI_TC_BEST_EFFORT);
+	cp = alloc_cp(dev, lni, vni_in, CXI_TC_BEST_EFFORT);
 	if (!cp) {
 		fprintf(stderr, "cannot get a CP\n");
 		return 1;

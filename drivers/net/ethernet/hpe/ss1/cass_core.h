@@ -30,6 +30,7 @@
 #include "cxi_qos_profiles.h"
 #include "cass_rx_tx_profile.h"
 #include "cass_rgroup.h"
+#include "cxi_config.h"
 
 #define PCI_VENDOR_ID_CRAY      0x17db
 #define PCI_DEVICE_ID_CASSINI_1 0x0501
@@ -507,6 +508,7 @@ struct cass_vf {
 struct cass_dev {
 	/* Embed a cxi device. */
 	struct cxi_dev cdev;
+	struct cxi_cfg_group_item *cfg_dev_dir;
 
 	/* Register base in BAR0 */
 	void __iomem *regs;
