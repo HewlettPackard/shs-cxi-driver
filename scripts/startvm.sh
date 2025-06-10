@@ -50,6 +50,18 @@ QEMU_OPTS="--qemu-opts -machine q35,kernel-irqchip=split -global q35-pcihost.pci
 # Example to create a VM with 2 numa nodes with one cpu each
 # QEMU_OPTS="$QEMU_OPTS -smp cpus=2 -object memory-backend-ram,size=512M,id=m0 -object memory-backend-ram,size=512M,id=m1 -numa node,memdev=m0,cpus=0,nodeid=0 -numa node,memdev=m1,cpus=1,nodeid=1"
 
+# Example to add a VM with 9 numa nodes, including 7 without a cpu.
+#QEMU_OPTS="$QEMU_OPTS -smp cpus=2
+#	-object memory-backend-ram,size=1G,id=m0 -numa node,memdev=m0,cpus=0,nodeid=0
+#	-object memory-backend-ram,size=128M,id=m1 -numa node,memdev=m1,nodeid=1
+#	-object memory-backend-ram,size=128M,id=m2 -numa node,memdev=m2,nodeid=2
+#	-object memory-backend-ram,size=128M,id=m3 -numa node,memdev=m3,nodeid=3
+#	-object memory-backend-ram,size=128M,id=m4 -numa node,memdev=m4,nodeid=4
+#	-object memory-backend-ram,size=128M,id=m5 -numa node,memdev=m5,nodeid=5
+#	-object memory-backend-ram,size=128M,id=m6 -numa node,memdev=m6,cpus=1,nodeid=6
+#	-object memory-backend-ram,size=128M,id=m7 -numa node,memdev=m7,nodeid=7
+#	-object memory-backend-ram,size=128M,id=m8 -numa node,memdev=m8,nodeid=8"
+
 KERN_OPTS="--kopt iommu=pt --kopt intel_iommu=on --kopt iomem=relaxed"
 KERN_OPTS="$KERN_OPTS --kopt transparent_hugepage=never --kopt hugepagesz=1g --kopt default_hugepagesz=1g --kopt hugepages=1"
 

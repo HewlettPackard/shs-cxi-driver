@@ -332,17 +332,29 @@ static void cxi_eth_get_node_cpu(struct cxi_eth *dev, unsigned int queue_id,
 	int cpu_offset;
 	const struct cpumask *cpus;
 	int cpu_count;
+	int num_cpu_nodes = 0;
 	int i;
+
+	/* Figure out how many numa nodes are online and contain
+	 * CPUs. Apparently linux will reorder the nodes so that the
+	 * empty ones are at the end of the list. If it's not the
+	 * case, then further changes will be needed.
+	 */
+	for_each_online_node(node) {
+		cpus = cpumask_of_node(node);
+		if (!cpumask_empty(cpus))
+			num_cpu_nodes++;
+	}
 
 	/* Round robin queues across all the nodes in the system instead of
 	 * overloading 1 node with multiple queues. Favor the local node to
 	 * start with.
 	 */
-	node = (dev_to_node(&dev->cxi_dev->pdev->dev) + queue_id) %
-		num_online_nodes();
+	node = (dev_to_node(&dev->cxi_dev->pdev->dev) + queue_id) % num_cpu_nodes;
 	if (!node_online(node)) {
-		netdev_warn(dev->ndev, "Node %u not online. Defaulting to %u\n",
-			    node, dev_to_node(&dev->cxi_dev->pdev->dev));
+		/* For sanity, but that shouldn't be possible. */
+		netdev_err(dev->ndev, "Node %u not online. Defaulting to %u\n",
+			   node, dev_to_node(&dev->cxi_dev->pdev->dev));
 		node = dev_to_node(&dev->cxi_dev->pdev->dev);
 	}
 
@@ -352,9 +364,12 @@ static void cxi_eth_get_node_cpu(struct cxi_eth *dev, unsigned int queue_id,
 	 */
 	cpus = cpumask_of_node(node);
 	if (cpumask_empty(cpus)) {
-		/* NUMA node contains no cores. */
+		/* For sanity, but that shouldn't be possible. */
+		netdev_err(dev->ndev, "Node %u is empty. Defaulting to all cpus.\n",
+			   node);
 		cpus = cpu_all_mask;
 	}
+
 	cpu_count = 0;
 	for_each_cpu(cpu, cpus) {
 		if (cpu_is_offline(cpu))
@@ -364,7 +379,7 @@ static void cxi_eth_get_node_cpu(struct cxi_eth *dev, unsigned int queue_id,
 			cpu_count++;
 	}
 
-	cpu_offset = (queue_id / num_online_nodes()) % cpu_count;
+	cpu_offset = (queue_id / num_cpu_nodes) % cpu_count;
 	i = 0;
 	for_each_cpu(cpu, cpus) {
 		if (cpu_is_offline(cpu))
