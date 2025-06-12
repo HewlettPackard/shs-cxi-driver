@@ -720,12 +720,22 @@ static void cass_sl_ops_init(struct cass_dev *cass_dev)
 			   SL_LGRP_NOTIF_LLR_START_TIMEOUT | \
 			   SL_LGRP_NOTIF_LLR_ERROR)
 
+static void cass_sl_uc_led_set(void *uc_accessor, u8 led_state)
+{
+	struct cass_dev *hw = uc_accessor;
+
+	cxidev_dbg(&hw->cdev, "sl uc led set (state = %u)\n", led_state);
+
+	uc_cmd_set_link_leds(hw, (enum casuc_led_states) led_state);
+}
+
 static void cass_sl_uc_ops_init(struct cass_dev *cass_dev)
 {
-	cass_dev->sl.uc_ops.uc_read8  = cass_sl_uc_read8;
-	cass_dev->sl.uc_ops.uc_write8 = cass_sl_uc_write8;
+	cass_dev->sl.uc_ops.uc_read8   = cass_sl_uc_read8;
+	cass_dev->sl.uc_ops.uc_write8  = cass_sl_uc_write8;
+	cass_dev->sl.uc_ops.uc_led_set = cass_sl_uc_led_set;
 
-	cass_dev->sl.uc_accessor.uc  = cass_dev;
+	cass_dev->sl.uc_accessor.uc = cass_dev;
 }
 
 static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)

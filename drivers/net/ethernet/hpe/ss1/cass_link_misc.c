@@ -37,9 +37,15 @@ void cass_link_set_led(struct cass_dev *hw)
 		   hw->port->hstate,
 		   hw->port->lstate);
 
-	if (hw->qsfp_beacon_active)
+	if (hw->qsfp_beacon_active) {
 		uc_cmd_set_link_leds(hw, LED_SLOW_GRN);
-	else if (hw->port->hstate == CASS_HEADSHELL_STATUS_NOT_PRESENT)
+		return;
+	}
+
+	if (!cass_version(hw, CASSINI_1))
+		return;
+
+	if (hw->port->hstate == CASS_HEADSHELL_STATUS_NOT_PRESENT)
 		uc_cmd_set_link_leds(hw, LED_OFF);
 	else if (hw->qsfp_over_temp)
 		uc_cmd_set_link_leds(hw, LED_ON_YEL);
