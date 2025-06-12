@@ -2069,6 +2069,7 @@ static int test_lni_alloc(struct tdev *tdev)
 {
 	int rc;
 	int i;
+	struct cxi_lni *lni;
 	struct lnis_list *lni_l;
 	struct lnis_list *entry, *tmp;
 	struct cxi_svc_desc desc = {};
@@ -2079,6 +2080,22 @@ static int test_lni_alloc(struct tdev *tdev)
 	rc = build_service(tdev->dev, &desc, true);
 	if (rc)
 		return rc;
+
+	lni = cxi_lni_alloc(tdev->dev, desc.svc_id);
+	if (IS_ERR(lni)) {
+		pr_err("cxi_lni_alloc failed %ld\n", PTR_ERR(lni));
+		rc = PTR_ERR(lni);
+		goto dest_svc;
+	}
+
+	rc = cxi_svc_set_lpr(tdev->dev, desc.svc_id, LNIS_PER_RGID);
+	if (!rc) {
+		pr_err("cxi_svc_set_lpr should fail\n");
+		cxi_lni_free(lni);
+		goto dest_svc;
+	}
+
+	cxi_lni_free(lni);
 
 	for (i = 0; i < (C_NUM_RGIDS * LNIS_PER_RGID); i++) {
 		lni_l = kzalloc(sizeof(*lni_l), GFP_KERNEL);
@@ -2109,6 +2126,7 @@ static int test_lni_alloc(struct tdev *tdev)
 		kfree(entry);
 	}
 
+dest_svc:
 	cxi_svc_destroy(tdev->dev, desc.svc_id);
 
 	return rc;
