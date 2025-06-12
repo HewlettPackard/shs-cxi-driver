@@ -634,8 +634,6 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		return -ENOMEM;
 	svc_priv->svc_desc = *svc_desc;
 
-	refcount_set(&svc_priv->refcount, 1);
-
 	rgroup = cxi_dev_alloc_rgroup(dev, &attr);
 	if (IS_ERR(rgroup)) {
 		rc = PTR_ERR(rgroup);
@@ -740,7 +738,7 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 	}
 
 	/* Don't delete if an LNI is still using this SVC */
-	if (refcount_read(&svc_priv->refcount) != 1) {
+	if (cxi_rgroup_refcount(svc_priv->rgroup) > 1) {
 		mutex_unlock(&hw->svc_lock);
 		return -EBUSY;
 	}
@@ -1004,7 +1002,7 @@ int cxi_svc_set_lpr(struct cxi_dev *dev, unsigned int svc_id,
 	}
 
 	/* Service must be unused for it to be updated. */
-	if (refcount_read(&svc_priv->refcount) != 1) {
+	if (cxi_rgroup_refcount(svc_priv->rgroup) > 1) {
 		mutex_unlock(&hw->svc_lock);
 		return -EBUSY;
 	}

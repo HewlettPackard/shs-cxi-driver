@@ -177,7 +177,6 @@ void cxi_p2p_fini(void);
 struct cxi_svc_priv {
 	struct list_head list;
 	struct cxi_svc_desc svc_desc;
-	refcount_t refcount;
 	unsigned int lnis_per_rgid;
 	struct cxi_rgroup *rgroup;
 	struct cxi_rx_profile *rx_profile[CXI_SVC_MAX_VNIS];
