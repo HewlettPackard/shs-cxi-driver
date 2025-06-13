@@ -1593,6 +1593,7 @@ static int cass_tc_cfg(struct cass_dev *hw, unsigned int tc,
 		tc_cfg->rsp_pcp = rsp_pcp;
 		tc_cfg->ocuset = ocuset;
 		tc_cfg->cq_tc = cq_tc;
+		tc_cfg->req_bc = cxi_tc->req_bc;
 	}
 
 	/* Configure IXE to not generate responses to requests from HRP DSCPs */
@@ -1935,6 +1936,8 @@ static int cass_tc_eth_init(struct cass_dev *hw)
 		if (!hw->qos.tcs_active[tc])
 			continue;
 		cxi_tc = &hw->qos.tcs[tc];
+
+		cxi_tc->req_bc = req_bc;
 
 		cxi_tc->default_ocuset = cass_tc_cq_cfg(hw, CXI_TC_ETH,
 							&cq_mcu_base,
@@ -2566,24 +2569,25 @@ int tc_cfg_show(struct seq_file *s, void *unused)
 
 	seq_printf(s, "Active QoS Profile: %s\n\n",
 		   cxi_qos_strs[active_qos_profile]);
-	seq_printf(s, "%18s%18s%15s%15s%15s%15s%8s%8s%7s\n", "LABEL", "TYPE",
+	seq_printf(s, "%18s%18s%15s%15s%15s%15s%8s%8s%7s%7s\n", "LABEL", "TYPE",
 		   "RES_REQ_DSCP", "UNRES_REQ_DSCP", "RES_RSP_DSCP",
-		   "UNRES_RSP_DSCP", "REQ_PCP", "RSP_PCP", "OCUSET");
+		   "UNRES_RSP_DSCP", "REQ_PCP", "RSP_PCP", "OCUSET", "BC");
 
 	list_for_each_entry(tc_cfg, &hw->tc_list, tc_entry) {
 		if (tc_cfg->tc < 0 || tc_cfg->tc > CXI_ETH_TC_MAX)
 			label = "(invalid)";
 		else
 			label = cxi_tc_strs_uc[tc_cfg->tc];
-		seq_printf(s, "%18s%18s%15d%15d%15d%15d%8d%8d%7d\n",
+		seq_printf(s, "%18s%18s%15d%15d%15d%15d%8d%8d%7d%7d\n",
 			   label, cxi_tc_type_to_str(tc_cfg->tc_type),
 			   tc_cfg->res_req_dscp, tc_cfg->unres_req_dscp,
 			   tc_cfg->res_rsp_dscp, tc_cfg->unres_rsp_dscp,
-			   tc_cfg->req_pcp, tc_cfg->rsp_pcp, tc_cfg->ocuset);
+			   tc_cfg->req_pcp, tc_cfg->rsp_pcp, tc_cfg->ocuset,
+			   tc_cfg->req_bc);
 	}
-	seq_printf(s, "%18s%18s%15d%15d%15d%15d%8d%8d%7d\n",
+	seq_printf(s, "%18s%18s%15d%15d%15d%15d%8d%8d%7d%7d\n",
 		   "PCT", "N/A", -1, -1, -1, -1,
-		   hw->qos.pct_control_pcp, hw->qos.pct_control_pcp, -1);
+		   hw->qos.pct_control_pcp, hw->qos.pct_control_pcp, -1, -1);
 
 	return 0;
 }

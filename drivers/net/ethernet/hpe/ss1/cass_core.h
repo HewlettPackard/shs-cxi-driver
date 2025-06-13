@@ -396,6 +396,9 @@ struct cass_tc_cfg {
 
 	/* Traffic class value specific to CQ configuration. */
 	unsigned int cq_tc;
+
+	/* Buffer Class */
+	unsigned int req_bc;
 };
 
 struct cass_rsrc_info {
