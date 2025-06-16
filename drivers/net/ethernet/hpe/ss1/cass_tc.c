@@ -2018,6 +2018,9 @@ int cass_tc_init(struct cass_dev *hw)
 		hw->qos.tcs[tc].tc = tc;
 	}
 
+	/* Update QoS Profile Based on Device Generation */
+	cxi_qos_calculate_limits(&hw->qos, (cass_version(hw, CASSINI_2)));
+
 	/* Use user provided Untagged Eth PCP if applicable */
 	if (untagged_eth_pcp > -1)
 		hw->qos.untagged_eth_pcp = untagged_eth_pcp;

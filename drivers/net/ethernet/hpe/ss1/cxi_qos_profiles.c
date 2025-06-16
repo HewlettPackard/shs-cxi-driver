@@ -12,21 +12,19 @@
  * remainder of the space should be split up between the RDMA traffic classes.
  */
 #define SRB_SHARED_MAX (SRB_MAX_SIZE / 2)
-#define SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX)
 
 /* Since low-latency does not need to sustain bandwidth, reserve only a few
  * MTU sized packets worth of SRB.
  */
 #define LOW_LATENCY_SRB_RSVD 32U
 
-/* Number of RDMA traffic classes which need to sustain max bandwidth. */
-#define MAX_BANDWIDTH_TCS 3
-#define TC_SRB_RSVD ((SRB_RESERVED - LOW_LATENCY_SRB_RSVD) / MAX_BANDWIDTH_TCS)
+/* SRB Space Reserved for the Global Restricted BC - C1 Only */
+#define C1_SRB_GLOBAL_RES_BC_RSVD 39U
 
-/* The following traffic classes are expected to get max bandwidth. */
-#define BULK_DATA_SRB_RSVD TC_SRB_RSVD
-#define BEST_EFFORT_SRB_RSVD TC_SRB_RSVD
-#define DEDICATED_ACCESS_SRB_RSVD TC_SRB_RSVD
+/* SRB Space Available to Split Between other RDMA TCs */
+#define C1_SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX - C1_SRB_GLOBAL_RES_BC_RSVD - LOW_LATENCY_SRB_RSVD)
+#define C2_SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX - LOW_LATENCY_SRB_RSVD)
+
 
 struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 	/* HPC Profile */
@@ -70,7 +68,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = DEDICATED_ACCESS_SRB_RSVD,
 					.pbuf_rsvd = 39,
 					.assured_percent = 50,
 					.ceiling_percent = 100,
@@ -164,7 +161,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BULK_DATA_SRB_RSVD,
 					.pbuf_rsvd = 39,
 					.assured_percent = 15,
 					.ceiling_percent = 100,
@@ -210,7 +206,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BEST_EFFORT_SRB_RSVD,
 					.pbuf_rsvd = 13,
 					.assured_percent = 10,
 					.ceiling_percent = 100,
@@ -361,7 +356,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BULK_DATA_SRB_RSVD,
 					.pbuf_rsvd = 39,
 					.assured_percent = 10, /* Fabric: 20 */
 					.ceiling_percent = 100,
@@ -407,7 +401,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BEST_EFFORT_SRB_RSVD,
 					.pbuf_rsvd = 13,
 					.assured_percent = 10, /* Fabric: 50 */
 					.ceiling_percent = 100,
@@ -559,7 +552,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BULK_DATA_SRB_RSVD,
 					.pbuf_rsvd = 39,
 					.assured_percent = 10, /* Fabric: 20 */
 					.ceiling_percent = 100,
@@ -605,7 +597,6 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 				.oxe_settings = {
 					.smt_rsvd = 4,
 					.sct_rsvd = 4,
-					.srb_rsvd = BEST_EFFORT_SRB_RSVD,
 					.pbuf_rsvd = 13,
 					.assured_percent = 10, /* Fabric: 40 */
 					.ceiling_percent = 100,
@@ -686,3 +677,34 @@ struct qos_profile profiles[CXI_QOS_NUM_PROF] = {
 	}
 
 };
+
+/* Handle any non hardcoded QoS limits.
+ * Sharing SRB space for example depends on the number of RDMA TCs
+ * that need to sustain max bandwidth and whether or not a C1/C2 dev is in use.
+ */
+void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2)
+{
+	unsigned int tc;
+	unsigned int num_active_tcs = 0;
+	unsigned int srb_rsvd;
+
+	for (tc = 0; tc < CXI_TC_MAX; tc++) {
+		if (!qos->tcs_active[tc])
+			continue;
+		num_active_tcs++;
+	}
+
+	/* Each active TC needs to sustain max bandwidth.
+	 * Divide up the non-shared srb space between them.
+	 */
+	if (is_c2)
+		srb_rsvd = C1_SRB_RESERVED / num_active_tcs;
+	else
+		srb_rsvd = C2_SRB_RESERVED / num_active_tcs;
+
+	for (tc = 0; tc < CXI_TC_MAX; tc++) {
+		if (!qos->tcs_active[tc])
+			continue;
+		qos->tcs->oxe_settings.srb_rsvd = srb_rsvd;
+	}
+}
