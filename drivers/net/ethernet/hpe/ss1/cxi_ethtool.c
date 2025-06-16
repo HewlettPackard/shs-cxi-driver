@@ -33,6 +33,7 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"remote-fault-recovery",
 	"use-unsupported-cable",
 	"fec_monitor",
+	"auto-lane-degrade",
 };
 
 /* ethtool ops */
@@ -636,6 +637,16 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 			cxi_link_use_unsupported_cable(dev->cxi_dev, false);
 		}
 	}
+
+       if (changes & CXI_ETH_PF_ALD) {
+                if (flags & CXI_ETH_PF_ALD) {
+                        dev->priv_flags |= CXI_ETH_PF_ALD;
+                        cxi_link_auto_lane_degrade(dev->cxi_dev, true);
+                } else {
+                        dev->priv_flags &= ~CXI_ETH_PF_ALD;
+                        cxi_link_auto_lane_degrade(dev->cxi_dev, false);
+                }
+        }
 
 	return 0;
 }

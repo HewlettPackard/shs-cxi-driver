@@ -30,6 +30,7 @@ void cxi_link_mode_set(struct cxi_dev *cxi_dev, const struct cxi_link_info *link
 void cxi_link_flags_get(struct cxi_dev *cxi_dev, u32 *flags);
 void cxi_link_flags_set(struct cxi_dev *cxi_dev, u32 clr_flags, u32 set_flags);
 void cxi_link_use_unsupported_cable(struct cxi_dev *cxi_dev, bool use);
+void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable);
 void cxi_link_fec_monitor(struct cxi_dev *cxi_dev, bool on);
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set);
 

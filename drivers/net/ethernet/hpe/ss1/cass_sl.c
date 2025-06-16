@@ -709,6 +709,7 @@ static void cass_sl_ops_init(struct cass_dev *cass_dev)
 
 #define CASS_SL_CALLBACKS (SL_LGRP_NOTIF_MEDIA_PRESENT     | \
 			   SL_LGRP_NOTIF_MEDIA_NOT_PRESENT | \
+			   SL_LGRP_NOTIF_LANE_DEGRADE      | \
 			   SL_LGRP_NOTIF_LINK_UP           | \
 			   SL_LGRP_NOTIF_LINK_UP_FAIL      | \
 			   SL_LGRP_NOTIF_LINK_ASYNC_DOWN   | \
@@ -760,6 +761,10 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
 		memset(&cass_dev->sl.media_attr, 0, sizeof(cass_dev->sl.media_attr));
 		cass_dev->sl.has_cable = false;
 		break;
+	case SL_LGRP_NOTIF_LANE_DEGRADE:
+                cxidev_info(&cass_dev->cdev, "lane degrade occurred (rx_lane_map = 0x%X, tx_lane_map = 0x%X)\n",
+                msg->info.degrade_info.rx_lane_map, msg->info.degrade_info.tx_lane_map);
+                break;
 	case SL_LGRP_NOTIF_LINK_UP:
 		cass_dev->sl.link_state = SL_LINK_STATE_UP;
 		complete(&(cass_dev->sl.step_complete));

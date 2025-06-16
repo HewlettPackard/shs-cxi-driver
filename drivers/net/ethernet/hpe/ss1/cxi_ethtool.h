@@ -15,6 +15,7 @@
 #define CXI_ETH_PF_REMOTE_FAULT_RECOVERY BIT(10) /* enable pml recovery for remote faults */
 #define CXI_ETH_PF_USE_UNSUPPORTED_CABLE BIT(11) /* allow link up with unsupported cable */
 #define CXI_ETH_PF_FEC_MONITOR           BIT(12) /* Turn FEC Monitor on/off */
+#define CXI_ETH_PF_ALD                   BIT(13) /* control auto lane degrade */
 
-#define PRIV_FLAGS_COUNT 13
+#define PRIV_FLAGS_COUNT 14
 #define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)
