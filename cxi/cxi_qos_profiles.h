@@ -144,3 +144,5 @@ static inline bool is_eth_tc(unsigned int tc)
 {
 	return (tc > CXI_TC_ETH && tc < CXI_ETH_TC_MAX);
 }
+
+void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2);
