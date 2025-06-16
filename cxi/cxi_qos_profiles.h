@@ -132,6 +132,7 @@ struct qos_profile {
 	unsigned int pct_control_pcp;
 	unsigned int pct_control_res_rsp_dscp;
 	unsigned int pct_control_unres_rsp_dscp;
+	unsigned int tc_restricted_oxe_req_bc;
 	unsigned int untagged_eth_pcp;
 	struct cxi_tc tcs[CXI_ETH_TC_MAX];
 };
