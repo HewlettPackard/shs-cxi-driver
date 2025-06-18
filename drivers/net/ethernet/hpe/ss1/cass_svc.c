@@ -431,8 +431,12 @@ static int validate_descriptor(struct cass_dev *hw,
 	return 0;
 }
 
-static enum cxi_ac_type svc_mbr_to_ac_type(enum cxi_svc_member_type type)
+static enum cxi_ac_type svc_mbr_to_ac_type(enum cxi_svc_member_type type,
+					   bool restricted_members)
 {
+	if (!restricted_members)
+		return CXI_AC_OPEN;
+
 	switch (type) {
 	case CXI_SVC_MEMBER_UID:
 		return CXI_AC_UID;
@@ -486,7 +490,8 @@ static int alloc_ac_entries(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
 
 	for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
 		/* Type members.type have been validated */
-		type = svc_mbr_to_ac_type(svc_desc->members[i].type);
+		type = svc_mbr_to_ac_type(svc_desc->members[i].type,
+					  svc_desc->restricted_members);
 
 		for (j = 0; j < svc_priv->num_vld_rx_profiles; j++) {
 			rc = cxi_tx_profile_add_ac_entry(
