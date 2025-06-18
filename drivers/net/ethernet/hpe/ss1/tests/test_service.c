@@ -464,6 +464,61 @@ err:
 	return rc;
 }
 
+static int test_restricted_members_service(struct cxi_dev *dev)
+{
+	int rc;
+	struct cxi_lni *lni;
+	struct cxi_svc_fail_info info;
+	struct cxi_svc_desc desc = {
+		.enable = 0,
+		.is_system_svc = 1,
+		.restricted_members = 0,
+		.members[0].svc_member.uid = 1,
+		.members[0].type = CXI_SVC_MEMBER_UID,
+		.members[1].svc_member.gid = 2,
+		.members[1].type = CXI_SVC_MEMBER_GID,
+	};
+
+	rc = cxi_svc_alloc(dev, &desc, &info);
+	if (rc < 0) {
+		test_err("cxi_svc_alloc failed: %d\n", rc);
+		goto err;
+	}
+
+	desc.svc_id = rc;
+
+	lni = cxi_lni_alloc(dev, desc.svc_id);
+	if (IS_ERR(lni)) {
+		rc = PTR_ERR(lni);
+		test_err("cxi_lni_alloc failed:%d\n", rc);
+		goto err_free_svc;
+	}
+
+	cxi_lni_free(lni);
+
+	desc.restricted_members = 1;
+	rc = cxi_svc_update(dev, &desc);
+	if (rc) {
+		test_err("cxi_svc_update failed: %d\n", rc);
+		goto err_free_svc;
+	}
+
+	lni = cxi_lni_alloc(dev, desc.svc_id);
+	if (!IS_ERR(lni)) {
+		test_err("cxi_lni_alloc did not return error\n");
+		rc = -1;
+		cxi_lni_free(lni);
+		goto err_free_svc;
+	}
+
+	rc = 0;
+
+err_free_svc:
+	cxi_svc_destroy(dev, desc.svc_id);
+err:
+	return rc;
+}
+
 static int add_device(struct cxi_dev *dev)
 {
 	int rc;
@@ -496,6 +551,12 @@ static int add_device(struct cxi_dev *dev)
 	if (rc) {
 		test_pass = false;
 		test_err("test_default_service failed: %d\n", rc);
+	}
+
+	rc = test_restricted_members_service(dev);
+	if (rc) {
+		test_pass = false;
+		test_err("test_restricted_members_service failed: %d\n", rc);
 	}
 
 	return rc;
