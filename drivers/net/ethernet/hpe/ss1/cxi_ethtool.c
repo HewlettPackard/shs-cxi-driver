@@ -34,6 +34,7 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"use-unsupported-cable",
 	"fec_monitor",
 	"auto-lane-degrade",
+	"ignore-media-error",
 };
 
 /* ethtool ops */
@@ -637,6 +638,16 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 			cxi_link_use_unsupported_cable(dev->cxi_dev, false);
 		}
 	}
+
+	if (changes & CXI_ETH_PF_IGNORE_MEDIA_ERROR) {
+		if (flags & CXI_ETH_PF_IGNORE_MEDIA_ERROR) {
+                        dev->priv_flags |= CXI_ETH_PF_IGNORE_MEDIA_ERROR;
+                        cxi_link_ignore_media_error(dev->cxi_dev, true);
+                } else {
+                        dev->priv_flags &= ~CXI_ETH_PF_IGNORE_MEDIA_ERROR;
+                        cxi_link_ignore_media_error(dev->cxi_dev, false);
+                }
+        }
 
        if (changes & CXI_ETH_PF_ALD) {
                 if (flags & CXI_ETH_PF_ALD) {
