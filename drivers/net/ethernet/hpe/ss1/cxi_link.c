@@ -106,6 +106,19 @@ void cxi_link_use_unsupported_cable(struct cxi_dev *cxi_dev, bool use)
 }
 EXPORT_SYMBOL(cxi_link_use_unsupported_cable);
 
+void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore)
+{
+        struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
+
+        cxidev_dbg(&hw->cdev, "ignore media error\n");
+
+        if (ignore)
+                hw->sl.link_policy.options |= SL_LINK_POLICY_OPT_IGNORE_MEDIA_ERROR;
+        else
+                hw->sl.link_policy.options &= ~SL_LINK_POLICY_OPT_IGNORE_MEDIA_ERROR;
+}
+EXPORT_SYMBOL(cxi_link_ignore_media_error);
+
 void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable)
 {
        struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
