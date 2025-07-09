@@ -332,13 +332,13 @@ bool unique_vni_space(struct cass_dev *hw,
 		.vni_attr.ignore = attr->ignore,
 	};
 
-	cxi_rxtx_profile_list_lock(&hw->rx_profile_list);
+	cxi_rxtx_profile_list_lock(list);
 
-	rc = cxi_rxtx_profile_list_iterate(&hw->rx_profile_list,
+	rc = cxi_rxtx_profile_list_iterate(list,
 					   vni_overlap_test,
 					   &rxtx_prof);
 
-	cxi_rxtx_profile_list_unlock(&hw->rx_profile_list);
+	cxi_rxtx_profile_list_unlock(list);
 
 	return !rc;
 }

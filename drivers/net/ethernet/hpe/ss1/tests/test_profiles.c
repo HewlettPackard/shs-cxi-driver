@@ -70,6 +70,13 @@ static int test_rx_profiles(struct cxi_dev *dev)
 		goto remove_rx_profile;
 	}
 
+	rc = cxi_dev_set_rx_profile_attr(dev, rx_profile, &rx_attr);
+	if (!rc) {
+		pr_info("Should fail to set rx profile attributes again rc:%d",
+			rc);
+		goto remove_rx_profile;
+	}
+
 	rc = cxi_rx_profile_get_info(dev, rx_profile, &rx_attr_ret, NULL);
 	if (rc) {
 		pr_info("Failed to get rx profile attributes rc:%d", rc);
@@ -129,6 +136,13 @@ static int test_tx_profiles(struct cxi_dev *dev)
 		goto remove_tx_profile;
 	}
 
+	rc = cxi_dev_set_tx_profile_attr(dev, tx_profile, &tx_attr);
+	if (!rc) {
+		pr_info("Should fail to set tx profile attributes again rc:%d",
+			rc);
+		goto remove_tx_profile;
+	}
+
 	rc = cxi_tx_profile_get_info(dev, tx_profile, &tx_attr_ret, NULL);
 	if (rc) {
 		pr_info("Failed to get tx profile attributes rc:%d", rc);
@@ -137,7 +151,7 @@ static int test_tx_profiles(struct cxi_dev *dev)
 
 	if (tx_attr.vni_attr.match != tx_attr_ret.vni_attr.match ||
 	    tx_attr.vni_attr.ignore != tx_attr_ret.vni_attr.ignore) {
-		pr_info("Rx profile attributes not equal");
+		pr_info("Tx profile attributes not equal");
 		goto remove_tx_profile;
 	}
 
