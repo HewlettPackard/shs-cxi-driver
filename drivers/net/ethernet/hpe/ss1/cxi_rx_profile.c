@@ -212,11 +212,15 @@ void cxi_rx_profile_disable(struct cxi_dev *dev,
 {
 	struct cass_dev *hw = get_cass_dev(dev);
 
-	ida_free(&hw->rmu_index_table, rx_profile->config.rmu_index);
+	if (!cxi_rx_profile_is_enabled(rx_profile))
+		return;
 
+	ida_free(&hw->rmu_index_table, rx_profile->config.rmu_index);
 	cass_invalidate_vni_list(hw, rx_profile->config.rmu_index);
+
 	rx_profile->profile_common.state.enable = false;
 }
+EXPORT_SYMBOL(cxi_rx_profile_disable);
 
 /**
  * cxi_rx_profile_is_enabled() - Report RX profile is enabled

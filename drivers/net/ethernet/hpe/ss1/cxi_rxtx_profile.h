@@ -10,6 +10,8 @@
 #ifndef _CXI_RXTX_PROFILE_H_
 #define _CXI_RXTX_PROFILE_H_
 
+#define DEF_RMU_INDEX (-1)
+
 void cxi_rxtx_profile_init(struct cxi_rxtx_profile *rxtx_profile,
 			   struct cass_dev *hw,
 			   const struct cxi_rxtx_vni_attr *vni_attr);

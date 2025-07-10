@@ -85,7 +85,7 @@ void cass_rx_profile_init(struct cass_dev *hw,
 				struct cxi_rx_profile *rx_profile)
 {
 	spin_lock_init(&rx_profile->config.pid_lock);
-	rx_profile->config.rmu_index = -1;
+	rx_profile->config.rmu_index = DEF_RMU_INDEX;
 }
 
 /**

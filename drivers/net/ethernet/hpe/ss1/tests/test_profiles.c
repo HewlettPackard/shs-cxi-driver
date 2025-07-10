@@ -57,10 +57,13 @@ static int test_rx_profiles(struct cxi_dev *dev)
 
 	rc = cxi_rx_profile_enable(dev, rx_profile);
 	if (!rc) {
-		pr_info("Allocate RX profile should fail rc:%d", rc);
+		pr_info("Enable RX profile should fail rc:%d", rc);
 		rc = -1;
 		goto remove_rx_profile;
 	}
+
+	/* Should be ok to disable even if it is disabled */
+	cxi_rx_profile_disable(dev, rx_profile);
 
 	rx_attr.vni_attr.match = match;
 	rx_attr.vni_attr.ignore = ignore;
@@ -86,8 +89,18 @@ static int test_rx_profiles(struct cxi_dev *dev)
 	if (rx_attr.vni_attr.match != rx_attr_ret.vni_attr.match ||
 	    rx_attr.vni_attr.ignore != rx_attr_ret.vni_attr.ignore) {
 		pr_info("Rx profile attributes not equal");
+		rc = -1;
 		goto remove_rx_profile;
 	}
+
+	rc = cxi_rx_profile_enable(dev, rx_profile);
+	if (rc) {
+		pr_info("Failed enabling RX profile rc:%d", rc);
+		goto remove_rx_profile;
+	}
+
+	/* Should be ok to disable before the dec_refcount */
+	cxi_rx_profile_disable(dev, rx_profile);
 
 remove_rx_profile:
 	cxi_rx_profile_dec_refcount(dev, rx_profile);
