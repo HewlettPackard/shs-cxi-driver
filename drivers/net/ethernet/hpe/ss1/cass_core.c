@@ -1137,7 +1137,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	rc = cxi_configfs_device_init(hw);
 	if (rc) {
 		pr_err("configfs initialize failed\n");
-		goto configfs_fini;
+		goto svc_fini;
 	}
 
 	if (!is_physfn) {
@@ -1149,7 +1149,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 		rc = cass_vf_init(hw);
 		if (rc)
-			goto svc_fini;
+			goto configfs_fini;
 
 		/* Retrieve the device properties */
 		rc = cxi_send_msg_to_pf(&hw->cdev, &cmd, sizeof(cmd),
@@ -1194,14 +1194,12 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	return 0;
 
-configfs_fini:
-	cxi_configfs_cleanup(hw);
-	cxi_configfs_fini();
-
-
 vf_fini:
 	if (!is_physfn)
 		cass_vf_fini(hw);
+
+configfs_fini:
+	cxi_configfs_cleanup(hw);
 svc_fini:
 	cass_svc_fini(hw);
 rgroup_fini:
@@ -1270,6 +1268,7 @@ static void cass_remove(struct pci_dev *pdev)
 	lni_cleanups(hw, true);
 
 	cass_rgid_fini(hw);
+	cxi_configfs_cleanup(hw);
 	cass_svc_fini(hw);
 	cass_dev_rgroup_fini(hw);
 	cass_dev_rx_tx_profiles_fini(hw);

@@ -42,26 +42,22 @@ test_expect_success "Run configfs test program" "
 test_expect_success "Remove configfs resources" "
 	dmesg --clear &&
 	../../../scripts/cxi_mgmt disable --rsrc-grp r1 &&
-	../../../scripts/cxi_mgmt remove-resource --device cxi0 --rsrc-grp r1 ac 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 ct 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 eq 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 tgq 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 txq 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe0_le 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe1_le 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe2_le 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe3_le 100 100 &&
-	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 tle 100 100
+	../../../scripts/cxi_mgmt remove-resource --device cxi0 --rsrc-grp r1 ac &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 ct &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 eq &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 tgq &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 txq &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe0_le &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe1_le &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe2_le &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 pe3_le &&
+	../../../scripts/cxi_mgmt remove-resource --rsrc-grp r1 tle
 "
 
 test_expect_success "ConfigFS cleanup" "
 	dmesg --clear &&
 	../../../scripts/cxi_mgmt cleanup &> ../$(basename "$0").cleanup.output
 "
-
-if [ $(dmesg | grep -c 'Test passed') -eq 0 ]; then
-	dmesg
-fi
 
 test_expect_success "Remove core driver" "
 	dmesg --clear &&
