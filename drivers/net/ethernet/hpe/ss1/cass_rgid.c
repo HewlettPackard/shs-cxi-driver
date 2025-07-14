@@ -139,7 +139,7 @@ struct cxi_cp_priv *cass_cp_find(struct cass_dev *hw, int rgid, int lcid)
 }
 
 /**
- * cass_cp_rgid_find() - Get the CP accociated with an RGID that matches
+ * cass_cp_rgid_find() - Get the CP associated with an RGID that matches
  *                       the {vni_pcp,tc,tc_type} tupple
  *
  * @hw: Cassini device

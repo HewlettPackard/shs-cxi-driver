@@ -95,6 +95,7 @@ int main(int argc, char **argv)
 	int domain;
 	int retry;
 	struct ucxi_cp *cp;
+	struct ucxi_cp *cp2;
 	struct ucxi_cq *transmit_cq;
 	struct ucxi_cq *target_cq;
 	struct cass_dev *dev;
@@ -232,6 +233,17 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	cp2 = alloc_cp(dev, lni, vni_in, CXI_TC_BEST_EFFORT);
+	if (!cp2) {
+		fprintf(stderr, "cannot get a CP2\n");
+		return 1;
+	}
+
+	if (cp2->lcid != cp->lcid) {
+		fprintf(stderr, "CP didn't get re-used\n");
+		return 1;
+	}
+
 	/* Create a transmit and target CQ */
 	transmit_cq = create_cq(dev, lni, true, cp->lcid);
 	if (transmit_cq == NULL) {
@@ -277,6 +289,7 @@ int main(int argc, char **argv)
 	/* Freeing resources */
 	destroy_cq(dev, transmit_cq);
 	destroy_cq(dev, target_cq);
+	destroy_cp(dev, cp2);
 	destroy_cp(dev, cp);
 	destroy_domain(dev, domain);
 	destroy_lni(dev, lni);
