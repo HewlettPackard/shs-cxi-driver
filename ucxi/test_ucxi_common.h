@@ -5,7 +5,7 @@
 #define __TEST_UCXI_COMMON_H__
 
 #include "cxi_prov_hw.h"
-#include "uapi/misc/cxi.h"
+#include "uapi/ethernet/cxi-abi.h"
 
 /*
  * We don't have ARRAY_SIZE in user-space.  But

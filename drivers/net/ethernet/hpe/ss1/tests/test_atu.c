@@ -14,7 +14,7 @@
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <linux/vmalloc.h>
-#include <uapi/misc/cxi.h>
+#include <uapi/ethernet/cxi-abi.h>
 
 #include "cxi_prov_hw.h"
 #include "cxi_core.h"

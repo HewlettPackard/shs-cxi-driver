@@ -12,7 +12,7 @@
 #include <netlink/genl/genl.h>
 #include <netlink/genl/ctrl.h>
 
-#include "uapi/misc/cxi.h"
+#include "uapi/ethernet/cxi-abi.h"
 
 /* Same as kernel version, but not const */
 static struct nla_policy cxierr_genl_policy[CXIERR_GENL_ATTR_MAX] = {

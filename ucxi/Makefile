@@ -25,7 +25,7 @@ test_ucxi_atu: $(obj-atu) test_ucxi_common.h
 test_csr_access: $(obj-csr) test_ucxi_common.h
 	$(CC) $(CFLAGS) -o test_csr_access $(obj-csr)
 
-test_nlmsg: $(obj-nlmsg) ../include/uapi/misc/cxi.h
+test_nlmsg: $(obj-nlmsg) ../include/uapi/ethernet/cxi-abi.h
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags $(LIBNLGENL)) -o test_nlmsg $(obj-nlmsg) $(shell pkg-config --libs $(LIBNLGENL))
 
 clean:

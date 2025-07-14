@@ -15,7 +15,7 @@
 #include <uapi/linux/net_tstamp.h>
 
 #include "cxi_prov_hw.h"
-#include "uapi/misc/cxi.h"
+#include "uapi/ethernet/cxi-abi.h"
 
 #define TRANSACTION_TYPE 0xF
 

@@ -10,7 +10,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/pci.h>
 #include <linux/bvec.h>
-#include <uapi/misc/cxi.h>
+#include <uapi/ethernet/cxi-abi.h>
 #include <linux/version.h>
 
 #include "cxi_prov_hw.h"

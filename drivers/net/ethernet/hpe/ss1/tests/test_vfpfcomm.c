@@ -13,7 +13,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
-#include <uapi/misc/cxi.h>
+#include <uapi/ethernet/cxi-abi.h>
 #include <linux/cxi/cxi.h>
 
 #include <cxi_prov_hw.h>

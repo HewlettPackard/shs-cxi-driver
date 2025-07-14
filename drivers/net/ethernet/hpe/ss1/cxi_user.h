@@ -7,7 +7,7 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 
-#include <uapi/misc/cxi.h>
+#include <uapi/ethernet/cxi-abi.h>
 
 /* Size of the biggest command */
 #define MAX_REQ_SIZE 112

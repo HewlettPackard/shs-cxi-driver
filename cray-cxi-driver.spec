@@ -158,7 +158,7 @@ done
 rm -rf $INSTALL_MOD_PATH/lib/modules/*/$INSTALL_MOD_DIR/tests/
 
 install -D source/include/linux/cxi/cxi.h %{buildroot}/%{_includedir}/linux/cxi/cxi.h
-install -D source/include/uapi/misc/cxi.h %{buildroot}/%{_includedir}/uapi/misc/cxi.h
+install -D source/include/uapi/ethernet/cxi-abi.h %{buildroot}/%{_includedir}/uapi/ethernet/cxi-abi.h
 install -D --mode=0644 --target-directory=%{buildroot}/%{_udevrulesdir} source/50-cxi-driver.rules
 
 %if 0%{?rhel}
@@ -262,7 +262,7 @@ ${postinst} %{name} %{version}-%{release}
 
 %files devel
 %{_includedir}/linux/cxi/cxi.h
-%{_includedir}/uapi/misc/cxi.h
+%{_includedir}/uapi/ethernet/cxi-abi.h
 %{prefix}/src/cxi/*/Module.symvers
 
 %files dkms -f dkms-files
