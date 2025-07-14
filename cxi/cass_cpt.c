@@ -267,7 +267,6 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	cp_priv = cass_cp_rgid_find(hw, lni_priv->lni.rgid, vni_pcp, tc,
 				    tc_type);
 	if (cp_priv) {
-		refcount_inc(&cp_priv->refcount);
 		mutex_unlock(&hw->cp_lock);
 		pr_debug("Reuse cp:%u rgid:%u lcid:%u refcount:%d\n",
 			 cp_priv->cass_cp->id, cp_priv->rgid,
