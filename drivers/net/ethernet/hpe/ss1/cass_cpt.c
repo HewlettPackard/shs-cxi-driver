@@ -297,7 +297,6 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	cp_priv = cass_cp_rgid_find(hw, lni_priv->lni.rgid, vni_pcp, tc,
 				    tc_type);
 	if (cp_priv) {
-		refcount_inc(&cp_priv->refcount);
 		mutex_unlock(&hw->cp_lock);
 		pr_debug("Reuse cp:%u rgid:%u lcid:%u refcount:%d\n",
 			 cp_priv->cass_cp->id, cp_priv->rgid,
@@ -370,6 +369,8 @@ void cxi_cp_free(struct cxi_cp *cp)
 	struct cass_dev *hw = cp_priv->cass_cp->hw;
 	struct cxi_tx_profile *tx_profile = cp_priv->cass_cp->tx_profile;
 
+	cxi_tx_profile_dec_refcount(&hw->cdev, tx_profile, true);
+
 	mutex_lock(&hw->cp_lock);
 
 	if (!refcount_dec_and_test(&cp_priv->refcount)) {
@@ -391,7 +392,6 @@ void cxi_cp_free(struct cxi_cp *cp)
 
 	mutex_unlock(&hw->cp_lock);
 
-	cxi_tx_profile_dec_refcount(&hw->cdev, tx_profile, true);
 	kfree(cp_priv);
 
 	cass_flush_pci(hw);
