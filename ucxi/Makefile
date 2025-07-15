@@ -4,10 +4,11 @@ LIBNLGENL = libnl-genl-3.0
 CFLAGS = -O2 -ggdb -Wall -I$(TOPDIR)/include -I$(TOPDIR)/../cassini-headers/install/include -Werror -D__user= $(shell pkg-config --cflags $(LIBNLGENL))
 CC = gcc
 
-exes = test_ucxi test_ucxi_atu test_nlmsg test_csr_access
+exes = test_ucxi test_ucxi_atu test_nlmsg test_csr_access test_cp
 
 obj-ucxi = test_ucxi.o test_ucxi_common.o
 obj-atu = test_ucxi_atu.o test_ucxi_common.o
+obj-cp = test_cp.o test_ucxi_common.o
 obj-rgroup = test_rgroup.o test_ucxi_common.o
 obj-rx-profile = test_rx_profile.o test_ucxi_common.o
 obj-tx-profile = test_tx_profile.o test_ucxi_common.o
@@ -21,6 +22,9 @@ test_ucxi: $(obj-ucxi) test_ucxi_common.h
 
 test_ucxi_atu: $(obj-atu) test_ucxi_common.h
 	$(CC) $(CFLAGS) -o test_ucxi_atu $(obj-atu)
+
+test_cp: $(obj-cp) test_ucxi_common.h
+	$(CC) $(CFLAGS) -o test_cp $(obj-cp)
 
 test_csr_access: $(obj-csr) test_ucxi_common.h
 	$(CC) $(CFLAGS) -o test_csr_access $(obj-csr)
