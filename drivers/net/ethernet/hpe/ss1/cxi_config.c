@@ -50,7 +50,7 @@ static const int resource_max[] = {
 	CXI_RESOURCE_MAX
 };
 
-static inline struct cxi_cfg_rgroup_ac_entry_sub *to_cxi_cfg_rgroup_ac_entry_sub(struct config_item *item)
+static struct cxi_cfg_rgroup_ac_entry_sub *to_cxi_cfg_rgroup_ac_entry_sub(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct cxi_cfg_rgroup_ac_entry_sub, group);
 }
@@ -171,11 +171,6 @@ static const struct config_item_type cxi_cfg_rgroup_ac_entry_sub_type = {
 	.ct_owner       = THIS_MODULE,
 };
 
-static inline struct cxi_cfg_rgroup_ac_entry *to_cxi_cfg_rgroup_ac_entry(struct config_item *item)
-{
-	return container_of(to_config_group(item), struct cxi_cfg_rgroup_ac_entry, group);
-}
-
 static struct cxi_cfg_rgroup_ac_entry_sub *alloc_dev_rgroup_ac_entry_sub(const char *name)
 {
 	struct cxi_cfg_rgroup_ac_entry_sub *ac_entry_dir_sub;
@@ -247,7 +242,7 @@ cxi_cfg_rgroup_ac_entry_drop_item(struct config_group *group,
 	} else {
 		rc = cxi_rgroup_get_ac_entry_id_by_data(ac_entry_sub->rgroup,
 							CXI_AC_OPEN,
-							0,
+							NULL,
 							&ac_entry_id);
 		pr_debug("Getting an entry info rc = %d\n", rc);
 	}
@@ -283,7 +278,7 @@ static const struct config_item_type cxi_cfg_rgroup_ac_entry_type = {
 	.ct_owner       = THIS_MODULE,
 };
 
-static inline struct cxi_cfg_rgroup_res_type *to_cxi_cfg_rgroup_res_type(struct config_item *item)
+static struct cxi_cfg_rgroup_res_type *to_cxi_cfg_rgroup_res_type(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct cxi_cfg_rgroup_res_type, group);
 }
@@ -543,7 +538,7 @@ static const struct config_item_type cxi_cfg_rgroup_res_type = {
 	.ct_owner       = THIS_MODULE,
 };
 
-static inline struct cxi_cfg_rgroup_attr *to_cxi_cfg_rgroup_attr(struct config_item *item)
+static struct cxi_cfg_rgroup_attr *to_cxi_cfg_rgroup_attr(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct cxi_cfg_rgroup_attr, group);
 }
@@ -621,7 +616,7 @@ static const struct config_item_type cxi_cfg_rgroup_attr_type = {
 	.ct_owner       = THIS_MODULE,
 };
 
-static inline struct cxi_cfg_rgroup_state *to_cxi_cfg_rgroup_state(struct config_item *item)
+static struct cxi_cfg_rgroup_state *to_cxi_cfg_rgroup_state(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct cxi_cfg_rgroup_state, group);
 }
@@ -860,7 +855,7 @@ static void cxi_cfg_rgroup_free(struct config_item *item)
 	kfree(rgp);
 }
 
-static inline struct cxi_cfg_rgroup *to_cxi_cfg_rgroup(struct config_item *item)
+static struct cxi_cfg_rgroup *to_cxi_cfg_rgroup(struct config_item *item)
 {
 	return container_of(to_config_group(item), struct cxi_cfg_rgroup, group);
 }
@@ -1010,7 +1005,7 @@ static const struct config_item_type cxi_cfg_group_type = {
 	.ct_owner       = THIS_MODULE,
 };
 
-struct configfs_subsystem cxi_cfg_group_subsys = {
+static struct configfs_subsystem cxi_cfg_group_subsys = {
 	.su_group = {
 		.cg_item = {
 			.ci_namebuf = "cxi",
