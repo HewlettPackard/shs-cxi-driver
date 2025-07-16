@@ -1017,7 +1017,6 @@ int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
 	int ret;
 	int l0_index;
 	int l1_index;
-	unsigned long pfn;
 	union a_pte *ppde;
 	union a_pte *ppte;
 	union a_pte pde = {};
@@ -1051,9 +1050,8 @@ int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
 			if (ret)
 				return ret;
 
-			pr_debug("Replacing non-leaf pde iova:%llx entry:%lx new:%llx\n",
-				 iova_offset, (ulong)PTE_ADDR(ppde->pte),
-				 __pfn_to_phys(pfn));
+			pr_debug("Replacing non-leaf pde iova:%llx entry:%lx\n",
+				 iova_offset, (ulong)PTE_ADDR(ppde->pte));
 			update_pde = true;
 			goto new_pde;
 		}
@@ -1117,7 +1115,7 @@ new_pde:
 	ppte = get_virt_pte(cac->nta, l0_index, l1_index);
 
 	atu_debug("pte %p phys:%lx iova:%llx entry:0x%llx\n", ppte,
-		  PTE_ADDR(pte.pte) + l1_index * ATU_PTE_ENTRY_SIZE,
+		  (ulong)PTE_ADDR(pte.pte) + l1_index * ATU_PTE_ENTRY_SIZE,
 		  iova, pte.qw);
 
 	ppte->qw = pte.qw;
