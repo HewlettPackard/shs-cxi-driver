@@ -83,7 +83,7 @@ static int add_device(struct cxi_dev *dev)
 	pr_info("TEST: alloc should fail without an ac entry\n");
 	domain = cxi_domain_alloc(lni, vni, 0);
 	if (!IS_ERR(domain))
-		pr_err("TEST-ERROR: domains %u is allocated\n", i);
+		pr_err("TEST-ERROR: domain is allocated\n");
 
 	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
