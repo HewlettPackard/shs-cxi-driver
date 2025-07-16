@@ -21,32 +21,32 @@ static bool test_pass = true;
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s:%d " fmt, __func__, __LINE__
 
-struct cxi_dev *dev;
+static struct cxi_dev *dev;
 
-unsigned int vni;
-unsigned int pid;
+static unsigned int vni;
+static unsigned int pid;
 
-struct cxi_rgroup *rgroup;
-struct cxi_rx_profile *rx_profile;
-struct cxi_tx_profile *tx_profile;
-struct cxi_lni *lni;
-struct cxi_domain *domain;
-void *eq_buf;
-size_t eq_buf_len;
-struct cxi_md *eq_buf_md;
-u64 eq_flags;
-struct cxi_eq *eq;
-struct cxi_cp *cp;
-struct cxi_cq *cq_transmit;
-struct cxi_cq *cq_target;
-struct cxi_pte *pt;
+static struct cxi_rgroup *rgroup;
+static struct cxi_rx_profile *rx_profile;
+static struct cxi_tx_profile *tx_profile;
+static struct cxi_lni *lni;
+static struct cxi_domain *domain;
+static void *eq_buf;
+static size_t eq_buf_len;
+static struct cxi_md *eq_buf_md;
+static u64 eq_flags;
+static struct cxi_eq *eq;
+static struct cxi_cp *cp;
+static struct cxi_cq *cq_transmit;
+static struct cxi_cq *cq_target;
+static struct cxi_pte *pt;
 
-struct cxi_pt_alloc_opts pt_alloc_opts;
-struct cxi_cq_alloc_opts cq_alloc_opts;
-unsigned int pid_offset;
-unsigned int pt_index;
-union c_fab_addr dfa;
-u8 index_ext;
+static struct cxi_pt_alloc_opts pt_alloc_opts;
+static struct cxi_cq_alloc_opts cq_alloc_opts;
+static unsigned int pid_offset;
+static unsigned int pt_index;
+static union c_fab_addr dfa;
+static u8 index_ext;
 
 struct mem_window {
 	size_t length;
@@ -55,7 +55,6 @@ struct mem_window {
 };
 
 static struct cxi_client cxiu_client;
-struct cxi_resource_use r_save[CXI_RESOURCE_MAX];
 
 #define LIMIT_LE_MAX 22
 #define LIMIT_PTLTE_MAX 22

@@ -15,16 +15,10 @@ static bool test_pass;
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s:%d " fmt, __func__, __LINE__
 
-struct cxi_dev *dev;
+static struct cxi_dev *dev;
 
-unsigned int vni;
-unsigned int pid;
-
-struct cxi_rgroup *rgroup;
-struct cxi_rx_profile *rx_profile;
-struct cxi_tx_profile *tx_profile;
-struct cxi_lni *lni;
-struct cxi_domain *domain;
+static struct cxi_rx_profile *rx_profile;
+static struct cxi_tx_profile *tx_profile;
 
 static struct cxi_client cxiu_client;
 struct cxi_resource_use r_save[CXI_RESOURCE_MAX];
