@@ -53,11 +53,10 @@ int cxi_domain_reserve(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
 	struct cxi_lni_priv *lni_priv =
 		container_of(lni, struct cxi_lni_priv, lni);
 	struct cxi_dev *cdev = lni_priv->dev;
-	int rc;
 	struct cxi_rx_profile *rx_profile;
-	int i;
 	struct cxi_reserved_pids *pids;
-	unsigned int in_pid = pid;
+	int rc;
+	int i;
 
 	/* Sanity checks. */
 	if (!is_vni_valid(vni))
@@ -76,12 +75,10 @@ int cxi_domain_reserve(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
 	if (!rx_profile)
 		return -ENOENT;
 
-	pid = cxi_rx_profile_alloc_pid(lni_priv, rx_profile, in_pid, vni, count,
-				       true);
-	if (pid < 0) {
-		rc = pid;
+	rc = cxi_rx_profile_alloc_pid(lni_priv, rx_profile, pid, vni, count, true);
+	if (rc < 0)
 		goto put_rx_profile;
-	}
+	pid = rc;
 
 	pids = kzalloc(sizeof(*pids), GFP_KERNEL);
 	if (!pids) {
