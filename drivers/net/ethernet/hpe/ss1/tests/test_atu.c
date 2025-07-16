@@ -643,7 +643,6 @@ static int map_kvec(struct tdev *tdev)
 	int i;
 	int rc;
 	size_t count = 0;
-	int map_size = 0;
 	struct cxi_lni *lni;
 	size_t iov_len = PAGE_SIZE - VEC_OFFSET;
 	int kvecs_to_free = 0;
@@ -685,7 +684,6 @@ static int map_kvec(struct tdev *tdev)
 			iov_len, ksize(kvec[i].iov_base));
 		kvec[i].iov_len = iov_len;
 		count += iov_len;
-		map_size += PAGE_ALIGN(iov_len);
 		kvecs_to_free++;
 	}
 
