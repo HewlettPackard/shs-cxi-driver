@@ -13,22 +13,9 @@
  *
  * Return: containing Cassini device pointer
  */
-static inline struct cass_dev *get_cass_dev(struct cxi_dev *dev)
+static struct cass_dev *get_cass_dev(struct cxi_dev *dev)
 {
 	return container_of(dev, struct cass_dev, cdev);
-}
-
-/**
- * get_cxi_dev() - type-safe function to get CXI device pointer
- *                 from Cassini device
- *
- * @hw: cass_dev pointer
- *
- * Return: Embedded CXI device pointer
- */
-static inline struct cxi_dev *get_cxi_dev(struct cass_dev *hw)
-{
-	return &hw->cdev;
 }
 
 /* **************************************************************** */

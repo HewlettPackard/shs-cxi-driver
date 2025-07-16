@@ -6,19 +6,6 @@
 #include "cass_core.h"
 
 /**
- * get_cass_dev() - type-safe function to get Cassini device pointer
- *                  from cxi_dev
- *
- * @dev: cxi_dev pointer
- *
- * Return: containing Cassini device pointer
- */
-static inline struct cass_dev *get_cass_dev(struct cxi_dev *dev)
-{
-	return container_of(dev, struct cass_dev, cdev);
-}
-
-/**
  * get_cxi_dev() - type-safe function to get CXI device pointer
  *                 from Cassini device
  *
@@ -26,7 +13,7 @@ static inline struct cass_dev *get_cass_dev(struct cxi_dev *dev)
  *
  * Return: Embedded CXI device pointer
  */
-static inline struct cxi_dev *get_cxi_dev(struct cass_dev *hw)
+static struct cxi_dev *get_cxi_dev(struct cass_dev *hw)
 {
 	return &hw->cdev;
 }
