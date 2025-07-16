@@ -503,7 +503,7 @@ static void cass_sl_intr_hdlr(struct cass_dev *cass_dev,
 			cxidev_dbg(&cass_dev->cdev, "call handler\n");
 			bitmap_zero(ss2_port_pml_err_flgs, MAX_ERR_FLAG_BITLEN);
 			set_bit(bitn, ss2_port_pml_err_flgs);
-			intr->hdlr((u64 *)ss2_port_pml_err_flgs, 4, intr->data);
+			intr->hdlr(bitn, (u64 *)ss2_port_pml_err_flgs, 4, intr->data);
 			break;
 		}
 	}
@@ -775,18 +775,16 @@ static int cass_sl_dt_info_get(void *dt_accessor, u8 ldev_num, u8 lgrp_num,
 	return 0;
 }
 
-static int cass_sl_mb_info_get(void *mb_accessor, u8 *platform, u16 *revision, u16 *proto)
+static int cass_sl_mb_info_get(void *mb_accessor, u8 *platform, u16 *device_id, u16 *revision, u16 *proto)
 {
 	struct cass_dev *cass_dev = mb_accessor;
 
 	cxidev_dbg(&cass_dev->cdev, "sl mb info get\n");
 
-	if (platform)
-		*platform = HW_PLATFORM(cass_dev);
-	if (revision)
-		*revision = 0;
-	if (proto)
-		*proto = 0;
+	*platform  = HW_PLATFORM(cass_dev);
+	*device_id = cass_dev->rev.device_id;
+	*revision  = 0;
+	*proto     = 0;
 
 	return 0;
 }
