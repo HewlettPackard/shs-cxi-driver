@@ -64,7 +64,7 @@ struct cxi_lni *cxi_lni_alloc(struct cxi_dev *dev, unsigned int svc_id)
 
 	id = ida_alloc_min(&hw->lni_table, 1, GFP_KERNEL);
 	if (id < 0) {
-		err = ERR_PTR(rgid);
+		err = ERR_PTR(id);
 		goto put_rgid;
 	}
 
