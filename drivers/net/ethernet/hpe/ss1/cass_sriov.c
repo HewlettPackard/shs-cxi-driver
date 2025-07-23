@@ -78,8 +78,13 @@ static int read_message_from_vsock(struct socket *sock, void *msg, size_t *msg_l
 	rc = kernel_recvmsg(sock, &msghdr, &hdrvec, 1, sizeof(hdr), 0);
 	if (rc < 0)
 		return rc;
-	else if (rc < sizeof(hdr))
+	else if (rc == 0) {
+		/* Connection closed by the other end */
+		return 0;
+	} else if (rc < sizeof(hdr)) {
+		/* Not enough data received for header */
 		return -EINVAL;
+	}
 
 	if (hdr.len > MAX_VFMSG_SIZE || hdr.len > *msg_len)
 		return -EINVAL;
@@ -127,6 +132,7 @@ static int pf_vf_msghandler(void *data)
 				   vf->vf_idx);
 			break;
 		}
+
 		cxidev_dbg(&hw->cdev, "vf %d: got %ld byte message", vf->vf_idx,
 			   request_len);
 

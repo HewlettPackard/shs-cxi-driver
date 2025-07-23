@@ -247,6 +247,10 @@ static void remove_device(struct cxi_dev *cxi_dev)
 {
 	struct cxi_eth *dev;
 
+	/* Ethernet devices on VF devices are not added for now, so not removed */
+	if (!cxi_dev->is_physfn)
+		return;
+
 	mutex_lock(&dev_list_mutex);
 	dev = find_eth_device(cxi_dev);
 	if (dev)
