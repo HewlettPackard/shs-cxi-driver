@@ -51,6 +51,10 @@ ifneq ($(INTEL_DMABUF_DIR),)
         ccflags-y += -DHAVE_INTEL_DMA_BUF -I $(INTEL_DMABUF_DIR)/include -iquote $(INTEL_DMABUF_DIR)/include
 endif
 
+ifneq ($(ENABLE_SRIOV),)
+        ccflags-y += -DCXI_ENABLE_SRIOV
+endif
+
 CXI_COMMIT := $(shell git --git-dir=$(src)/../../../../../.git rev-parse --short HEAD \
                 2>/dev/null || echo "[unknown]")
 

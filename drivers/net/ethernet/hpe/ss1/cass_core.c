@@ -1316,7 +1316,9 @@ static struct pci_driver cass_pci_driver = {
 	.id_table = cass_ids,
 	.probe = cass_probe,
 	.remove = cass_remove,
+#if defined(CXI_ENABLE_SRIOV)
 	.sriov_configure = cass_sriov_configure,
+#endif
 };
 
 MODULE_DEVICE_TABLE(pci, cass_ids);
