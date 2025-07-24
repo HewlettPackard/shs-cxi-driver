@@ -37,66 +37,71 @@ test_expect_success "Inserting driver" "
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
+if [[ $(cat $PFDEV/sriov_totalvfs) -gt 0 ]]; then
+	test_set_prereq SRIOV
+else
+	echo "Driver built without SR-IOV support, skipping SR-IOV tests"
+fi
+
 # Netsim device supports 32 VFs, real hardware supports 64.
-if dmesg | grep netsim; then
+if dmesg | grep netsim > /dev/null; then
 	TOTALVFS=32
 else
 	TOTALVFS=64
 fi
 
-test_expect_success "Number of total VFs" "
+test_expect_success SRIOV "Number of total VFs" "
 	[[ $(cat $PFDEV/sriov_totalvfs) -eq $TOTALVFS ]]
 "
 
-test_expect_success "No VFs at first" "
+test_expect_success SRIOV "No VFs at first" "
 	[[ $(cat $PFDEV/sriov_numvfs) -eq 0 ]] && check_cxi 1
 "
 
-test_expect_success "Create VFs" "
-    create_vfs $((TOTALVFS / 3)) && check_cxi $((TOTALVFS / 3 + 1))
+test_expect_success SRIOV "Create VFs" "
+    create_vfs $((TOTALVFS / 3)) && check_cxi $((TOTALVFS / 3 + 1)) &&
     [[ $(cat $PFDEV/properties/rdzv_get_idx) -eq $(cat $PFDEV/properties/rdzv_get_idx) ]]
 "
 
-test_expect_success "Can't change the number of VFs" "
+test_expect_success SRIOV "Can't change the number of VFs" "
     ! create_vfs $((TOTALVFS / 3 + 1))
 "
 
-test_expect_success "Remove existing VFs" "
-	echo 0 > $PFDEV/sriov_numvfs
-	[[ $(cat $PFDEV/sriov_numvfs) -ne 0 ]] && check_cxi 1
+test_expect_success SRIOV "Remove existing VFs" "
+	echo 0 > $PFDEV/sriov_numvfs && check_cxi 1
 "
 
-test_expect_success "Create the maximum number of VFs" "
+test_expect_success SRIOV "Create the maximum number of VFs" "
 	create_vfs $TOTALVFS && check_cxi $((TOTALVFS + 1))
 "
 
 # test-vfpfcomm is now competing with cxi-user for the message channel
-test_expect_success "Inserting VF/PF comm test driver" "
+test_expect_success SRIOV "Inserting VF/PF comm test driver" "
     rmmod cxi_user &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/tests/test-vfpfcomm.ko &&
 	sleep 4 &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
-test_expect_success "Check VF/PF comm" "
+test_expect_success SRIOV "Check VF/PF comm" "
 	[ $(dmesg | grep -c 'Reply is valid') -eq $TOTALVFS ]
 "
 
-test_expect_success "Remove VF/PF comm test drive, reinsert cxi-user" "
+test_expect_success SRIOV "Remove VF/PF comm test drive, reinsert cxi-user" "
 	rmmod test-vfpfcomm &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/cxi-user.ko &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
-test_expect_success "Remove existing VFs" "
+test_expect_success SRIOV "Remove existing VFs" "
 	create_vfs 0 && check_cxi 1
 "
 
-test_expect_success "Try to create more VFs than allowed" "
+test_expect_success SRIOV "Try to create more VFs than allowed" "
 	! create_vfs $((TOTALVFS + 1)) && check_cxi 1
 "
 
-test_expect_success "Create some VFs and remove the driver" "
+test_expect_success SRIOV "Create some VFs and remove the driver" "
 	create_vfs $((TOTALVFS / 2)) && check_cxi $((TOTALVFS / 2 + 1)) &&
 	rmmod cxi-user cxi-ss1 cxi-sbl &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ] &&

@@ -136,6 +136,7 @@ for flavor in %flavors_to_build; do
     make -C %{kernel_source $flavor} modules \
         M=$PWD/obj/$flavor/drivers/net/ethernet/hpe/ss1 \
         NO_BUILD_TESTS=1 \
+        NO_SRIOV=1 \
         CASSINI_HEADERS_DIR=%{_includedir} \
         FIRMWARE_CASSINI_DIR=%{_includedir} \
         SLINGSHOT_BASE_LINK_DIR=%{_includedir} \

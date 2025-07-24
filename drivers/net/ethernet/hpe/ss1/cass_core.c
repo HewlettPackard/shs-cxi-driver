@@ -976,6 +976,12 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		rc = get_pcie_link_speed(hw);
 		if (rc)
 			goto unmap_regions;
+
+#if defined(CXI_DISABLE_SRIOV)
+		rc = pci_sriov_set_totalvfs(pdev, 0);
+		if (rc)
+			goto unmap_regions;
+#endif
 	}
 
 	hw->with_vf_support = pdev->is_physfn || pci_msix_vec_count(pdev) != 2;

@@ -31,6 +31,10 @@ ifeq ($(NO_BUILD_TESTS),)
 obj-m += tests/
 endif
 
+ifneq ($(NO_SRIOV),)
+        ccflags-y += -DCXI_DISABLE_SRIOV
+endif
+
 AMDGPU_DIR ?= $(shell /bin/ls -d /usr/src/amdgpu-* 2>/dev/null | tail -1)
 ifneq ($(AMDGPU_DIR),)
         $(info Have $(AMDGPU_DIR))
