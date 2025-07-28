@@ -281,6 +281,8 @@ int cxi_ac_entry_list_retrieve_by_id(struct cxi_ac_entry_list *list,
 	struct cxi_ac_entry   *ac_entry;
 
 	ac_entry = xa_load(&list->id.xarray, id);
+	if (!ac_entry)
+		return -EBADR;
 
 	switch (ac_entry->type) {
 	case CXI_AC_UID:
