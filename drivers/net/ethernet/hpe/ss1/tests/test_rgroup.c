@@ -4,7 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include "cxi_core.h"
 #include "cass_core.h"
 

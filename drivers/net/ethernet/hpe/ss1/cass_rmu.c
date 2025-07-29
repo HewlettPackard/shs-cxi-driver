@@ -3,7 +3,7 @@
 
 /* Create and destroy Cassini command queues */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/idr.h>
 #include <linux/kernel.h>
 #include <linux/rbtree.h>

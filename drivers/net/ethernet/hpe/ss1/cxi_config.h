@@ -5,7 +5,7 @@
 #ifndef _CXI_CONFIGFS_MGMT_H
 #define _CXI_CONFIGFS_MGMT_H
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/configfs.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>

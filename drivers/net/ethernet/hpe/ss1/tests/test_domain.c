@@ -8,7 +8,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/delay.h>
 
 #include "cass_core.h"

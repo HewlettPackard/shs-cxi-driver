@@ -54,7 +54,7 @@ index 0000000..1ef467e
 +
 +#include <linux/kernel.h>
 +#include <linux/module.h>
-+#include <linux/cxi/cxi.h>
++#include <linux/hpe/cxi/cxi.h>
 +
 +#include "cass_core.h"
 +#include "cxi_core.h"

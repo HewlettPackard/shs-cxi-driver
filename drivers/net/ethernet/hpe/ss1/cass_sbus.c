@@ -3,7 +3,7 @@
 
 /* Cassini SBUS driver */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/iopoll.h>
 
 #include "cass_core.h"

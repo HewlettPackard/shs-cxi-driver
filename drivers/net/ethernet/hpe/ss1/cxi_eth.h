@@ -6,7 +6,7 @@
 
 #ifndef __CXI_ETH_H__
 #define __CXI_ETH_H__
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/version.h>
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)

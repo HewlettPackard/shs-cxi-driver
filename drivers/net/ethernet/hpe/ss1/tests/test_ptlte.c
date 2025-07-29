@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright 2024 Hewlett Packard Enterprise Development LP */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>

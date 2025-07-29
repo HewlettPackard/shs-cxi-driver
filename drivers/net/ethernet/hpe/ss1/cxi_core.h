@@ -7,7 +7,7 @@
 #include <linux/device.h>
 #include <linux/types.h>
 #include <linux/hmm.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/refcount.h>
 #include <linux/version.h>
 #include <linux/mmu_notifier.h>

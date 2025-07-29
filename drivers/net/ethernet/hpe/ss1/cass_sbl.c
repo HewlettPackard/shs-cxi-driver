@@ -5,7 +5,7 @@
  */
 
 #include <linux/iopoll.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <sbl/sbl_mb.h>
 #include <linux/sbl.h>
 #include <uapi/sbl.h>

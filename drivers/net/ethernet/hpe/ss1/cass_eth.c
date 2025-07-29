@@ -3,7 +3,7 @@
 
 /* Core driver support for Ethernet devices */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/etherdevice.h>
 
 #include "cass_core.h"

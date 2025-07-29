@@ -4,7 +4,7 @@
 /* Template client for CXI, validator for the CXI API. */
 
 #include <linux/bvec.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/kernel.h>

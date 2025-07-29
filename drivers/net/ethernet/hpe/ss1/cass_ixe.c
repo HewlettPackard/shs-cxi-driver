@@ -3,7 +3,7 @@
 
 /* IXE block */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <rdma/ib_pack.h>
 
 #include "cass_core.h"

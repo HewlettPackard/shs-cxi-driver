@@ -5,7 +5,7 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 
 #include "cass_core.h"
 #include "cass_sbl.h"

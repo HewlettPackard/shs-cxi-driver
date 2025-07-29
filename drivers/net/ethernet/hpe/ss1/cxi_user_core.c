@@ -3,7 +3,7 @@
 
 /* Userspace communication. */
 
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/idr.h>

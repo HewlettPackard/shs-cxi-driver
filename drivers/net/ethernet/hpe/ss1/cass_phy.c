@@ -6,7 +6,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/iopoll.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 
 #include "cass_core.h"
 #include "cass_sbl.h"

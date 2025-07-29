@@ -2,7 +2,7 @@
 /* Copyright 2022 Hewlett Packard Enterprise Development LP */
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/cxi/cxi.h>
+#include <linux/hpe/cxi/cxi.h>
 
 #define VNI 8U
 #define TLE_COUNT 10U
