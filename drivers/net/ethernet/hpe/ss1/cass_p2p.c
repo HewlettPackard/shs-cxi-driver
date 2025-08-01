@@ -114,15 +114,19 @@ static int cxi_p2p_init(void)
 	if (cxi_supported_p2p_type > 0)
 		goto out_unlock;
 
+#ifdef HAVE_NVIDIA_P2P
 	ret = nvidia_p2p_init();
 	if (!ret) {
 		cxi_supported_p2p_type = CXI_P2P_NVIDIA_GPU;
 		goto out_unlock;
 	}
+#endif
 
+#ifdef HAVE_AMD_RDMA
 	ret = amd_p2p_init();
 	if (!ret)
 		cxi_supported_p2p_type = CXI_P2P_AMD_GPU;
+#endif
 
 out_unlock:
 	mutex_unlock(&p2p_init_lock);
@@ -137,10 +141,14 @@ void cxi_p2p_fini(void)
 {
 	switch (cxi_supported_p2p_type) {
 	case CXI_P2P_AMD_GPU:
+#ifdef HAVE_AMD_RDMA
 		amd_p2p_fini();
+#endif
 		break;
 	case CXI_P2P_NVIDIA_GPU:
+#ifdef HAVE_NVIDIA_P2P
 		nvidia_p2p_fini();
+#endif
 		break;
 	}
 }
