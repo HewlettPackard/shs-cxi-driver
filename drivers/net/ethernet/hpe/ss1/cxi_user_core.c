@@ -478,6 +478,36 @@ static int cxi_user_svc_get_lpr(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_svc_set_exclusive_cp(struct user_client *client,
+					 const void *cmd_in,
+					 void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_set_exclusive_cp_cmd *cmd = cmd_in;
+
+	return cxi_svc_set_exclusive_cp(client->ucxi->dev, cmd->svc_id,
+					cmd->exclusive_cp);
+}
+
+static int cxi_user_svc_get_exclusive_cp(struct user_client *client,
+					 const void *cmd_in,
+					 void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_get_exclusive_cp_cmd *cmd = cmd_in;
+	struct cxi_svc_get_exclusive_cp_resp resp = {};
+	int rc;
+
+	rc = cxi_svc_get_exclusive_cp(client->ucxi->dev, cmd->svc_id);
+	if (rc < 0)
+		return rc;
+
+	resp.exclusive_cp = (bool)rc;
+
+	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int cxi_user_cp_alloc(struct user_client *client,
 			     const void *cmd_in,
 			     void *resp_out, size_t *resp_out_len)
@@ -2362,6 +2392,16 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_svc_lpr_cmd),
 		.name       = "SVC_GET_LPR",
 		.handler    = cxi_user_svc_get_lpr, },
+	[CXI_OP_SVC_SET_EXCLUSIVE_CP] =  {
+		.req_size   = sizeof(struct cxi_svc_set_exclusive_cp_cmd),
+		.name       = "SVC_SET_EXCLUSIVE_CP",
+		.handler    = cxi_user_svc_set_exclusive_cp,
+		.admin_only = true, },
+	[CXI_OP_SVC_GET_EXCLUSIVE_CP] =  {
+		.req_size   = sizeof(struct cxi_svc_get_exclusive_cp_cmd),
+		.name       = "SVC_GET_EXCLUSIVE_CP",
+		.handler    = cxi_user_svc_get_exclusive_cp, },
+
 };
 
 /* Read and process a command from userspace or from a Virtual

@@ -1050,6 +1050,88 @@ int cxi_svc_get_lpr(struct cxi_dev *dev, unsigned int svc_id)
 }
 EXPORT_SYMBOL(cxi_svc_get_lpr);
 
+/**
+ * cxi_svc_set_exclusive_cp() - Set the exclusive_cp bit for a service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to be updated.
+ * @exclusive_cp: New value for exclusive_cp (true or false)
+ *
+ * Return: 0 on success or negative errno value.
+ */
+int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
+			     bool exclusive_cp)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	int rc;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		rc = -EINVAL;
+		goto unlock;
+	}
+
+	if (svc_priv->svc_desc.restricted_vnis) {
+		cxidev_err(dev, "Exclusive CP not allowed with restricted VNIs\n");
+		rc = -EINVAL;
+		goto unlock;
+	}
+
+	/* One VNI Range will be allowed, tied to tx_profile 0.
+	 * This call will fail if the svc/tx_profile is already enabled
+	 */
+	if (!svc_priv->tx_profile[0]) {
+		cxidev_err(dev, "tx_profile[0] not initialized for svc_id: %d\n",
+			   svc_id);
+		rc = -EINVAL;
+		goto unlock;
+	}
+	rc = cxi_tx_profile_set_exclusive_cp(svc_priv->tx_profile[0],
+					     exclusive_cp);
+	if (rc)
+		cxidev_err(dev, "Failed to set exclusive CP for svc_id: %d rc:%d\n",
+			   svc_id, rc);
+
+unlock:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_set_exclusive_cp);
+
+/**
+ * cxi_svc_get_exclusive_cp() - Get the exclusive_cp bit for a service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to query.
+ *
+ * Return: 1 if exclusive_cp is set, 0 if not, or negative errno value.
+ */
+int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	int rc;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		mutex_unlock(&hw->svc_lock);
+		return -EINVAL;
+	}
+
+	/* Grab the first TX Profile and report its exclusive_cp value */
+	rc = cxi_tx_profile_exclusive_cp(svc_priv->tx_profile[0]);
+
+	mutex_unlock(&hw->svc_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_get_exclusive_cp);
+
 void cass_svc_fini(struct cass_dev *hw)
 {
 	struct cxi_svc_priv *svc_priv;

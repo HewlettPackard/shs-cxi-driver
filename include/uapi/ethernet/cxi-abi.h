@@ -111,6 +111,8 @@ enum cxi_command_opcode {
 		CXI_OP_TX_PROFILE_GET_AC_ENTRY_ID_BY_USER,
 
 		CXI_OP_CP_MODIFY,
+		CXI_OP_SVC_SET_EXCLUSIVE_CP,
+		CXI_OP_SVC_GET_EXCLUSIVE_CP,
 
 		CXI_OP_MAX,
 };
@@ -1018,6 +1020,18 @@ struct cxi_svc_lpr_cmd {
 	unsigned int lnis_per_rgid;
 };
 
+struct cxi_svc_set_exclusive_cp_cmd {
+	enum cxi_command_opcode op;
+	unsigned int svc_id;
+	bool exclusive_cp;
+};
+
+struct cxi_svc_get_exclusive_cp_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int svc_id;
+};
+
 struct cxi_svc_get_value_resp {
 	unsigned int value;
 };
@@ -1028,6 +1042,10 @@ struct cxi_svc_update_resp {
 
 struct cxi_inbound_wait_cmd {
 	enum cxi_command_opcode op;
+};
+
+struct cxi_svc_get_exclusive_cp_resp {
+	bool exclusive_cp;
 };
 
 /**
