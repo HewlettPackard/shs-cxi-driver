@@ -1216,17 +1216,23 @@ out_mac_tx_stop:
 	sl_mac_tx_stop(cass_dev->sl.mac);
 
 out_link_down:
-	sl_link_down(cass_dev->sl.link);
 	reinit_completion(&(cass_dev->sl.step_complete));
 	rtn = sl_link_down(cass_dev->sl.link);
-	if (rtn) {
-		if (rtn != -EALREADY)
-			cxidev_warn(&cass_dev->cdev, "sl_link_down failed [%d]\n", rtn);
-	} else {
+	switch (rtn) {
+	case -EALREADY:
+		break;
+	case -EINPROGRESS:
+		msleep(500);
+		break;
+	case 0:
 		timeleft = wait_for_completion_timeout(&(cass_dev->sl.step_complete),
 			msecs_to_jiffies(2*CASS_SL_LINK_DOWN_TIMEOUT_MS));
 		if (timeleft == 0)
 			cxidev_dbg(&cass_dev->cdev, "sl_link_down (link_up) timeout\n");
+		break;
+	default:
+		cxidev_warn(&cass_dev->cdev, "sl_link_down (link_up) failed [%d]\n", rtn);
+		break;
 	}
 
 out_no_link:
@@ -1260,14 +1266,21 @@ int cass_sl_link_down(struct cass_dev *cass_dev)
 	if (cass_dev->sl.link_state != SL_LINK_STATE_DOWN) {
 		reinit_completion(&(cass_dev->sl.step_complete));
 		rtn = sl_link_down(cass_dev->sl.link);
-		if (rtn) {
-			if (rtn != -EALREADY)
-				cxidev_warn(&cass_dev->cdev, "sl_link_down failed [%d]\n", rtn);
-		} else {
+		switch (rtn) {
+		case -EALREADY:
+			break;
+		case -EINPROGRESS:
+			msleep(500);
+			break;
+		case 0:
 			timeleft = wait_for_completion_timeout(&(cass_dev->sl.step_complete),
 				msecs_to_jiffies(2*CASS_SL_LINK_DOWN_TIMEOUT_MS));
 			if (timeleft == 0)
-				cxidev_warn(&cass_dev->cdev, "sl_link_down (link_down) timeout\n");
+				cxidev_dbg(&cass_dev->cdev, "sl_link_down (link_down) timeout\n");
+			break;
+		default:
+			cxidev_warn(&cass_dev->cdev, "sl_link_down (link_down) failed [%d]\n", rtn);
+			break;
 		}
 	}
 
