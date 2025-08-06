@@ -33,7 +33,7 @@ cat << EOF
    		remove-ac-entry --tx-profile <profile-name> <ac-name>
    		add-resource --rsrc-grp <group-name> <res-type> <max-val> <reserved-val>
    		remove-resource --rsrc-grp <group-name> <res-type>
-		set-tc --tx-profile <profile> <dedicated|eth|low_latency|bulk_data|best_effort> <true|false>
+		set-tc --tx-profile <profile> <dedicated|low_latency|bulk_data|best_effort> <true|false>
 		set-vni --tx-profile <profile> <vni> <ignore> <exclusive_cp>
 		set-vni --rx-profile <profile> <vni> <ignore>
    		cleanup
@@ -714,8 +714,6 @@ add_ac_entry_tx_profile() {
         then
                 echo "ac-entry $ac_name entry cannot be created"
                 return 1
-        else
-                echo "ac-entry $ac_name entry created successfully"
         fi
 
 	echo $data_val > $CONFIG_MOUNT/cxi/$device/tx-profile/$tx_prof_name/ac-entry/$ac_name/data

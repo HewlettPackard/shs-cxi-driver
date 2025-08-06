@@ -36,6 +36,8 @@ char dev_name[10];
 static int nbuffers = 800;
 static size_t default_len = DEF_LEN;
 static int debug;
+static int test_uid;
+static int test_gid;
 
 struct test_data {
 	void *addr;
@@ -46,13 +48,15 @@ struct test_data {
 
 static void help(void)
 {
-	printf("test_ucxi_atu [-dfh -l length -n num -rR -s rgroup id -d device -v vni]\n");
+	printf("test_ucxi_atu [-dfh -u uid -g gid -l length -n num -rR -s rgroup id -d device -v vni]\n");
 	printf("\tD - turn on debug (default is off)\n");
 	printf("\tf - fault pages (default is pin)\n");
 	printf("\tl - length of buffers (default %ld)\n", default_len);
 	printf("\ts - resource group or service id\n");
 	printf("\td - device - cxi0-3\n");
 	printf("\tv - vni to use\n");
+	printf("\tu - uid to use\n");
+	printf("\tg - gid to use\n");
 	printf("\tn - number of buffers (default %d)\n", nbuffers);
 	printf("\tr - random length buffers from %ld to %ld (default off)\n",
 	       MIN_LEN, MAX_LEN);
@@ -109,7 +113,7 @@ int main(int argc, char **argv)
 
 	strcpy(dev_name, "cxi0");
 
-	while ((opt = getopt(argc, argv, "Dhv:s:d:l:n:r")) != -1) {
+	while ((opt = getopt(argc, argv, "Dhv:s:u:g:d:l:n:r")) != -1) {
 		switch (opt) {
 		case 'D':
 			debug++;
@@ -126,6 +130,24 @@ int main(int argc, char **argv)
 		case 's':
 			svc_id = atoi(optarg);
 			printf("rgroup/service id %d\n", svc_id);
+			break;
+		case 'u':
+			test_uid = atoi(optarg);
+			printf("User ID %d\n", test_uid);
+			rc = seteuid(test_uid);
+			if (rc) {
+				fprintf(stderr, "cannot seteuid rc:%d\n", rc);
+				return 1;
+			}
+			break;
+		case 'g':
+			test_gid = atoi(optarg);
+			printf("Group ID %d\n", test_gid);
+			rc = setegid(test_gid);
+			if (rc) {
+				fprintf(stderr, "cannot setegid rc:%d\n", rc);
+				return 1;
+			}
 			break;
 		case 'v':
 			vni_in = atoi(optarg);
