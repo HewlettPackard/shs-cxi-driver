@@ -2152,7 +2152,7 @@ static int test_share_lcid(struct tdev *tdev)
 	rma_mem.md = &rma_md;
 	snd_mem.md = &snd_md;
 
-	rc = build_service(tdev->dev, &desc, false);
+	rc = build_service(tdev->dev, &desc, true);
 	if (rc)
 		return rc;
 

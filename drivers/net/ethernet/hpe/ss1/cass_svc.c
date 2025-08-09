@@ -567,27 +567,47 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 					    true);
 }
 
+/* Setup up to 4 RX/TX Profiles if restricted_vnis = 1
+ * Otherwise set up a single RX/TX profile for a requested VNI range
+ */
 static int alloc_rxtx_profiles(struct cxi_dev *dev,
-			       struct cxi_svc_priv *svc_priv)
+			       struct cxi_svc_priv *svc_priv,
+			       const struct cxi_rxtx_vni_attr *vni_range_attr)
 {
 	int i;
 	int rc;
+	int num_rxtx_profiles;
+	const struct cxi_rxtx_vni_attr *vni_attr;
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
-	svc_priv->num_vld_rx_profiles = svc_desc->num_vld_vnis;
-	svc_priv->num_vld_tx_profiles = svc_desc->num_vld_vnis;
+	num_rxtx_profiles = svc_desc->num_vld_vnis;
+	if (!svc_desc->restricted_vnis) {
+		if (!vni_range_attr) {
+			cxidev_err(dev, "vni_range_attr NULL for vni_range\n");
+			return -EINVAL;
+		}
+		num_rxtx_profiles = 1;
+	}
 
-	for (i = 0; i < svc_desc->num_vld_vnis; i++) {
-		struct cxi_rxtx_vni_attr vni_attr = {
+	svc_priv->num_vld_rx_profiles = num_rxtx_profiles;
+	svc_priv->num_vld_tx_profiles = num_rxtx_profiles;
+
+	for (i = 0; i < num_rxtx_profiles; i++) {
+		struct cxi_rxtx_vni_attr restricted_vni_attr = {
 			.ignore = 0,
 			.match = svc_desc->vnis[i],
 			.name = "",
 		};
+
+		vni_attr = &restricted_vni_attr;
+		if (!svc_desc->restricted_vnis)
+			vni_attr = vni_range_attr;
+
 		struct cxi_tx_attr tx_attr = {
-			.vni_attr = vni_attr
+			.vni_attr = *vni_attr
 		};
 		struct cxi_rx_attr rx_attr = {
-			.vni_attr = vni_attr
+			.vni_attr = *vni_attr
 		};
 
 		svc_priv->tx_profile[i] = cxi_dev_alloc_tx_profile(dev,
@@ -719,19 +739,33 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	if (rc)
 		goto remove_idr;
 
-	rc = alloc_rxtx_profiles(dev, svc_priv);
-	if (rc)
-		goto remove_rgrp_ac_entries;
+	/* If restricted_vnis is set setup profiles now. Otherwise they will
+	 * set up later when a vni range is requested
+	 */
+	if (svc_desc->restricted_vnis) {
+		rc = alloc_rxtx_profiles(dev, svc_priv, NULL);
+		if (rc)
+			goto remove_rgrp_ac_entries;
+	}
 
 	mutex_lock(&hw->svc_lock);
 	rc = reserve_rsrcs(hw, svc_priv, fail_info);
 	if (rc)
 		goto unlock;
 
-	/* By default a service is enabled for compatibility. */
-	rc = svc_enable(dev, svc_priv, true);
-	if (rc)
-		goto free_resources;
+	/* SVC is enabled by default for backwards compatibility.
+	 * However, setting restricted_vnis = 0 now indicates that
+	 * VNI range will be setup after the service is enabled.
+	 * Do not enable the svc or the rgroup until then.
+	 */
+	if (svc_desc->restricted_vnis) {
+		svc_priv->svc_desc.enable = 1;
+		rc = svc_enable(dev, svc_priv, true);
+		if (rc)
+			goto free_resources;
+	} else {
+		svc_priv->svc_desc.enable = 0;
+	}
 
 	list_add_tail(&svc_priv->list, &hw->svc_list);
 	hw->svc_count++;
@@ -744,7 +778,8 @@ free_resources:
 	free_rsrcs(svc_priv);
 unlock:
 	mutex_unlock(&hw->svc_lock);
-	release_rxtx_profiles(dev, svc_priv);
+	if (svc_desc->restricted_vnis)
+		release_rxtx_profiles(dev, svc_priv);
 remove_rgrp_ac_entries:
 	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
 remove_idr:
@@ -1225,6 +1260,152 @@ int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
 	return rc;
 }
 EXPORT_SYMBOL(cxi_svc_get_exclusive_cp);
+
+/**
+ * cxi_svc_set_vni_range() - Add TX/RX profiles for a contiguous range of VNIs to a service
+ *
+ * The provided range must be exactly representable as a mask/match pair.
+ * Requirements:
+ *   - The number of values in the range must be a power of two (1, 2, 4, 8, 16, ...).
+ *   - The first value in the range (vni_min) must be a multiple of the range size.
+ *   - The svc must not have the restricted_vnis bit set.
+ *
+ * For example:
+ *   64–127: 64 values, starting value (64) is a multiple of the
+ *           range size (64), so the range is valid.
+ *   32–95 : 64 values, starting value (32) is not a multiple of the
+ *           range size (64), so the range is invalid.
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to be updated.
+ * @vni_min: Minimum VNI value (inclusive)
+ * @vni_max: Maximum VNI value (inclusive)
+ *
+ * Return: 0 on success, or negative errno value on failure.
+ */
+int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
+			  unsigned int vni_min, unsigned int vni_max)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	struct cxi_rxtx_vni_attr vni_attr = {
+		.name = "",
+	};
+	unsigned int range;
+	int rc = 0;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	/* VNI range is incompatible with distinct VNIs */
+	if (svc_priv->svc_desc.restricted_vnis) {
+		cxidev_err(dev, "Cannot specify distinct VNIs and a VNI range");
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	if (!is_vni_valid(vni_min)) {
+		cxidev_err(dev, "vni_min %u invalid", vni_min);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	if (!is_vni_valid(vni_max)) {
+		cxidev_err(dev, "vni_max %u invalid", vni_max);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	if (vni_max < vni_min) {
+		cxidev_err(dev, "vni_max %u is less than vni_min %u",
+			   vni_max, vni_min);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	range = vni_max - vni_min + 1;
+
+	if (!is_power_of_2(range)) {
+		cxidev_err(dev, "VNI range [%u, %u] is not a power-of-two size",
+			   vni_min, vni_max);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	/* Validate the range is aligned */
+	if (vni_min & (range - 1)) {
+		cxidev_err(dev, "VNI range [%u, %u] is not aligned. min (%u) must be a multiple of range size (%u)",
+			   vni_min, vni_max, vni_min, range);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	vni_attr.match = vni_min;
+	vni_attr.ignore = range - 1;
+
+	rc = alloc_rxtx_profiles(dev, svc_priv, &vni_attr);
+
+unlock_return:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_set_vni_range);
+
+/**
+ * cxi_svc_get_vni_range() - Get the VNI range associated with a service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to query.
+ * @vni_min: Pointer to store minimum VNI value (inclusive)
+ * @vni_max: Pointer to store maximum VNI value (inclusive)
+ *
+ * Return: 0 on success, or negative errno value.
+ */
+int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
+			  unsigned int *vni_min, unsigned int *vni_max)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	struct cxi_tx_attr tx_attr;
+	int rc = 0;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		cxidev_err(dev, "svc_id %u not found", svc_id);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	if (svc_priv->svc_desc.restricted_vnis) {
+		cxidev_err(dev, "svc_id %u does not have a vni range", svc_id);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	if (svc_priv->num_vld_tx_profiles == 0 ||
+	    svc_priv->num_vld_rx_profiles == 0) {
+		cxidev_err(dev, "svc_id %u has no valid TX/RX profiles", svc_id);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	rc = cxi_tx_profile_get_info(dev, svc_priv->tx_profile[0], &tx_attr,
+				     NULL);
+	if (rc) {
+		cxidev_err(dev, "Failed to get TX profile info for svc_id %u",
+			   svc_id);
+		goto unlock_return;
+	}
+
+	*vni_min = tx_attr.vni_attr.match;
+	*vni_max = tx_attr.vni_attr.match + tx_attr.vni_attr.ignore;
+
+unlock_return:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_get_vni_range);
 
 void cass_svc_fini(struct cass_dev *hw)
 {

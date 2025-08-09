@@ -114,6 +114,8 @@ enum cxi_command_opcode {
 		CXI_OP_SVC_SET_EXCLUSIVE_CP,
 		CXI_OP_SVC_GET_EXCLUSIVE_CP,
 		CXI_OP_SVC_ENABLE,
+		CXI_OP_SVC_SET_VNI_RANGE,
+		CXI_OP_SVC_GET_VNI_RANGE,
 
 		CXI_OP_MAX,
 };
@@ -1042,6 +1044,19 @@ struct cxi_svc_get_exclusive_cp_cmd {
 
 struct cxi_svc_get_value_resp {
 	unsigned int value;
+};
+
+struct cxi_svc_vni_range_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int svc_id;
+	unsigned int vni_min;
+	unsigned int vni_max;
+};
+
+struct cxi_svc_get_vni_range_resp {
+	unsigned int vni_min;
+	unsigned int vni_max;
 };
 
 struct cxi_svc_update_resp {

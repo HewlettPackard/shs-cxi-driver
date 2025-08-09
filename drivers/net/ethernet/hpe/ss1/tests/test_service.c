@@ -21,6 +21,7 @@ static int test_service_tle_in_use(struct cxi_dev *dev)
 		.is_system_svc = 1,
 		.num_vld_vnis = 1,
 		.resource_limits = 1,
+		.restricted_vnis = 1,
 		.vnis[0] = VNI,
 		.limits.type[CXI_RSRC_TYPE_PTE].max = 100,
 		.limits.type[CXI_RSRC_TYPE_PTE].res = 100,
@@ -190,6 +191,7 @@ static int test_service_modify(struct cxi_dev *dev)
 		.enable = 1,
 		.is_system_svc = 1,
 		.num_vld_vnis = 1,
+		.restricted_vnis = 1,
 		.vnis[0] = VNI,
 		.limits.type[CXI_RSRC_TYPE_PTE].max = 100,
 		.limits.type[CXI_RSRC_TYPE_PTE].res = 100,
@@ -299,6 +301,7 @@ static int test_disabled_service(struct cxi_dev *dev)
 		.enable = 0,
 		.is_system_svc = 1,
 		.num_vld_vnis = 1,
+		.restricted_vnis = 1,
 		.vnis[0] = VNI,
 		.limits.type[CXI_RSRC_TYPE_PTE].max = 100,
 		.limits.type[CXI_RSRC_TYPE_PTE].res = 100,
@@ -473,6 +476,9 @@ static int test_restricted_members_service(struct cxi_dev *dev)
 		.enable = 0,
 		.is_system_svc = 1,
 		.restricted_members = 0,
+		.num_vld_vnis = 1,
+		.restricted_vnis = 1,
+		.vnis[0] = VNI,
 		.members[0].svc_member.uid = 1,
 		.members[0].type = CXI_SVC_MEMBER_UID,
 		.members[1].svc_member.gid = 2,
@@ -519,6 +525,113 @@ err:
 	return rc;
 }
 
+static int test_service_vni_range(struct cxi_dev *dev)
+{
+	int rc;
+	struct cxi_lni *lni;
+	struct cxi_svc_desc desc = {
+		.enable = 1,
+		.is_system_svc = 1,
+		.num_vld_vnis = 0,
+		.restricted_vnis = 0,
+		.resource_limits = 1,
+		.limits.type[CXI_RSRC_TYPE_PTE].max = 100,
+		.limits.type[CXI_RSRC_TYPE_PTE].res = 100,
+		.limits.type[CXI_RSRC_TYPE_TXQ].max = 100,
+		.limits.type[CXI_RSRC_TYPE_TXQ].res = 100,
+		.limits.type[CXI_RSRC_TYPE_TGQ].max = 100,
+		.limits.type[CXI_RSRC_TYPE_TGQ].res = 100,
+		.limits.type[CXI_RSRC_TYPE_EQ].max = 100,
+		.limits.type[CXI_RSRC_TYPE_EQ].res = 100,
+		.limits.type[CXI_RSRC_TYPE_CT].max = 100,
+		.limits.type[CXI_RSRC_TYPE_CT].res = 100,
+		.limits.type[CXI_RSRC_TYPE_LE].max = 100,
+		.limits.type[CXI_RSRC_TYPE_LE].res = 100,
+		.limits.type[CXI_RSRC_TYPE_TLE].max = 100,
+		.limits.type[CXI_RSRC_TYPE_TLE].res = 100,
+		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].res = 4,
+	};
+	struct cxi_svc_fail_info info;
+	unsigned int vni_min, vni_max;
+	unsigned int test_min = 64;
+	unsigned int test_max = 127; /* Good range (64 values, aligned) */
+	unsigned int bad_min = 32;
+	unsigned int bad_max = 95; /* Bad range (64 values, not aligned) */
+
+	/* Allocate a Service with restricted_vnis = 0
+	 * it should be disabled after creation.
+	 */
+	rc = cxi_svc_alloc(dev, &desc, &info, "vni-range-svc");
+	if (rc < 0) {
+		test_err("cxi_svc_alloc failed: %d\n", rc);
+		goto err;
+	}
+	desc.svc_id = rc;
+
+	/* Allocating an LNI should fail at this point */
+	lni = cxi_lni_alloc(dev, desc.svc_id);
+	if (PTR_ERR(lni) != -EKEYREVOKED) {
+		rc = -EINVAL;
+		test_err("cxi_lni_alloc did not return -EKEYREVOKED: %ld\n",
+			 PTR_ERR(lni));
+		cxi_lni_free(lni);
+		goto err_free_svc;
+	}
+
+	/* Add a "bad" VNI Range */
+	rc = cxi_svc_set_vni_range(dev, desc.svc_id, bad_min, bad_max);
+	if (rc == 0) {
+		test_err("cxi_svc_set_vni_range accepted invalid range [%u, %u]\n",
+			 bad_min, bad_max);
+		rc = -EINVAL;
+		goto err_free_svc;
+	}
+
+	/* Add a good VNI range */
+	rc = cxi_svc_set_vni_range(dev, desc.svc_id, test_min, test_max);
+	if (rc) {
+		test_err("cxi_svc_set_vni_range failed for valid range [%u, %u]: %d\n",
+			 test_min, test_max, rc);
+		goto err_free_svc;
+	}
+
+	/* Get the VNI range of the svc to verify it */
+	rc = cxi_svc_get_vni_range(dev, desc.svc_id, &vni_min, &vni_max);
+	if (rc) {
+		test_err("cxi_svc_get_vni_range failed: %d\n", rc);
+		goto err_free_svc;
+	}
+	if (vni_min != test_min || vni_max != test_max) {
+		test_err("cxi_svc_get_vni_range mismatch: got [%u, %u], expected [%u, %u]\n",
+			 vni_min, vni_max, test_min, test_max);
+		rc = -EINVAL;
+		goto err_free_svc;
+	}
+
+	/* Enable the Service */
+	rc = cxi_svc_enable(dev, desc.svc_id, true);
+	if (rc) {
+		test_err("cxi_svc_enable failed: %d\n", rc);
+		goto err_free_svc;
+	}
+
+	/* Allocating an LNI should work now */
+	lni = cxi_lni_alloc(dev, desc.svc_id);
+	if (IS_ERR(lni)) {
+		rc = PTR_ERR(lni);
+		test_err("cxi_lni_alloc failed:%d\n", rc);
+		goto err_free_svc;
+	}
+
+	cxi_lni_free(lni);
+
+err_free_svc:
+	cxi_svc_destroy(dev, desc.svc_id);
+err:
+	return rc;
+}
+
 static int add_device(struct cxi_dev *dev)
 {
 	int rc;
@@ -557,6 +670,11 @@ static int add_device(struct cxi_dev *dev)
 	if (rc) {
 		test_pass = false;
 		test_err("test_restricted_members_service failed: %d\n", rc);
+	}
+	rc = test_service_vni_range(dev);
+	if (rc) {
+		test_pass = false;
+		test_err("test_service_vni failed: %d\n", rc);
 	}
 
 	return rc;

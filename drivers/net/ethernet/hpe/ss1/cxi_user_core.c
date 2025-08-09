@@ -517,6 +517,35 @@ static int cxi_user_svc_get_exclusive_cp(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_svc_set_vni_range(struct user_client *client,
+				      const void *cmd_in,
+				      void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_vni_range_cmd *cmd = cmd_in;
+
+	return cxi_svc_set_vni_range(client->ucxi->dev, cmd->svc_id,
+				     cmd->vni_min, cmd->vni_max);
+}
+
+static int cxi_user_svc_get_vni_range(struct user_client *client,
+				      const void *cmd_in,
+				      void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_vni_range_cmd *cmd = cmd_in;
+	struct cxi_svc_get_vni_range_resp resp = {};
+	int rc;
+
+	rc = cxi_svc_get_vni_range(client->ucxi->dev, cmd->svc_id,
+				   &resp.vni_min, &resp.vni_max);
+	if (rc)
+		return rc;
+
+	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int cxi_user_cp_alloc(struct user_client *client,
 			     const void *cmd_in,
 			     void *resp_out, size_t *resp_out_len)
@@ -2415,6 +2444,17 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "SVC_ENABLE",
 		.handler    = cxi_user_svc_enable,
 		.admin_only = true,
+	},
+	[CXI_OP_SVC_SET_VNI_RANGE] = {
+		.req_size   = sizeof(struct cxi_svc_vni_range_cmd),
+		.name       = "SVC_SET_VNI_RANGE",
+		.handler    = cxi_user_svc_set_vni_range,
+		.admin_only = true,
+	},
+	[CXI_OP_SVC_GET_VNI_RANGE] = {
+		.req_size   = sizeof(struct cxi_svc_vni_range_cmd),
+		.name       = "SVC_GET_VNI_RANGE",
+		.handler    = cxi_user_svc_get_vni_range,
 	},
 };
 
