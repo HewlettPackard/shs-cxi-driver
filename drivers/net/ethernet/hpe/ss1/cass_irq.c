@@ -100,22 +100,24 @@ do_register:
  * cass_comp_irq_detach() - Detach from a completion interrupt
  *
  * @hw: Cassini device
- * @idx: An interrupt index returned from cass_comp_irq_attach()
+ * @irq: An interrupt returned from cass_comp_irq_attach()
  * @nb: The notifier block to detach
  */
 void cass_comp_irq_detach(struct cass_dev *hw, struct cass_irq *irq,
 			  struct notifier_block *nb)
 {
+	atomic_notifier_chain_unregister(&irq->nh, nb);
+
 	mutex_lock(&irq->lock);
 
 	if (atomic_dec_return(&irq->refcount) == 0) {
 		irq_set_affinity_hint(irq->vec, NULL);
 		free_irq(irq->vec, &irq->nh);
+	} else {
+		synchronize_irq(irq->vec);
 	}
 
 	mutex_unlock(&irq->lock);
-
-	atomic_notifier_chain_unregister(&irq->nh, nb);
 }
 
 /*
