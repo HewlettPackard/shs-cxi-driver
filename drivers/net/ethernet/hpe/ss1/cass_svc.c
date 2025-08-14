@@ -576,10 +576,6 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 			goto release_profiles;
 		}
 
-		rc = cxi_tx_profile_enable(dev, svc_priv->tx_profile[i]);
-		if (rc)
-			goto release_profiles;
-
 		svc_priv->rx_profile[i] = cxi_dev_alloc_rx_profile(dev,
 								   &rx_attr);
 		if (IS_ERR(svc_priv->rx_profile[i])) {
@@ -587,10 +583,6 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 			svc_priv->rx_profile[i] = NULL;
 			goto release_profiles;
 		}
-
-		rc = cxi_rx_profile_enable(dev, svc_priv->rx_profile[i]);
-		if (rc)
-			goto release_profiles;
 	}
 
 	rc = alloc_ac_entries(dev, svc_priv);
@@ -603,6 +595,47 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 
 release_profiles:
 	release_rxtx_profiles(dev, svc_priv);
+	return rc;
+}
+
+static int svc_enable(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
+		      bool enable)
+	__must_hold(&hw->svc_lock)
+{
+	int i;
+	int rc = 0;
+
+	if (enable) {
+		cxi_rgroup_enable(svc_priv->rgroup);
+		svc_priv->svc_desc.enable = 1;
+
+		for (i = 0; i < svc_priv->num_vld_tx_profiles; i++) {
+			rc = cxi_tx_profile_enable(dev,
+						   svc_priv->tx_profile[i]);
+			if (rc)
+				goto disable;
+		}
+
+		for (i = 0; i < svc_priv->num_vld_rx_profiles; i++) {
+			rc = cxi_rx_profile_enable(dev,
+						   svc_priv->rx_profile[i]);
+			if (rc)
+				goto disable;
+		}
+
+		return 0;
+	}
+
+disable:
+	cxi_rgroup_disable(svc_priv->rgroup);
+	svc_priv->svc_desc.enable = 0;
+
+	for (i = 0; i < svc_priv->num_vld_rx_profiles; i++)
+		cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
+
+	for (i = 0; i < svc_priv->num_vld_tx_profiles; i++)
+		cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
+
 	return rc;
 }
 
@@ -670,8 +703,9 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		goto unlock;
 
 	/* By default a service is enabled for compatibility. */
-	svc_priv->svc_desc.enable = 1;
-	cxi_rgroup_enable(rgroup);
+	rc = svc_enable(dev, svc_priv, true);
+	if (rc)
+		goto free_resources;
 
 	list_add_tail(&svc_priv->list, &hw->svc_list);
 	hw->svc_count++;
@@ -680,6 +714,8 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 
 	return cxi_rgroup_id(rgroup);
 
+free_resources:
+	free_rsrcs(svc_priv);
 unlock:
 	mutex_unlock(&hw->svc_lock);
 	release_rxtx_profiles(dev, svc_priv);
@@ -908,6 +944,43 @@ int cxi_alloc_resource(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 }
 
 /**
+ * cxi_svc_enable() - Enable or Disable a service.
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of the service to be enabled.
+ * @enable: Boolean value indicating whether to enable or disable the service.
+ *
+ * Return: 0 on success or negative errno value.
+ */
+int cxi_svc_enable(struct cxi_dev *dev, unsigned int svc_id, bool enable)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	int rc = 0;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		rc = -EINVAL;
+		cxidev_err(dev, "Invalid service ID: %u\n", svc_id);
+		goto unlock;
+	}
+
+	/* Service must be unused for it to be enabled/disabled. */
+	if (refcount_read(&svc_priv->rgroup->state.refcount) > 1) {
+		rc = -EBUSY;
+		goto unlock;
+	}
+
+	rc = svc_enable(dev, svc_priv, enable);
+unlock:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_enable);
+
+/**
  * cxi_svc_update() - Modify an existing service.
  *
  * @dev: Cassini Device
@@ -950,11 +1023,9 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 		goto error;
 	}
 
-	if (svc_desc->enable && !cxi_rgroup_is_enabled(svc_priv->rgroup)) {
-		cxi_rgroup_enable(svc_priv->rgroup);
-	} else if (!svc_desc->enable) {
-		cxi_rgroup_disable(svc_priv->rgroup);
-	}
+	rc = svc_enable(dev, svc_priv, svc_desc->enable);
+	if (rc)
+		goto error;
 
 	/* Update TCs, VNIs, Members */
 	svc_priv->svc_desc.restricted_members = svc_desc->restricted_members;
@@ -1083,6 +1154,7 @@ int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
 		rc = -EINVAL;
 		goto unlock;
 	}
+
 	rc = cxi_tx_profile_set_exclusive_cp(svc_priv->tx_profile[0],
 					     exclusive_cp);
 	if (rc)

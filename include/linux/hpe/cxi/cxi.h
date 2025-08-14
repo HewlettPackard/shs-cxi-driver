@@ -423,6 +423,7 @@ int cxi_svc_rsrc_get(struct cxi_dev *dev, unsigned int svc_id,
 int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
 			     bool exclusive_cp);
 int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id);
+int cxi_svc_enable(struct cxi_dev *dev, unsigned int svc_id, bool enable);
 int cxi_get_tc_req_pcp(struct cxi_dev *dev, unsigned int tc);
 int cxi_dev_info_get(struct cxi_dev *dev,
 		     struct cxi_dev_info_use *devinfo);

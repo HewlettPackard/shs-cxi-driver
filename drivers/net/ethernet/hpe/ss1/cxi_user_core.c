@@ -451,6 +451,15 @@ static int cxi_user_svc_update(struct user_client *client,
 	return rc;
 }
 
+static int cxi_user_svc_enable(struct user_client *client,
+			       const void *cmd_in,
+			       void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_enable_cmd *cmd = cmd_in;
+
+	return cxi_svc_enable(client->ucxi->dev, cmd->svc_id, cmd->enable);
+}
+
 static int cxi_user_svc_set_lpr(struct user_client *client,
 				const void *cmd_in,
 				void *resp_out, size_t *resp_out_len)
@@ -2401,7 +2410,12 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_svc_get_exclusive_cp_cmd),
 		.name       = "SVC_GET_EXCLUSIVE_CP",
 		.handler    = cxi_user_svc_get_exclusive_cp, },
-
+	[CXI_OP_SVC_ENABLE] = {
+		.req_size   = sizeof(struct cxi_svc_enable_cmd),
+		.name       = "SVC_ENABLE",
+		.handler    = cxi_user_svc_enable,
+		.admin_only = true,
+	},
 };
 
 /* Read and process a command from userspace or from a Virtual

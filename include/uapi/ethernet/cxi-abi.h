@@ -113,6 +113,7 @@ enum cxi_command_opcode {
 		CXI_OP_CP_MODIFY,
 		CXI_OP_SVC_SET_EXCLUSIVE_CP,
 		CXI_OP_SVC_GET_EXCLUSIVE_CP,
+		CXI_OP_SVC_ENABLE,
 
 		CXI_OP_MAX,
 };
@@ -1011,6 +1012,13 @@ struct cxi_svc_update_cmd {
 	void __user *resp;
 
 	struct cxi_svc_desc svc_desc;
+};
+
+struct cxi_svc_enable_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int svc_id;
+	bool enable;
 };
 
 struct cxi_svc_lpr_cmd {
