@@ -964,6 +964,7 @@ void free_rx_queue(struct rx_queue *rx)
 	kvfree(rx->eq_buf);
 	rx->eq_md = NULL;
 	rx->eq_buf = NULL;
+
 	cxi_cq_free(rx->cq_tgt_prio);
 	rx->cq_tgt_prio = NULL;
 	free_rx_buffers(rx);
@@ -1018,101 +1019,74 @@ static unsigned int get_reserved_les(void)
 	return reserved_les;
 }
 
-static int alloc_rgroup_rsrcs(struct cxi_eth *dev)
-{
-	int i;
-	int rc;
-	unsigned int ac_entry_id;
-	struct cxi_rgroup *rgroup;
-	struct cxi_dev *cdev = dev->cxi_dev;
-	struct cxi_resource_limits limits[CXI_RESOURCE_MAX];
-	const union cxi_ac_data ac_data = {
-		.uid = __kuid_val(current_euid()),
-	};
-
-	limits[CXI_RESOURCE_PTLTE].max = 1 + max_rss_queues;
-	limits[CXI_RESOURCE_PTLTE].reserved = 8;
-	limits[CXI_RESOURCE_TXQ].max = max_tx_queues * 2;
-	limits[CXI_RESOURCE_TXQ].reserved = 1;
-	limits[CXI_RESOURCE_TGQ].max = 1 + 1 + max_rss_queues;
-	limits[CXI_RESOURCE_TGQ].reserved = 1;
-	limits[CXI_RESOURCE_EQ].max = 1 + max_rss_queues + (max_tx_queues * 2);
-	limits[CXI_RESOURCE_EQ].reserved = 1;
-	limits[CXI_RESOURCE_CT].max = 0;
-	limits[CXI_RESOURCE_CT].reserved = 0;
-	limits[CXI_RESOURCE_PE0_LE].max = MAX_LE_LIMIT;
-	limits[CXI_RESOURCE_PE0_LE].reserved = get_reserved_les();
-	limits[CXI_RESOURCE_PE1_LE].max = MAX_LE_LIMIT;
-	limits[CXI_RESOURCE_PE1_LE].reserved = get_reserved_les();
-	limits[CXI_RESOURCE_PE2_LE].max = MAX_LE_LIMIT;
-	limits[CXI_RESOURCE_PE2_LE].reserved = get_reserved_les();
-	limits[CXI_RESOURCE_PE3_LE].max = MAX_LE_LIMIT;
-	limits[CXI_RESOURCE_PE3_LE].reserved = get_reserved_les();
-	limits[CXI_RESOURCE_TLE].max = 0;
-	limits[CXI_RESOURCE_TLE].reserved = 0;
-	limits[CXI_RESOURCE_AC].max = 1;
-	limits[CXI_RESOURCE_AC].reserved = 1;
-
-	rgroup = cxi_dev_alloc_rgroup(cdev, NULL);
-	if (IS_ERR(rgroup)) {
-		rc = PTR_ERR(rgroup);
-		netdev_info(dev->ndev, "Failed to allocate rgroup:%d\n", rc);
-		return rc;
-	}
-
-	cxi_rgroup_set_system_service(rgroup, true);
-	cxi_rgroup_set_name(rgroup, "ethernet-rgroup");
-
-	for (i = CXI_RESOURCE_PTLTE; i < CXI_RESOURCE_MAX; i++) {
-		if (!limits[i].reserved && !limits[i].max)
-			continue;
-
-		rc = cxi_rgroup_add_resource(rgroup, i, &limits[i]);
-		if (rc) {
-			netdev_info(dev->ndev, "Add %s resource failed:%d\n",
-				    cxi_resource_type_to_str(i), rc);
-
-			goto err;
-		}
-	}
-
-	rc = cxi_rgroup_add_ac_entry(rgroup, CXI_AC_UID, &ac_data,
-				     &ac_entry_id);
-	if (rc)
-		goto err;
-
-	cxi_rgroup_enable(rgroup);
-
-	dev->rgroup = rgroup;
-
-	return 0;
-
-err:
-	cxi_rgroup_dec_refcount(rgroup);
-
-	return rc;
-}
-
 /* Allocate the hardware resources and some receive buffers */
 int hw_setup(struct cxi_eth *dev)
 {
 	int rc;
 	int lac;
 	struct net_device *ndev = dev->ndev;
+	const struct cxi_rsrc_limits limits = {
+		.acs = {
+			.max = 1,
+			.res = 1,
+		},
+		.eqs = {
+			.max = 1 + max_rss_queues + (max_tx_queues * 2),
+			.res = 1,
+		},
+		.cts = {
+			.max = 0,
+			.res = 0,
+		},
+		.ptes = {
+			.max = 1 + max_rss_queues,
+			.res = 8,
+		},
+		.txqs = {
+			.max = max_tx_queues * 2,
+			.res = 1,
+		},
+		.tgqs = {
+			.max = 1 + 1 + max_rss_queues,
+			.res = 1,
+		},
+		.tles = {
+			.max = 0,
+			.res = 0,
+		},
+		/* Will actually have 4 * res value for les */
+		.les = {
+			.max = MAX_LE_LIMIT,
+			.res = get_reserved_les(),
+		},
+	};
+	struct cxi_svc_desc svc_desc = {
+		.resource_limits = true,
+		.limits = limits,
+		.is_system_svc = true,
+		.restricted_members = true,
+		.enable = true,
+		.members[0] = {
+			.type = CXI_SVC_MEMBER_UID,
+			.svc_member.uid = (current_euid()).val,
+		},
+	};
 	struct cxi_cq_alloc_opts cq_alloc_opts = {};
 	u8 shared_cp_pcp;
 
-	rc = alloc_rgroup_rsrcs(dev);
-	if (rc) {
-		netdev_info(ndev, "Can't allocate rgroup:%d\n", rc);
+	/* Allocate a Service */
+	rc = cxi_svc_alloc(dev->cxi_dev, &svc_desc, NULL);
+	if (rc < 0) {
+		netdev_info(ndev, "Can't reserve resources: %d\n", rc);
 		goto err;
 	}
+	dev->svc_id = rc;
 
-	dev->lni = cxi_lni_alloc(dev->cxi_dev, cxi_rgroup_id(dev->rgroup));
+	dev->lni = cxi_lni_alloc(dev->cxi_dev, dev->svc_id);
 	if (IS_ERR(dev->lni)) {
 		rc = PTR_ERR(dev->lni);
 		netdev_info(ndev, "Can't get an LNI: %d\n", rc);
-		goto err_free_rgroup;
+		goto err_free_svc;
 	}
 
 	lac = cxi_phys_lac_alloc(dev->lni);
@@ -1303,8 +1277,8 @@ err_free_lac:
 	cxi_phys_lac_free(dev->lni, dev->phys_lac);
 err_free_ni:
 	cxi_lni_free(dev->lni);
-err_free_rgroup:
-	cxi_rgroup_dec_refcount(dev->rgroup);
+err_free_svc:
+	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 err:
 	return rc;
 }
@@ -1357,7 +1331,7 @@ void hw_cleanup(struct cxi_eth *dev)
 	dev->phys_lac = 0;
 	cxi_lni_free(dev->lni);
 	dev->lni = NULL;
-	cxi_rgroup_dec_refcount(dev->rgroup);
+	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 }
 
 static struct sk_buff *eth_rx_copy(struct rx_queue *rx,
