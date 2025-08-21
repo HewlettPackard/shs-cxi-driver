@@ -449,20 +449,6 @@ static enum cxi_ac_type svc_mbr_to_ac_type(enum cxi_svc_member_type type,
 	}
 }
 
-static void remove_ac_entries(struct cxi_dev *dev,
-			      struct cxi_svc_priv *svc_priv)
-{
-	int i;
-	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
-
-	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
-
-	for (i = 0; i < svc_desc->num_vld_vnis; i++) {
-		cxi_tx_profile_remove_ac_entries(svc_priv->tx_profile[i]);
-		cxi_rx_profile_remove_ac_entries(svc_priv->rx_profile[i]);
-	}
-}
-
 static void set_tcs(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
 {
 	int i, j;
@@ -478,14 +464,60 @@ static void set_tcs(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
 	}
 }
 
-static int alloc_ac_entries(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
+static int alloc_rgroup_ac_entries(struct cxi_dev *dev,
+				   struct cxi_svc_priv *svc_priv)
+{
+	int i;
+	int rc;
+	enum cxi_ac_type type;
+	unsigned int ac_entry_id;
+	union cxi_ac_data ac_data = {};
+	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
+
+	for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
+		/* Type members.type have been validated */
+		type = svc_mbr_to_ac_type(svc_desc->members[i].type,
+					  svc_desc->restricted_members);
+
+		if (type == CXI_AC_UID)
+			ac_data.uid = svc_desc->members[i].svc_member.uid;
+		else if (type == CXI_AC_GID)
+			ac_data.gid = svc_desc->members[i].svc_member.gid;
+
+		rc = cxi_rgroup_add_ac_entry(svc_priv->rgroup, type, &ac_data,
+					     &ac_entry_id);
+		if (rc && rc != -EEXIST)
+			goto cleanup;
+	}
+
+	return 0;
+
+cleanup:
+	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
+
+	return rc;
+}
+
+static void remove_profile_ac_entries(struct cxi_dev *dev,
+				      struct cxi_svc_priv *svc_priv)
+{
+	int i;
+	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
+
+	for (i = 0; i < svc_desc->num_vld_vnis; i++) {
+		cxi_tx_profile_remove_ac_entries(svc_priv->tx_profile[i]);
+		cxi_rx_profile_remove_ac_entries(svc_priv->rx_profile[i]);
+	}
+}
+
+static int alloc_profile_ac_entries(struct cxi_dev *dev,
+				    struct cxi_svc_priv *svc_priv)
 {
 	int i;
 	int j;
 	int rc;
 	enum cxi_ac_type type;
 	unsigned int ac_entry_id;
-	union cxi_ac_data ac_data = {};
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
 	for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
@@ -510,22 +542,12 @@ static int alloc_ac_entries(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
 			if (rc && rc != -EEXIST)
 				goto cleanup;
 		}
-
-		if (type == CXI_AC_UID)
-			ac_data.uid = svc_desc->members[i].svc_member.uid;
-		else if (type == CXI_AC_GID)
-			ac_data.gid = svc_desc->members[i].svc_member.gid;
-
-		rc = cxi_rgroup_add_ac_entry(svc_priv->rgroup, type, &ac_data,
-					     &ac_entry_id);
-		if (rc && rc != -EEXIST)
-			goto cleanup;
 	}
 
 	return 0;
 
 cleanup:
-	remove_ac_entries(dev, svc_priv);
+	remove_profile_ac_entries(dev, svc_priv);
 
 	return rc;
 }
@@ -535,7 +557,7 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 {
 	int i;
 
-	remove_ac_entries(dev, svc_priv);
+	remove_profile_ac_entries(dev, svc_priv);
 
 	for (i = 0; i < svc_priv->num_vld_rx_profiles; i++)
 		cxi_rx_profile_dec_refcount(dev, svc_priv->rx_profile[i]);
@@ -585,7 +607,7 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 		}
 	}
 
-	rc = alloc_ac_entries(dev, svc_priv);
+	rc = alloc_profile_ac_entries(dev, svc_priv);
 	if (rc)
 		goto release_profiles;
 
@@ -693,9 +715,13 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 
 	cxi_rgroup_set_name(rgroup, name);
 
-	rc = alloc_rxtx_profiles(dev, svc_priv);
+	rc = alloc_rgroup_ac_entries(dev, svc_priv);
 	if (rc)
 		goto remove_idr;
+
+	rc = alloc_rxtx_profiles(dev, svc_priv);
+	if (rc)
+		goto remove_rgrp_ac_entries;
 
 	mutex_lock(&hw->svc_lock);
 	rc = reserve_rsrcs(hw, svc_priv, fail_info);
@@ -719,6 +745,8 @@ free_resources:
 unlock:
 	mutex_unlock(&hw->svc_lock);
 	release_rxtx_profiles(dev, svc_priv);
+remove_rgrp_ac_entries:
+	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
 remove_idr:
 	idr_remove(&hw->svc_ids, cxi_rgroup_id(rgroup));
 release_rgroup:
