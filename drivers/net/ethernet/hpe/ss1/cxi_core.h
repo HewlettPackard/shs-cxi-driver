@@ -182,8 +182,6 @@ struct cxi_svc_priv {
 	struct cxi_rgroup *rgroup;
 	struct cxi_rx_profile *rx_profile[CXI_SVC_MAX_VNIS];
 	struct cxi_tx_profile *tx_profile[CXI_SVC_MAX_VNIS];
-	uint8_t num_vld_rx_profiles;
-	uint8_t num_vld_tx_profiles;
 };
 
 /* Logical Network Interface */

@@ -455,7 +455,7 @@ static void set_tcs(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv)
 	struct cxi_tx_profile *tx_profile;
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
-	for (i = 0; i < svc_priv->num_vld_tx_profiles; i++) {
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 		tx_profile = svc_priv->tx_profile[i];
 
 		for (j = 0; j < CXI_TC_MAX; j++)
@@ -525,7 +525,7 @@ static int alloc_profile_ac_entries(struct cxi_dev *dev,
 		type = svc_mbr_to_ac_type(svc_desc->members[i].type,
 					  svc_desc->restricted_members);
 
-		for (j = 0; j < svc_priv->num_vld_rx_profiles; j++) {
+		for (j = 0; j < svc_priv->svc_desc.num_vld_vnis; j++) {
 			rc = cxi_tx_profile_add_ac_entry(
 					svc_priv->tx_profile[j], type,
 					svc_desc->members[i].svc_member.uid,
@@ -559,12 +559,11 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 
 	remove_profile_ac_entries(dev, svc_priv);
 
-	for (i = 0; i < svc_priv->num_vld_rx_profiles; i++)
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 		cxi_rx_profile_dec_refcount(dev, svc_priv->rx_profile[i]);
-
-	for (i = 0; i < svc_priv->num_vld_tx_profiles; i++)
 		cxi_tx_profile_dec_refcount(dev, svc_priv->tx_profile[i],
 					    true);
+	}
 }
 
 /* Setup up to 4 RX/TX Profiles if restricted_vnis = 1
@@ -576,23 +575,18 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 {
 	int i;
 	int rc;
-	int num_rxtx_profiles;
 	const struct cxi_rxtx_vni_attr *vni_attr;
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
-	num_rxtx_profiles = svc_desc->num_vld_vnis;
 	if (!svc_desc->restricted_vnis) {
 		if (!vni_range_attr) {
 			cxidev_err(dev, "vni_range_attr NULL for vni_range\n");
 			return -EINVAL;
 		}
-		num_rxtx_profiles = 1;
+		svc_priv->svc_desc.num_vld_vnis = 1;
 	}
 
-	svc_priv->num_vld_rx_profiles = num_rxtx_profiles;
-	svc_priv->num_vld_tx_profiles = num_rxtx_profiles;
-
-	for (i = 0; i < num_rxtx_profiles; i++) {
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 		struct cxi_rxtx_vni_attr restricted_vni_attr = {
 			.ignore = 0,
 			.match = svc_desc->vnis[i],
@@ -651,14 +645,14 @@ static int svc_enable(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 		cxi_rgroup_enable(svc_priv->rgroup);
 		svc_priv->svc_desc.enable = 1;
 
-		for (i = 0; i < svc_priv->num_vld_tx_profiles; i++) {
+		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 			rc = cxi_tx_profile_enable(dev,
 						   svc_priv->tx_profile[i]);
 			if (rc)
 				goto disable;
 		}
 
-		for (i = 0; i < svc_priv->num_vld_rx_profiles; i++) {
+		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 			rc = cxi_rx_profile_enable(dev,
 						   svc_priv->rx_profile[i]);
 			if (rc)
@@ -672,10 +666,10 @@ disable:
 	cxi_rgroup_disable(svc_priv->rgroup);
 	svc_priv->svc_desc.enable = 0;
 
-	for (i = 0; i < svc_priv->num_vld_rx_profiles; i++)
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++)
 		cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
 
-	for (i = 0; i < svc_priv->num_vld_tx_profiles; i++)
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++)
 		cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
 
 	return rc;
@@ -1382,8 +1376,7 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 		rc = -EINVAL;
 		goto unlock_return;
 	}
-	if (svc_priv->num_vld_tx_profiles == 0 ||
-	    svc_priv->num_vld_rx_profiles == 0) {
+	if (!svc_priv->svc_desc.num_vld_vnis) {
 		cxidev_err(dev, "svc_id %u has no valid TX/RX profiles", svc_id);
 		rc = -EINVAL;
 		goto unlock_return;
