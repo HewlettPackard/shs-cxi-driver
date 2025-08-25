@@ -359,9 +359,7 @@ cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
  *
  * Return:
  * * 0        - success
- * * -ENODATA - access control entry not found
  * * -EPERM   - no access control found for uid/gid
- * * -EINVAL  - invalid uid, gid
  * * -EBADR   - no valid desired types specified
  */
 int cxi_ac_entry_list_retrieve_by_user(struct cxi_ac_entry_list *list,

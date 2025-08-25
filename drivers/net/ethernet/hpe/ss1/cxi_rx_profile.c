@@ -381,7 +381,7 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 				break;
 			}
 
-			rx_profile = NULL;
+			rx_profile = ERR_PTR(rc);
 		}
 	}
 

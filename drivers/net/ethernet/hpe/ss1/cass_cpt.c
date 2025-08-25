@@ -287,6 +287,12 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 			pr_debug("tx_profile not found for vni:%d\n", vni_pcp);
 			return ERR_PTR(-ENOENT);
 		}
+		if (IS_ERR(tx_profile)) {
+			rc = PTR_ERR(tx_profile);
+			pr_debug("tx_profile error:%d for vni:%d\n", rc,
+				 vni_pcp);
+			return ERR_PTR(rc);
+		}
 
 		if (!cxi_tx_profile_valid_tc(tx_profile, tc)) {
 			pr_debug("Invalid tc:%d for tx_profile ID:%d\n", tc,

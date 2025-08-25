@@ -166,7 +166,7 @@ struct cxi_tx_profile *cxi_dev_find_tx_profile(struct cxi_dev *dev,
 				break;
 			}
 
-			tx_profile = NULL;
+			tx_profile = ERR_PTR(rc);
 		}
 	}
 

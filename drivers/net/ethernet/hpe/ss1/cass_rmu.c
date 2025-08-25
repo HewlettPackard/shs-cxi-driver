@@ -145,8 +145,15 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 		return ERR_PTR(-EINVAL);
 
 	rx_profile = cxi_dev_find_rx_profile(cdev, vni);
-	if (!rx_profile)
+	if (!rx_profile) {
+		pr_debug("rx_profile not found for vni:%d\n", vni);
 		return ERR_PTR(-ENOENT);
+	}
+	if (IS_ERR(rx_profile)) {
+		rc = PTR_ERR(rx_profile);
+		pr_debug("rx_profile error:%d for vni:%d\n", rc, vni);
+		return ERR_PTR(rc);
+	}
 
 	domain_pid = cxi_rx_profile_alloc_pid(lni_priv, rx_profile, pid, vni,
 					      1, false);
