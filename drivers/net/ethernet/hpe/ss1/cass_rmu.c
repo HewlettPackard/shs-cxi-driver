@@ -125,6 +125,41 @@ void cxi_domain_lni_cleanup(struct cxi_lni_priv *lni_priv)
 	}
 }
 
+static struct cxi_rx_profile *alloc_rx_profile(struct cxi_dev *dev,
+					       unsigned int vni)
+{
+	int rc;
+	unsigned int ac_entry_id;
+	struct cxi_rx_profile *rx_profile;
+	struct cxi_rx_attr rx_attr = {
+		.vni_attr = {
+			.match = vni,
+			.ignore = 0
+		}
+	};
+
+	rx_profile = cxi_dev_alloc_rx_profile(dev, &rx_attr);
+	if (IS_ERR(rx_profile))
+		return rx_profile;
+
+	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
+					 __kuid_val(current_euid()), 0,
+					 &ac_entry_id);
+	if (rc)
+		goto err;
+
+	rc = cxi_rx_profile_enable(dev, rx_profile);
+	if (rc)
+		goto err;
+
+	return rx_profile;
+
+err:
+	cxi_rx_profile_dec_refcount(dev, rx_profile);
+
+	return ERR_PTR(rc);
+}
+
 /* Allocate a new domain, with a unique per-device VNI+PID. The VNI is
  * reserved in the RMU table if it doesn't already exist.
  */
@@ -148,8 +183,11 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 		return ERR_PTR(-EINVAL);
 
 	rx_profile = cxi_dev_find_rx_profile(cdev, vni);
-	if (!rx_profile)
-		return ERR_PTR(-ENOENT);
+	if (!rx_profile) {
+		rx_profile = alloc_rx_profile(cdev, vni);
+		if (IS_ERR(rx_profile))
+			return ERR_PTR(PTR_ERR(rx_profile));
+	}
 
 	domain_pid = cxi_rx_profile_alloc_pid(lni_priv, rx_profile, pid, vni,
 					      1, false);
