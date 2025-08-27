@@ -671,9 +671,7 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 
 	/* By default a service is enabled for compatibility. */
 	svc_priv->svc_desc.enable = 1;
-	rc = cxi_rgroup_enable(rgroup);
-	if (rc)
-		goto free_resources;
+	cxi_rgroup_enable(rgroup);
 
 	list_add_tail(&svc_priv->list, &hw->svc_list);
 	hw->svc_count++;
@@ -682,8 +680,6 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 
 	return cxi_rgroup_id(rgroup);
 
-free_resources:
-	free_rsrcs(svc_priv);
 unlock:
 	mutex_unlock(&hw->svc_lock);
 	release_rxtx_profiles(dev, svc_priv);
@@ -955,9 +951,7 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	}
 
 	if (svc_desc->enable && !cxi_rgroup_is_enabled(svc_priv->rgroup)) {
-		rc = cxi_rgroup_enable(svc_priv->rgroup);
-		if (rc)
-			goto error;
+		cxi_rgroup_enable(svc_priv->rgroup);
 	} else if (!svc_desc->enable) {
 		cxi_rgroup_disable(svc_priv->rgroup);
 	}

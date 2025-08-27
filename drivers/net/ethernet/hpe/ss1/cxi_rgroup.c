@@ -570,20 +570,14 @@ bool cxi_rgroup_is_enabled(struct cxi_rgroup *rgroup)
  * cxi_rgroup_enable() - Mark a Resource group as enabled.
  *
  * @rgroup: resource group pointer
- *
- * Return:
- * * 0       - success
- * * -EBUSY  - Rgroup has been released, enabling prohibited
  */
-int cxi_rgroup_enable(struct cxi_rgroup *rgroup)
+void cxi_rgroup_enable(struct cxi_rgroup *rgroup)
 {
 	cxi_dev_lock_rgroup_list(rgroup->hw);
 
 	rgroup->state.enabled = true;
 
 	cxi_dev_unlock_rgroup_list(rgroup->hw);
-
-	return 0;
 }
 EXPORT_SYMBOL(cxi_rgroup_enable);
 

@@ -647,7 +647,6 @@ static ssize_t cxi_cfg_rgroup_state_enabled_store(struct config_item *item,
 						  size_t count)
 {
 	struct cxi_cfg_rgroup_state *rgroup_state;
-	int rc;
 	bool b_val;
 
 	if (kstrtobool(page, &b_val))
@@ -656,11 +655,7 @@ static ssize_t cxi_cfg_rgroup_state_enabled_store(struct config_item *item,
 	rgroup_state = to_cxi_cfg_rgroup_state(item);
 
 	if (b_val) {
-		rc = cxi_rgroup_enable(rgroup_state->rgroup);
-		if (rc < 0) {
-			pr_debug("rgroup enable failed rc = %d\n", rc);
-			return -EINVAL;
-		}
+		cxi_rgroup_enable(rgroup_state->rgroup);
 	} else {
 		cxi_rgroup_disable(rgroup_state->rgroup);
 	}
