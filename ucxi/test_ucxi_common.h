@@ -64,6 +64,7 @@ struct ucxi_ct {
 	struct c_ct_writeback wb;
 };
 
+int svc_get(struct cass_dev *dev, int svc, struct cxi_svc_desc *svc_desc);
 int svc_alloc(struct cass_dev *dev, struct cxi_svc_desc *svc_desc);
 void svc_destroy(struct cass_dev *dev, unsigned int svc_id);
 int set_svc_lpr(struct cass_dev *dev, unsigned int svc_id,

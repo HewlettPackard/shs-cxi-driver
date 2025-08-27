@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <getopt.h>
 #include <sys/errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -29,11 +30,13 @@ static void wait_cb(void *data)
 	printf("Got an event\n");
 }
 
-void dump_services(void)
+void dump_services(char *device)
 {
 	FILE *fp;
+	char filename[256];
 
-	fp = popen("cat /sys/kernel/debug/cxi/cxi0/services", "r");
+	snprintf(filename, sizeof(filename), "/sys/kernel/debug/cxi/%s/services", device);
+	fp = fopen(filename, "r");
 	if (fp) {
 		char *line = NULL;
 		size_t len = 0;
@@ -42,11 +45,12 @@ void dump_services(void)
 		while ((read = getline(&line, &len, fp)) != -1)
 		       printf("%s", line);
 
-		pclose(fp);
+		free(line);
+		fclose(fp);
 	}
 }
 
-int main(void)
+int test_main(char *device, int service)
 {
 	int lni;
 	int domain;
@@ -104,35 +108,44 @@ int main(void)
 
 	/* TODO: find device list. Maybe need to be an API function,
 	 * looking through /sys */
-	dev = open_device("cxi0");
+	dev = open_device(device);
 	if (dev == NULL) {
-		fprintf(stderr, "cannot open cxi0\n");
+		fprintf(stderr, "cannot open %s\n", device);
 		return 1;
 	}
 
-	/* Get a Service */
-	rc = svc_alloc(dev, &svc_desc);
-	if (rc <= 0) {
-		fprintf(stderr, "cannot get a SVC. rc: %d\n", rc);
-		return 1;
-	}
-	printf("SVC Allocated: %d\n", rc);
-	svc_desc.svc_id = rc;
-	dump_services();
+	if (service) {
+		rc = svc_get(dev, service, &svc_desc);
+		if (rc) {
+			fprintf(stderr, "could not get svc: %d\n", rc);
+			return 1;
+		}
+		dump_services(device);
+	} else {
+		/* Get a Service */
+		rc = svc_alloc(dev, &svc_desc);
+		if (rc <= 0) {
+			fprintf(stderr, "cannot get a SVC. rc: %d\n", rc);
+			return 1;
+		}
+		printf("SVC Allocated: %d\n", rc);
+		svc_desc.svc_id = rc;
+		dump_services(device);
 
-	rc = set_svc_lpr(dev, svc_desc.svc_id, LPR);
-	if (rc <= 0) {
-		fprintf(stderr, "cannot set lnis_per_rgid rc: %d\n", rc);
-		return 1;
-	}
-	printf("Set lnis_per_rgid success\n");
+		rc = set_svc_lpr(dev, svc_desc.svc_id, LPR);
+		if (rc <= 0) {
+			fprintf(stderr, "cannot set lnis_per_rgid rc: %d\n", rc);
+			return 1;
+		}
+		printf("Set lnis_per_rgid success\n");
 
-	rc = get_svc_lpr(dev, svc_desc.svc_id);
-	if (rc != LPR) {
-		fprintf(stderr, "cannot get lnis_per_rgid rc: %d\n", rc);
-		return 1;
+		rc = get_svc_lpr(dev, svc_desc.svc_id);
+		if (rc != LPR) {
+			fprintf(stderr, "cannot get lnis_per_rgid rc: %d\n", rc);
+			return 1;
+		}
+		printf("Get lnis_per_rgid success\n");
 	}
-	printf("Get lnis_per_rgid success\n");
 
 	lni = alloc_lni(dev, svc_desc.svc_id);
 	if (!lni) {
@@ -153,14 +166,6 @@ int main(void)
 		return 1;
 	}
 	printf("LNI allocated: %d\n", lni);
-
-	/* Get a counting event */
-	ct = alloc_ct(dev, lni);
-	if (!ct) {
-		fprintf(stderr, "cannot get counting event\n");
-		return 1;
-	}
-	printf("Counting event allocated: %d\n", ct->ctn);
 
 	/* Get a domain */
 	domain = alloc_domain(dev, lni, svc_desc.vnis[0], 40, 1024);
@@ -193,6 +198,14 @@ int main(void)
 		fprintf(stderr, "cannot get a CP\n");
 		return 1;
 	}
+
+	/* Get a counting event */
+	ct = alloc_ct(dev, lni);
+	if (!ct) {
+		fprintf(stderr, "cannot get counting event\n");
+		return 1;
+	}
+	printf("Counting event allocated: %d\n", ct->ctn);
 
 	transmit_cq = create_cq(dev, lni, true, cp->lcid);
 	if (transmit_cq == NULL) {
@@ -401,9 +414,50 @@ int main(void)
 	svc_destroy(dev, svc_desc.svc_id);
 
 	close_device(dev);
-	dump_services();
+	dump_services(device);
 
 	printf("good\n");
 
 	return 0;
+}
+
+void usage(void)
+{
+	fprintf(stderr, "Usage: test_ucxi [options]\n");
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "  -d, --device <dev>   Specify the device (default: cxi0)\n");
+	fprintf(stderr, "  -s, --service <svc>  Use an existing service (default: create new)\n");
+	fprintf(stderr, "  -h, --help           Show this help message\n");
+}
+
+int main(int argc, char **argv)
+{
+	int opt, option_index;
+	int service = 0;
+	char device[80] = "cxi0";
+
+	static const char shortopts[] = "d:s:h";
+	static const struct option longopts[] = {
+		{"device", required_argument, NULL, 'd'},
+		{"service", required_argument, NULL, 's'},
+		{"help", no_argument, NULL, 'h'},
+		{0, 0, 0, 0},
+	};
+
+	while ((opt = getopt_long(argc, argv, shortopts, longopts, &option_index)) != -1) {
+		switch (opt) {
+		case 'd':
+			strncpy(device, optarg, sizeof(device) - 1);
+			break;
+		case 's':
+			service = atoi(optarg);
+			break;
+		case 'h':
+		default:
+			usage();
+			return 0;
+		}
+	}
+
+	return test_main(device, service);
 }

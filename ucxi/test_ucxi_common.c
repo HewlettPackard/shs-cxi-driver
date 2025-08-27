@@ -241,6 +241,25 @@ void destroy_cq(struct cass_dev *dev, struct ucxi_cq *cq)
 	free(cq);
 }
 
+int svc_get(struct cass_dev *dev, int svc, struct cxi_svc_desc *svc_desc)
+{
+	int rc;
+	struct cxi_svc_get_resp resp = {};
+	struct cxi_svc_get_cmd cmd = {
+		.op = CXI_OP_SVC_GET,
+		.resp = &resp,
+		.svc_id = svc,
+	};
+
+	rc = write(dev->fd, &cmd, sizeof(cmd));
+	if (rc != sizeof(cmd))
+		return -1;
+
+	memcpy(svc_desc, &resp.svc_desc, sizeof(*svc_desc));
+
+	return 0;
+}
+
 int svc_alloc(struct cass_dev *dev, struct cxi_svc_desc *svc_desc)
 {
 	int rc;
