@@ -759,7 +759,6 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	 * Do not enable the svc or the rgroup until then.
 	 */
 	if (svc_desc->restricted_vnis) {
-		svc_priv->svc_desc.enable = 1;
 		rc = svc_enable(dev, svc_priv, true);
 		if (rc)
 			goto free_resources;
