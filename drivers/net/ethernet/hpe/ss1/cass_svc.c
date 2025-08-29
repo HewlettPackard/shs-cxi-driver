@@ -443,9 +443,9 @@ static enum cxi_ac_type svc_mbr_to_ac_type(enum cxi_svc_member_type type,
 	case CXI_SVC_MEMBER_GID:
 		return CXI_AC_GID;
 	case CXI_SVC_MEMBER_IGNORE:
-		return CXI_AC_OPEN;
+		fallthrough;
 	default:
-		return -EDOM;
+		return 0;
 	}
 }
 
@@ -474,10 +474,16 @@ static int alloc_rgroup_ac_entries(struct cxi_dev *dev,
 	union cxi_ac_data ac_data = {};
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
+	if (!svc_desc->restricted_members)
+		return cxi_rgroup_add_ac_entry(svc_priv->rgroup, CXI_AC_OPEN,
+					       &ac_data, &ac_entry_id);
+
 	for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
-		/* Type members.type have been validated */
+		/* No AC entry for member[].type of CXI_SVC_MEMBER_IGNORE */
 		type = svc_mbr_to_ac_type(svc_desc->members[i].type,
 					  svc_desc->restricted_members);
+		if (!type)
+			continue;
 
 		if (type == CXI_AC_UID)
 			ac_data.uid = svc_desc->members[i].svc_member.uid;
@@ -486,7 +492,7 @@ static int alloc_rgroup_ac_entries(struct cxi_dev *dev,
 
 		rc = cxi_rgroup_add_ac_entry(svc_priv->rgroup, type, &ac_data,
 					     &ac_entry_id);
-		if (rc && rc != -EEXIST)
+		if (rc)
 			goto cleanup;
 	}
 
@@ -510,6 +516,9 @@ static void remove_profile_ac_entries(struct cxi_dev *dev,
 	}
 }
 
+/* No AC entry will be allocated for a member[].type of
+ * CXI_SVC_MEMBER_IGNORE.
+ */
 static int alloc_profile_ac_entries(struct cxi_dev *dev,
 				    struct cxi_svc_priv *svc_priv)
 {
@@ -520,26 +529,45 @@ static int alloc_profile_ac_entries(struct cxi_dev *dev,
 	unsigned int ac_entry_id;
 	struct cxi_svc_desc *svc_desc = &svc_priv->svc_desc;
 
-	for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
-		/* Type members.type have been validated */
-		type = svc_mbr_to_ac_type(svc_desc->members[i].type,
-					  svc_desc->restricted_members);
-
+	if (!svc_desc->restricted_members) {
 		for (j = 0; j < svc_priv->svc_desc.num_vld_vnis; j++) {
-			rc = cxi_tx_profile_add_ac_entry(
-					svc_priv->tx_profile[j], type,
-					svc_desc->members[i].svc_member.uid,
-					svc_desc->members[i].svc_member.gid,
-					&ac_entry_id);
-			if (rc && rc != -EEXIST)
+			rc = cxi_rx_profile_add_ac_entry(svc_priv->rx_profile[j],
+							 CXI_AC_OPEN, 0, 0,
+							 &ac_entry_id);
+			if (rc)
 				goto cleanup;
+
+			rc = cxi_tx_profile_add_ac_entry(svc_priv->tx_profile[j],
+							 CXI_AC_OPEN, 0, 0,
+							 &ac_entry_id);
+			if (rc)
+				goto cleanup;
+		}
+
+		return 0;
+	}
+
+	for (j = 0; j < svc_priv->svc_desc.num_vld_vnis; j++) {
+		for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
+			type = svc_mbr_to_ac_type(svc_desc->members[i].type,
+						  svc_desc->restricted_members);
+			if (!type)
+				continue;
 
 			rc = cxi_rx_profile_add_ac_entry(
 					svc_priv->rx_profile[j], type,
 					svc_desc->members[i].svc_member.uid,
 					svc_desc->members[i].svc_member.gid,
 					&ac_entry_id);
-			if (rc && rc != -EEXIST)
+			if (rc)
+				goto cleanup;
+
+			rc = cxi_tx_profile_add_ac_entry(
+					svc_priv->tx_profile[j], type,
+					svc_desc->members[i].svc_member.uid,
+					svc_desc->members[i].svc_member.gid,
+					&ac_entry_id);
+			if (rc)
 				goto cleanup;
 		}
 	}
