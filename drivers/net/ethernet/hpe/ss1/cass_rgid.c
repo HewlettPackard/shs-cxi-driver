@@ -23,7 +23,7 @@ struct cass_rgid_priv {
  */
 void cass_rgid_init(struct cass_dev *hw)
 {
-	xa_init(&hw->rgid_array);
+	xa_init_flags(&hw->rgid_array, XA_FLAGS_ALLOC1);
 	refcount_set(&hw->rgids_refcount, 1);
 }
 
@@ -182,13 +182,13 @@ struct cxi_cp_priv *cass_cp_rgid_find(struct cass_dev *hw, int rgid,
  *
  * @hw: Cassini device
  * @rgroup: Resource group container
- * @return: 0 on success or negative error
+ * @return: rgid on success or negative error
  */
 int cass_rgid_get(struct cass_dev *hw, struct cxi_rgroup *rgroup)
 {
 	int ret;
+	u32 id;
 	unsigned long idx;
-	unsigned long id = 1;
 	struct cass_rgid_priv *rgidp;
 	struct cass_rgid_priv *rgid_priv;
 	unsigned int lnis_per_rgid = rgroup->attr.lnis_per_rgid;
@@ -204,28 +204,29 @@ int cass_rgid_get(struct cass_dev *hw, struct cxi_rgroup *rgroup)
 		    (rgidp->lnis == lnis_per_rgid) &&
 		    (refcount_read(&rgidp->refcount) < rgidp->lnis)) {
 			refcount_inc(&rgidp->refcount);
+			kfree(rgid_priv);
+			id = idx;
 			goto done;
 		}
-
-		id = idx + 1;
 	}
 
-	if (id >= C_NUM_RGIDS) {
+	ret = __xa_alloc(&hw->rgid_array, &id, rgid_priv,
+			 XA_LIMIT(1, C_NUM_RGIDS - 1), GFP_KERNEL);
+
+	/* -EBUSY is returned when there is no room */
+	if (ret == -EBUSY)
 		ret = -ENOSPC;
+
+	if (ret)
 		goto unlock_free;
-	}
 
 	rgid_priv->svc_id = rgroup->id;
 	rgid_priv->lnis = lnis_per_rgid;
 	refcount_set(&rgid_priv->refcount, 1);
 	ida_init(&rgid_priv->lac_table);
 	idr_init(&rgid_priv->lcid_table);
-
-	ret = xa_err(__xa_store(&hw->rgid_array, id, rgid_priv, GFP_KERNEL));
-	if (ret)
-		goto unlock_free;
-
 	refcount_inc(&hw->rgids_refcount);
+
 done:
 	xa_unlock(&hw->rgid_array);
 
@@ -238,7 +239,7 @@ unlock_free:
 	if (ret == -ENOSPC)
 		pr_debug("RGID space exhausted\n");
 	else
-		pr_err("Failed to store id %ld ret:%d\n", id, ret);
+		pr_err("Failed to store id %d ret:%d\n", id, ret);
 
 	return ret;
 }
@@ -256,12 +257,16 @@ void cass_rgid_put(struct cass_dev *hw, int id)
 	xa_lock(&hw->rgid_array);
 
 	rgid_priv = xa_load(&hw->rgid_array, id);
+	if (!rgid_priv) {
+		pr_err("rgid_priv NULL for id:%d\n", id);
+		goto unlock;
+	}
 
 	if (refcount_dec_and_test(&rgid_priv->refcount)) {
 		WARN_ON(__xa_erase(&hw->rgid_array, id) == NULL);
 		refcount_dec(&hw->rgids_refcount);
 		kfree(rgid_priv);
 	}
-
+unlock:
 	xa_unlock(&hw->rgid_array);
 }
