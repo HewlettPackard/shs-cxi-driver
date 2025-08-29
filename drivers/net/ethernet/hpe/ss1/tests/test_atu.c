@@ -2010,14 +2010,14 @@ out:
 
 #define LNIS_PER_RGID 2
 static int build_service(struct cxi_dev *dev, struct cxi_svc_desc *desc,
-			 bool restricted_vnis)
+			 int lpr)
 {
 	int rc;
-	int lpr;
+	int llpr;
 
 	desc->enable = 1,
 	desc->is_system_svc = 1,
-	desc->restricted_vnis = restricted_vnis,
+	desc->restricted_vnis = 1,
 	desc->num_vld_vnis = 1,
 	desc->vnis[0] = 8U,
 	desc->resource_limits = false,
@@ -2037,15 +2037,15 @@ static int build_service(struct cxi_dev *dev, struct cxi_svc_desc *desc,
 		goto update_err;
 	}
 
-	rc = cxi_svc_set_lpr(dev, desc->svc_id, LNIS_PER_RGID);
+	rc = cxi_svc_set_lpr(dev, desc->svc_id, lpr);
 	if (rc < 0) {
 		pr_err("cxi_svc_set_lpr failed: %d\n", rc);
 		goto update_err;
 	}
 
-	lpr = cxi_svc_get_lpr(dev, desc->svc_id);
-	if (lpr != LNIS_PER_RGID) {
-		pr_err("cxi_svc_get_lpr failed: %d\n", lpr);
+	llpr = cxi_svc_get_lpr(dev, desc->svc_id);
+	if (llpr != lpr) {
+		pr_err("cxi_svc_get_lpr failed llpr:%d expected:%d\n", llpr, lpr);
 		goto update_err;
 	}
 
@@ -2057,25 +2057,18 @@ err:
 	return rc;
 }
 
-struct lnis_list {
-	struct list_head list;
-	struct cxi_lni *lni;
-};
-
-static struct list_head lni_list;
 static int test_lni_alloc(struct tdev *tdev)
 {
 	int rc;
 	int i;
+	int lpr = 1;
 	struct cxi_lni *lni;
-	struct lnis_list *lni_l;
-	struct lnis_list *entry, *tmp;
+	struct cxi_lni **lni_l;
 	struct cxi_svc_desc desc = {};
 
 	pr_info("%s\n", __func__);
-	INIT_LIST_HEAD(&lni_list);
 
-	rc = build_service(tdev->dev, &desc, true);
+	rc = build_service(tdev->dev, &desc, lpr);
 	if (rc)
 		return rc;
 
@@ -2086,7 +2079,7 @@ static int test_lni_alloc(struct tdev *tdev)
 		goto dest_svc;
 	}
 
-	rc = cxi_svc_set_lpr(tdev->dev, desc.svc_id, LNIS_PER_RGID);
+	rc = cxi_svc_set_lpr(tdev->dev, desc.svc_id, lpr);
 	if (!rc) {
 		pr_err("cxi_svc_set_lpr should fail\n");
 		cxi_lni_free(lni);
@@ -2095,37 +2088,53 @@ static int test_lni_alloc(struct tdev *tdev)
 
 	cxi_lni_free(lni);
 
-	for (i = 0; i < (C_NUM_RGIDS * LNIS_PER_RGID); i++) {
-		lni_l = kzalloc(sizeof(*lni_l), GFP_KERNEL);
-		if (!lni_l)
-			break;
+	lni_l = kcalloc(C_NUM_RGIDS * lpr, sizeof(*lni_l),
+			GFP_KERNEL);
+	if (!lni_l) {
+		rc = -ENOMEM;
+		goto dest_svc;
+	}
 
-		lni_l->lni = cxi_lni_alloc(tdev->dev, desc.svc_id);
-		if (IS_ERR(lni_l->lni)) {
-			/* should fail at (C_NUM_RGIDS - 1) * LNIS_PER_RGID */
-			if (i == ((C_NUM_RGIDS - 1) * LNIS_PER_RGID)) {
+	for (i = 0; i < (C_NUM_RGIDS * lpr); i++) {
+		lni_l[i] = cxi_lni_alloc(tdev->dev, desc.svc_id);
+		if (IS_ERR(lni_l[i])) {
+			/* should fail at (C_NUM_RGIDS - 1) * lpr */
+			if (i == ((C_NUM_RGIDS - 1) * lpr)) {
 				pr_info("%d LNIs\n", i);
+				lni_l[i] = NULL;
 				rc = 0;
 			} else {
 				pr_err("i:%d cxi_lni_alloc failed %ld\n", i,
-				       PTR_ERR(lni_l->lni));
-				rc = PTR_ERR(lni_l->lni);
+				       PTR_ERR(lni_l[i]));
+				rc = PTR_ERR(lni_l[i]);
 			}
 
 			break;
 		}
-
-		list_add_tail(&lni_l->list, &lni_list);
-
 	}
 
-	list_for_each_entry_safe(entry, tmp, &lni_list, list) {
-		cxi_lni_free(entry->lni);
-		kfree(entry);
+	/* pick random lni and free it to create a hole in the rgid list */
+	i = 10;
+	cxi_lni_free(lni_l[i]);
+
+	/* try alloc another lni */
+	lni_l[i] = cxi_lni_alloc(tdev->dev, desc.svc_id);
+	if (IS_ERR(lni_l[i])) {
+		pr_err("i:%d cxi_lni_alloc failed %ld\n", i,
+		       PTR_ERR(lni_l[i]));
+		rc = PTR_ERR(lni_l[i]);
+		lni_l[i] = NULL;
 	}
 
+	for (i = 0; i < (C_NUM_RGIDS * lpr); i++) {
+		if (lni_l[i])
+			cxi_lni_free(lni_l[i]);
+	}
+
+	kfree(lni_l);
 dest_svc:
 	cxi_svc_destroy(tdev->dev, desc.svc_id);
+	pr_err("%s failed\n", __func__);
 
 	return rc;
 }
@@ -2152,7 +2161,7 @@ static int test_share_lcid(struct tdev *tdev)
 	rma_mem.md = &rma_md;
 	snd_mem.md = &snd_md;
 
-	rc = build_service(tdev->dev, &desc, true);
+	rc = build_service(tdev->dev, &desc, LNIS_PER_RGID);
 	if (rc)
 		return rc;
 
@@ -2368,8 +2377,6 @@ static void remove_device(struct cxi_dev *dev)
 		return;
 
 	kfree(tdev);
-
-	pr_info("Removing template client for device %s\n", dev->name);
 }
 
 static struct cxi_client cxiu_client = {
@@ -2395,6 +2402,7 @@ out:
 
 static void __exit cleanup(void)
 {
+	pr_info("Removing template client\n");
 	cxi_unregister_client(&cxiu_client);
 }
 

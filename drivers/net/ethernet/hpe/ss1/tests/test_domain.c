@@ -25,7 +25,15 @@ static int add_device(struct cxi_dev *dev)
 	int ac_entry_id;
 	int ndom_alloc;
 	int ndom2_alloc;
-	struct cxi_lni *lni;
+	struct cxi_lni *lni = NULL;
+	struct cxi_lni **lnis = NULL;
+	int num_lpr;
+	int num_lnis;
+	int cur_rgid;
+	int min_rgid;
+	int min_rgid_floor;
+	int min_rgid_count;
+	int max_rgid;
 	struct cxi_ct *ct;
 	struct c_ct_writeback *wb;
 	int timeout_count;
@@ -74,10 +82,115 @@ static int add_device(struct cxi_dev *dev)
 	svc_priv->rx_profile[svc_priv->svc_desc.num_vld_vnis] = rx_profile;
 	svc_priv->svc_desc.num_vld_vnis++;
 
+	/* We should be able allocate up to C_NUM_RGIDs * LNIs-PER-RGID. */
+	num_lpr = cxi_svc_get_lpr(dev, CXI_DEFAULT_SVC_ID);
+	if (num_lpr < 0) {
+		pr_err("TEST-ERROR: error %d trying to get LNIs-PER-RGID\n",
+		       num_lpr);
+		goto remove_profile;
+	}
+	num_lnis = num_lpr * C_NUM_RGIDS;
+	lnis = kcalloc(num_lnis, sizeof(*lnis), GFP_KERNEL);
+	if (!lnis) {
+		pr_err("TEST-ERROR: cannot allocate memory\n");
+		goto remove_profile;
+	}
+	for (i = 0; i < num_lnis; i++) {
+		lnis[i] = cxi_lni_alloc(dev, CXI_DEFAULT_SVC_ID);
+		if (IS_ERR(lnis[i])) {
+			num_lnis = i;
+			if (PTR_ERR(lnis[i]) != -ENOSPC) {
+				pr_err("TEST-ERROR: unexpected error %ld allocating LNI %d\n",
+				       PTR_ERR(lnis[i]), i);
+				goto out_lnis_free;
+			}
+			break;
+		}
+	}
+
+	pr_info("TEST: Created %d LNIs, next alloc should fail.\n", num_lnis);
+	lni = cxi_lni_alloc(dev, CXI_DEFAULT_SVC_ID);
+	if (!IS_ERR(lni)) {
+		pr_err("TEST-ERROR: unexpected success allocating LNI  with RGID %d\n", lni->rgid);
+		goto out_lnis_free;
+	} else if (PTR_ERR(lni) != -ENOSPC) {
+		/* And it should have failed with -ENOSPC. */
+		pr_err("TEST-ERROR: cxi_lni_alloc() returned unexpected error %ld, expected error -ENOSPC(%d)\n",
+		       PTR_ERR(lni), -ENOSPC);
+		lni = NULL;
+		goto out_lnis_free;
+	}
+	lni = NULL;
+
+	/* Find the minimum RGID we have all LNIs for and free those LNIs. */
+	max_rgid = 0;
+	min_rgid = C_NUM_RGIDS + 1;
+	min_rgid_count = 0;
+	for (i = 0; i < num_lnis; i++) {
+		cur_rgid = lnis[i]->rgid;
+		max_rgid = max(max_rgid, cur_rgid);
+		if (cur_rgid < min_rgid) {
+			min_rgid = cur_rgid;
+			min_rgid_count = 1;
+		} else if (cur_rgid == min_rgid) {
+			min_rgid_count++;
+		}
+	}
+	/* To test a bug, we need to free num_lpr LNIs with the same RGID. */
+	if (min_rgid_count != num_lpr) {
+		do {
+			min_rgid_floor = min_rgid;
+			min_rgid_count = 0;
+			min_rgid = max_rgid;
+			for (i = 0; i < num_lnis; i++) {
+				cur_rgid = lnis[i]->rgid;
+				if (cur_rgid < min_rgid) {
+					if (cur_rgid > min_rgid_floor) {
+						min_rgid = cur_rgid;
+						min_rgid_count = 1;
+					}
+				} else if (cur_rgid == min_rgid) {
+					min_rgid_count++;
+				}
+			}
+		} while (min_rgid_count != num_lpr && min_rgid != max_rgid);
+	}
+	if (min_rgid != max_rgid) {
+		for (i = 0; i < num_lnis; i++) {
+			cur_rgid = lnis[i]->rgid;
+			if (cur_rgid == min_rgid) {
+				cxi_lni_free(lnis[i]);
+				lnis[i] = NULL;
+			}
+		}
+	} else {
+		pr_info("TEST: Skipping RGID hole test\n");
+		for (i = 0; i < num_lnis; i++)
+			cxi_lni_free(lnis[i]);
+		kfree(lnis);
+		lnis = NULL;
+	}
+
+	/* We should now be able alloc a LNI. */
 	lni = cxi_lni_alloc(dev, CXI_DEFAULT_SVC_ID);
 	if (IS_ERR(lni)) {
-		pr_err("TEST-ERROR: cannot create lni\n");
-		goto remove_profile;
+		pr_err("TEST-ERROR: cannot create lni, error %ld\n",
+		       PTR_ERR(lni));
+		lni = NULL;
+		goto out_lnis_free;
+	}
+
+	/* Finish RGID hole test */
+	if (lnis) {
+		pr_err("TEST: RGID hole test passed, freed %d, allocated %d\n",
+		       min_rgid, lni->rgid);
+		/* Free all the LNIs in the array. */
+		for (i = 0; i < num_lnis; i++) {
+			if (lnis[i])
+				cxi_lni_free(lnis[i]);
+		}
+		kfree(lnis);
+		lnis = NULL;
 	}
 
 	pr_info("TEST: alloc should fail without an ac entry\n");
@@ -166,9 +279,18 @@ free_dom1:
 	for (i = 0; i < ndom_alloc; i++)
 		cxi_domain_free(domains[i]);
 
+out_lnis_free:
 	pr_err("TEST-END: DOMAIN\n");
 
-	cxi_lni_free(lni);
+	if (lni)
+		cxi_lni_free(lni);
+	if (lnis) {
+		for (i = 0; i < num_lnis; i++) {
+			if (lnis[i])
+				cxi_lni_free(lnis[i]);
+		}
+		kfree(lnis);
+	}
 
 remove_profile:
 	svc_priv->svc_desc.num_vld_vnis--;
