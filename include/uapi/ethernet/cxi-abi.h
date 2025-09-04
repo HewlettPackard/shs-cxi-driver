@@ -117,6 +117,8 @@ enum cxi_command_opcode {
 		CXI_OP_SVC_SET_VNI_RANGE,
 		CXI_OP_SVC_GET_VNI_RANGE,
 
+		CXI_OP_TRIG_CP_ALLOC,
+
 		CXI_OP_MAX,
 };
 
@@ -336,6 +338,32 @@ struct cxi_cp_alloc_cmd {
 
 	/* Traffic class type to associated with the CP. */
 	enum cxi_traffic_class_type tc_type;
+};
+
+enum cxi_trig_cp {
+	TRIG_LCID,
+	NON_TRIG_LCID,
+	ANY_LCID,
+};
+
+struct cxi_trig_cp_alloc_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+
+	/* LNI to associate with the CP. */
+	unsigned int lni;
+
+	/* VNI to associate with the CP. */
+	unsigned int vni;
+
+	/* Traffic class to associate with the CP. */
+	enum cxi_traffic_class tc;
+
+	/* Traffic class type to associated with the CP. */
+	enum cxi_traffic_class_type tc_type;
+
+	/* This CP is for cmdq of triggered, non-triggered or any cmdq. */
+	enum cxi_trig_cp cp_type;
 };
 
 struct cxi_cp_alloc_resp {

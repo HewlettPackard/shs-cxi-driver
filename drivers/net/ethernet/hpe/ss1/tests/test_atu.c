@@ -368,8 +368,8 @@ static int test_setup(struct tdev *tdev, int svc_id)
 		goto free_ni;
 	}
 
-	tdev->cp = cxi_cp_alloc(tdev->lni, tdev->vni, CXI_TC_BEST_EFFORT,
-				CXI_TC_TYPE_DEFAULT);
+	tdev->cp = cxi_trig_cp_alloc(tdev->lni, tdev->vni, CXI_TC_BEST_EFFORT,
+				     CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(tdev->cp)) {
 		rc = PTR_ERR(tdev->cp);
 		goto free_dom;
@@ -1833,8 +1833,8 @@ static int test_atu(struct tdev *tdev)
 		goto free_ni;
 	}
 
-	tdev->cp = cxi_cp_alloc(tdev->lni, tdev->vni, CXI_TC_BEST_EFFORT,
-				CXI_TC_TYPE_DEFAULT);
+	tdev->cp = cxi_trig_cp_alloc(tdev->lni, tdev->vni, CXI_TC_BEST_EFFORT,
+				     CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(tdev->cp)) {
 		rc = PTR_ERR(tdev->cp);
 		goto free_dom;
@@ -2133,7 +2133,9 @@ static int test_lni_alloc(struct tdev *tdev)
 	kfree(lni_l);
 dest_svc:
 	cxi_svc_destroy(tdev->dev, desc.svc_id);
-	pr_err("%s failed\n", __func__);
+
+	if (rc)
+		pr_err("%s failed\n", __func__);
 
 	return rc;
 }
@@ -2178,8 +2180,8 @@ static int test_share_lcid(struct tdev *tdev)
 		goto teardown;
 	}
 
-	cp = cxi_cp_alloc(lni, tdev->vni, CXI_TC_BEST_EFFORT,
-			  CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, tdev->vni, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
 		cxi_lni_free(lni);
@@ -2263,6 +2265,173 @@ svc_destroy:
 	return rc;
 }
 
+/* Validate correct values of LCID allocation */
+static int test_share_lcid2(struct tdev *tdev)
+{
+	int rc;
+	struct cxi_cp *cp1;
+	struct cxi_cp *cp2;
+	struct cxi_lni *lni1;
+	struct cxi_lni *lni2;
+	struct cxi_svc_desc desc = {};
+
+	pr_info("%s\n", __func__);
+
+	rc = build_service(tdev->dev, &desc, LNIS_PER_RGID);
+	if (rc)
+		return rc;
+
+	/* Both LNIs should share an rgid */
+	lni1 = cxi_lni_alloc(tdev->dev, desc.svc_id);
+	if (IS_ERR(lni1)) {
+		rc = PTR_ERR(lni1);
+		goto svc_destroy;
+	}
+
+	lni2 = cxi_lni_alloc(tdev->dev, desc.svc_id);
+	if (IS_ERR(lni1)) {
+		rc = PTR_ERR(lni2);
+		goto free_lni1;
+	}
+
+	cp1 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, TRIG_LCID);
+	if (IS_ERR(cp1)) {
+		rc = PTR_ERR(cp1);
+		goto free_lni2;
+	}
+
+	if (cp1->lcid) {
+		pr_info("TRIG_LCID lcid:%d should be 0\n", cp1->lcid);
+		rc = -1;
+		goto free_cp1;
+	}
+
+	cp2 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
+	if (IS_ERR(cp2)) {
+		rc = PTR_ERR(cp2);
+		goto free_cp1;
+	}
+
+	if (!cp2->lcid) {
+		pr_info("NON_TRIG_LCID lcid:%d should be non-zero\n",
+			cp2->lcid);
+		rc = -1;
+		goto free_cp2;
+	}
+
+	cxi_cp_free(cp1);
+
+	cp1 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
+	if (IS_ERR(cp1)) {
+		rc = PTR_ERR(cp1);
+		cxi_cp_free(cp2);
+		goto free_lni2;
+	}
+
+	/* with same lni, NON_TRIG_LCID will get same lcid */
+	if (cp1->lcid != cp2->lcid) {
+		rc = -1;
+		goto free_cp2;
+	}
+
+	cxi_cp_free(cp2);
+	cxi_cp_free(cp1);
+
+	cp1 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, TRIG_LCID);
+	if (IS_ERR(cp1)) {
+		rc = PTR_ERR(cp1);
+		goto free_lni2;
+	}
+
+	if (cp1->lcid) {
+		pr_info("lcid:%d should be 0\n", cp1->lcid);
+		rc = -1;
+		goto free_cp1;
+	}
+
+	cp2 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, TRIG_LCID);
+	if (IS_ERR(cp2)) {
+		rc = PTR_ERR(cp2);
+		goto free_cp1;
+	}
+
+	if (cp2->lcid) {
+		pr_info("lcid:%d should be 0\n", cp2->lcid);
+		rc = -1;
+		goto free_cp2;
+	}
+
+	cxi_cp_free(cp2);
+
+	cp2 = cxi_trig_cp_alloc(lni2, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, TRIG_LCID);
+	if (IS_ERR(cp2)) {
+		rc = PTR_ERR(cp2);
+		goto free_cp1;
+	}
+
+	if (cp2->lcid) {
+		pr_info("lcid:%d should be 0\n", cp2->lcid);
+		rc = -1;
+		goto free_cp2;
+	}
+
+	cxi_cp_free(cp2);
+	cxi_cp_free(cp1);
+
+	cp1 = cxi_trig_cp_alloc(lni1, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
+	if (IS_ERR(cp2)) {
+		rc = PTR_ERR(cp2);
+		goto free_cp1;
+	}
+
+	if (!cp1->lcid) {
+		pr_info("lcid:%d should be non-zero\n", cp1->lcid);
+		rc = -1;
+		goto free_cp1;
+	}
+
+	cp2 = cxi_trig_cp_alloc(lni2, tdev->vni, CXI_TC_BEST_EFFORT,
+				CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
+	if (IS_ERR(cp2)) {
+		rc = PTR_ERR(cp2);
+		goto free_cp1;
+	}
+
+	if (!cp2->lcid) {
+		pr_info("lcid:%d should be non-0\n", cp2->lcid);
+		rc = -1;
+		goto free_cp2;
+	}
+
+	/* with different LNIs, NON_TRIG_LCID will get different LCIDs */
+	if (cp1->lcid == cp2->lcid) {
+		pr_info("lcid1:%d and lcid2:%d should be different\n",
+			cp1->lcid, cp2->lcid);
+		rc = -1;
+		goto free_cp2;
+	}
+
+free_cp2:
+	cxi_cp_free(cp2);
+free_cp1:
+	cxi_cp_free(cp1);
+free_lni2:
+	cxi_lni_free(lni2);
+free_lni1:
+	cxi_lni_free(lni1);
+svc_destroy:
+	cxi_svc_destroy(tdev->dev, desc.svc_id);
+
+	return rc;
+}
+
 static int test_rgid(struct tdev *tdev)
 {
 	int rc;
@@ -2271,7 +2440,11 @@ static int test_rgid(struct tdev *tdev)
 	if (rc)
 		return rc;
 
-	return test_share_lcid(tdev);
+	rc = test_share_lcid(tdev);
+	if (rc)
+		return rc;
+
+	return test_share_lcid2(tdev);
 }
 
 /* Core is adding a new device */

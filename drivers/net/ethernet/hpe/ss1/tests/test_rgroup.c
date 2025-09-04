@@ -316,8 +316,8 @@ static int test_setup(struct cxi_dev *dev)
 		goto free_ni;
 	}
 
-	cp = cxi_cp_alloc(lni, vni, CXI_TC_BEST_EFFORT,
-				CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, vni, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
 		goto free_dom;
@@ -645,11 +645,19 @@ static int test_rgroup(struct cxi_dev *dev)
 		goto err_free_wb;
 	}
 
-	cp = cxi_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT, CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
-		pr_err("cxi_cp_alloc failed: %d\n", rc);
+		pr_err("cxi_trig_cp_alloc failed: %d\n", rc);
 		goto err_free_ct;
+	}
+
+	if (cp->lcid) {
+		rc = -EINVAL;
+		pr_err("cxi_trig_cp_alloc did not return LCID 0: %d\n",
+		       cp->lcid);
+		goto err_free_cp;
 	}
 
 	cq_opts.count = 4096;
@@ -909,11 +917,19 @@ static int test_resources(struct cxi_dev *dev)
 	if (rc)
 		goto err_free_ct;
 
-	cp = cxi_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT, CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
-		pr_err("cxi_cp_alloc failed: %d\n", rc);
+		pr_err("cxi_trig_cp_alloc failed: %d\n", rc);
 		goto err_free_ct;
+	}
+
+	if (cp->lcid) {
+		rc = -EINVAL;
+		pr_err("cxi_trig_cp_alloc did not return LCID 0: %d\n",
+		       cp->lcid);
+		goto err_free_cp;
 	}
 
 	cq_opts.count = 4096;

@@ -90,10 +90,11 @@ static int test_service_tle_in_use(struct cxi_dev *dev)
 		goto err_free_wb;
 	}
 
-	cp = cxi_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT, CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, VNI, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
-		test_err("cxi_cp_alloc failed: %d\n", rc);
+		test_err("cxi_trig_cp_alloc failed: %d\n", rc);
 		goto err_free_ct;
 	}
 
@@ -395,8 +396,8 @@ static int test_default_service(struct cxi_dev *dev)
 	}
 
 	/* Try to use non-default VNI. Should fail */
-	cp = cxi_cp_alloc(lni, 500, CXI_TC_BEST_EFFORT,
-			  CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, 500, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 
 	if (!IS_ERR(cp)) {
 		test_err("Allocated CP with non-default VNI using default service\n");
@@ -810,7 +811,7 @@ static int run_tests(struct cxi_dev *dev)
 
 	rc = test_disabled_service(dev);
 	if (rc) {
-		test_err("test_service_tle_in_use failed: %d\n", rc);
+		test_err("test_disabled_service failed: %d\n", rc);
 		return -EIO;
 	}
 

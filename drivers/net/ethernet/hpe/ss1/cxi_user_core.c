@@ -546,13 +546,13 @@ static int cxi_user_svc_get_vni_range(struct user_client *client,
 	return 0;
 }
 
-static int cxi_user_cp_alloc(struct user_client *client,
-			     const void *cmd_in,
-			     void *resp_out, size_t *resp_out_len)
+static int cxi_user_trig_cp_alloc(struct user_client *client,
+				  const void *cmd_in,
+				  void *resp_out, size_t *resp_out_len)
 {
 	struct ucxi_obj *lni;
 	struct ucxi_obj *cp_obj;
-	const struct cxi_cp_alloc_cmd *cmd = cmd_in;
+	const struct cxi_trig_cp_alloc_cmd *cmd = cmd_in;
 	struct cxi_cp_alloc_resp resp = {};
 	struct cxi_cp *cp;
 	int rc;
@@ -578,7 +578,8 @@ static int cxi_user_cp_alloc(struct user_client *client,
 	read_unlock(&client->res_lock);
 
 	/* Allocate the communication profile and handle for the user. */
-	cp = cxi_cp_alloc(lni->lni, cmd->vni, cmd->tc, cmd->tc_type);
+	cp = cxi_trig_cp_alloc(lni->lni, cmd->vni, cmd->tc, cmd->tc_type,
+			       cmd->cp_type);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
 		goto free_obj;
@@ -616,6 +617,22 @@ free_obj:
 	free_obj(cp_obj);
 
 	return rc;
+}
+
+static int cxi_user_cp_alloc(struct user_client *client,
+			     const void *cmd_in,
+			     void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_cp_alloc_cmd *cmdi = cmd_in;
+	struct cxi_trig_cp_alloc_cmd cmd = {
+		.lni = cmdi->lni,
+		.vni = cmdi->vni,
+		.tc = cmdi->tc,
+		.tc_type = cmdi->tc_type,
+		.cp_type = ANY_LCID,
+	};
+
+	return cxi_user_trig_cp_alloc(client, &cmd, resp_out, resp_out_len);
 }
 
 static int cxi_user_cp_free(struct user_client *client,
@@ -2258,6 +2275,10 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_cp_alloc_cmd),
 		.name       = "CP_ALLOC",
 		.handler    = cxi_user_cp_alloc, },
+	[CXI_OP_TRIG_CP_ALLOC] = {
+		.req_size   = sizeof(struct cxi_trig_cp_alloc_cmd),
+		.name       = "TRIG_CP_ALLOC",
+		.handler    = cxi_user_trig_cp_alloc, },
 	[CXI_OP_CP_FREE] = {
 		.req_size   = sizeof(struct cxi_cp_free_cmd),
 		.name       = "CP_FREE",

@@ -342,7 +342,11 @@ int cxi_ct_user_info(struct cxi_ct *ct, phys_addr_t *csr_addr,
 struct cxi_lni *cxi_lni_alloc(struct cxi_dev *dev, unsigned int svc_id);
 int cxi_lni_free(struct cxi_lni *lni);
 
-struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni,
+struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
+				 unsigned int tc,
+				 enum cxi_traffic_class_type tc_type,
+				 enum cxi_trig_cp cp_type);
+struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 			    unsigned int tc,
 			    enum cxi_traffic_class_type tc_type);
 void cxi_cp_free(struct cxi_cp *cp);

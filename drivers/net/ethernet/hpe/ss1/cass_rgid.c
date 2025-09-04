@@ -83,18 +83,28 @@ void cass_lac_put(struct cass_dev *hw, int id, int lac)
  * @hw: Cassini device
  * @cp_priv: Communication Profile object
  * @rgid: Value of RGID to get an LCID from
+ * @cp_type: Request LCID 0 for type TRIG_LCID
  * @return: 0 or positive value on success or negative error
  */
-int cass_lcid_get(struct cass_dev *hw, struct cxi_cp_priv *cp_priv, int rgid)
+int cass_lcid_get(struct cass_dev *hw, struct cxi_cp_priv *cp_priv, int rgid,
+		  enum cxi_trig_cp cp_type)
 	__must_hold(&hw->cp_lock)
 {
 	struct cass_rgid_priv *rgid_priv = xa_load(&hw->rgid_array, rgid);
 
 	if (!rgid_priv)
-		return 0;
+		return -ENOENT;
 
-	return idr_alloc(&rgid_priv->lcid_table, cp_priv, 0, C_COMM_PROF_PER_CQ,
-			 GFP_KERNEL);
+	/* When an TRIG_LCID is requested, return error if it
+	 * cannot be allocated.
+	 */
+	if (cp_type == TRIG_LCID)
+		return idr_alloc(&rgid_priv->lcid_table, cp_priv, 0, 1,
+				   GFP_KERNEL);
+
+	return idr_alloc(&rgid_priv->lcid_table, cp_priv,
+			 (cp_type == NON_TRIG_LCID) ? 1 : 0,
+			 C_COMM_PROF_PER_CQ, GFP_KERNEL);
 }
 
 /**
@@ -140,23 +150,30 @@ struct cxi_cp_priv *cass_cp_find(struct cass_dev *hw, int rgid, int lcid)
 
 /**
  * cass_cp_rgid_find() - Get the CP associated with an RGID that matches
- *                       the {vni_pcp,tc,tc_type} tupple
+ *                       the {vni_pcp,tc,tc_type,lni_id} tuple.
+ *                       Only return a CP with LCID of 0 if requested
+ *                       with TRIG_LCID or ANY_LCID.
  *
  * @hw: Cassini device
- * @rgid: Value of RGID
+ * @lni_priv: the Logical Network Interface
  * @vni_pcp: VNI of communication profile. If using an ethernet tc
  *           this argument is treated as PCP.
  * @tc: Traffic class of the communication profile
  * @tc_type: Traffic class type of the communication profile
+ * @cp_type: Allow LNIs sharing a CP with lcid 0 only
  * @return: CP object on success or NULL on error
  */
-struct cxi_cp_priv *cass_cp_rgid_find(struct cass_dev *hw, int rgid,
+struct cxi_cp_priv *cass_cp_rgid_find(struct cass_dev *hw,
+				      struct cxi_lni_priv *lni_priv,
 				      unsigned int vni_pcp, unsigned int tc,
-				      enum cxi_traffic_class_type tc_type)
+				      enum cxi_traffic_class_type tc_type,
+				      enum cxi_trig_cp cp_type)
 {
 	int lcid;
 	struct cxi_cp_priv *cp_priv;
-	struct cass_rgid_priv *rgid_priv = xa_load(&hw->rgid_array, rgid);
+	bool share_lcid0 = cp_type != NON_TRIG_LCID;
+	struct cass_rgid_priv *rgid_priv = xa_load(&hw->rgid_array,
+						   lni_priv->lni.rgid);
 
 	if (!rgid_priv)
 		return NULL;
@@ -166,8 +183,12 @@ struct cxi_cp_priv *cass_cp_rgid_find(struct cass_dev *hw, int rgid,
 		if (!cp_priv)
 			continue;
 
-		if (vni_pcp == cp_priv->cp.vni_pcp && tc == cp_priv->cp.tc &&
-		    tc_type == cp_priv->cass_cp->tc_type) {
+		if (vni_pcp == cp_priv->cp.vni_pcp &&
+		    tc == cp_priv->cp.tc &&
+		    tc_type == cp_priv->cass_cp->tc_type &&
+		    ((share_lcid0 && !lcid) ||
+		     (!share_lcid0 && lcid &&
+		      (lni_priv->lni.id == cp_priv->lni_id)))) {
 			refcount_inc(&cp_priv->refcount);
 
 			return cp_priv;
