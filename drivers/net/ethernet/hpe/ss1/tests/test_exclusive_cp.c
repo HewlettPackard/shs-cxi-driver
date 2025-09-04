@@ -326,8 +326,8 @@ static int test_setup(struct cxi_dev *dev)
 		goto free_ni;
 	}
 
-	cp = cxi_cp_alloc(lni, vni, CXI_TC_BEST_EFFORT,
-			  CXI_TC_TYPE_DEFAULT);
+	cp = cxi_trig_cp_alloc(lni, vni, CXI_TC_BEST_EFFORT,
+			       CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(cp)) {
 		rc = PTR_ERR(cp);
 		goto free_dom;
