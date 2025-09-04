@@ -1124,16 +1124,18 @@ int hw_setup(struct cxi_eth *dev)
 	 * TODO: Support unique communication profiles + CQ + MCUs for each
 	 * PCP. This may not be feasible with the resource needed for each.
 	 */
-	dev->eth1_cp = cxi_cp_alloc(dev->lni, dev->eth1_pcp,
-				    CXI_ETH_TC1, CXI_TC_TYPE_DEFAULT);
+	dev->eth1_cp = cxi_trig_cp_alloc(dev->lni, dev->eth1_pcp,
+					 CXI_ETH_TC1, CXI_TC_TYPE_DEFAULT,
+					 NON_TRIG_LCID);
 	if (IS_ERR(dev->eth1_cp)) {
 		rc = PTR_ERR(dev->eth1_cp);
 		netdev_info(ndev, "Can't allocate Eth1 CP: %d\n", rc);
 		goto err_free_lac;
 	}
 
-	dev->shared_cp = cxi_cp_alloc(dev->lni, shared_cp_pcp, CXI_ETH_SHARED,
-				      CXI_TC_TYPE_DEFAULT);
+	dev->shared_cp = cxi_trig_cp_alloc(dev->lni, shared_cp_pcp,
+					   CXI_ETH_SHARED,
+					   CXI_TC_TYPE_DEFAULT, NON_TRIG_LCID);
 	if (IS_ERR(dev->shared_cp)) {
 		rc = PTR_ERR(dev->shared_cp);
 		netdev_info(ndev, "Can't allocate Eth shared CP: %d\n", rc);
@@ -1141,8 +1143,10 @@ int hw_setup(struct cxi_eth *dev)
 	}
 
 	if (dev->eth2_active) {
-		dev->eth2_cp = cxi_cp_alloc(dev->lni, dev->eth2_pcp,
-					    CXI_ETH_TC2, CXI_TC_TYPE_DEFAULT);
+		dev->eth2_cp = cxi_trig_cp_alloc(dev->lni, dev->eth2_pcp,
+						 CXI_ETH_TC2,
+						 CXI_TC_TYPE_DEFAULT,
+						 NON_TRIG_LCID);
 		if (IS_ERR(dev->eth2_cp)) {
 			rc = PTR_ERR(dev->eth2_cp);
 			netdev_info(ndev, "Can't allocate Eth2 CP: %d\n", rc);

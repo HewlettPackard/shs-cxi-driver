@@ -235,13 +235,16 @@ static struct cass_cp *cass_cp_get(struct cxi_tx_profile *tx_profile,
 }
 
 /**
- * cxi_cp_alloc() - Allocate a communication profile
+ * cxi_trig_cp_alloc() - Allocate a communication profile with type of
+ *                       LCID parameter
  *
  * @lni: LNI the communication profile should be mapped into
  * @vni_pcp: VNI of communication profile. If using an ethernet tc
  * this argument is treated as PCP.
  * @tc: Traffic class of the communication profile
  * @tc_type: Traffic class type of the communication profile
+ * @cp_type: Return CP with LCID 0 for TRIG_LCID, a non-0 LCID for
+ *.          NON_TRIG_LCID and any LCID for ANY_LCID.
  *
  * Note: Allocating communication profiles with the same LNI, VNI, TC, and TC
  * type will result in a redundant communication profile being mapped into the
@@ -249,9 +252,10 @@ static struct cass_cp *cass_cp_get(struct cxi_tx_profile *tx_profile,
  *
  * @return: Valid pointer on success. Else, negative errno value.
  */
-struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
-			    unsigned int tc,
-			    enum cxi_traffic_class_type tc_type)
+struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
+				 unsigned int tc,
+				 enum cxi_traffic_class_type tc_type,
+				 enum cxi_trig_cp cp_type)
 {
 	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv,
 						     lni);
@@ -299,13 +303,12 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	}
 
 	mutex_lock(&hw->cp_lock);
-
-	cp_priv = cass_cp_rgid_find(hw, lni_priv->lni.rgid, vni_pcp, tc,
-				    tc_type);
+	cp_priv = cass_cp_rgid_find(hw, lni_priv, vni_pcp, tc, tc_type,
+				    cp_type);
 	if (cp_priv) {
 		mutex_unlock(&hw->cp_lock);
-		pr_debug("Reuse cp:%u rgid:%u lcid:%u refcount:%d\n",
-			 cp_priv->cass_cp->id, cp_priv->rgid,
+		pr_debug("Reuse cp:%u cp_type:%d rgid:%u lcid:%u refcount:%d\n",
+			 cp_priv->cass_cp->id, cp_type, cp_priv->rgid,
 			 cp_priv->cp.lcid, refcount_read(&cp_priv->refcount));
 		return &cp_priv->cp;
 	}
@@ -317,6 +320,7 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	}
 
 	cp_priv->rgid = lni_priv->lni.rgid;
+	cp_priv->lni_id = lni_priv->lni.id;
 	cp_priv->cp.vni_pcp = vni_pcp;
 	cp_priv->cp.tc = tc;
 	cp_priv->cp.tc_type = tc_type;
@@ -332,7 +336,7 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	cp_priv->cass_cp = cass_cp;
 
 	/* Map the communication profile to LCID. */
-	lcid = cass_lcid_get(hw, cp_priv, lni_priv->lni.rgid);
+	lcid = cass_lcid_get(hw, cp_priv, lni_priv->lni.rgid, cp_type);
 	if (lcid < 0) {
 		cxidev_dbg(dev, "%s rgid=%u lcids exhausted\n", dev->name,
 			   lni_priv->lni.rgid);
@@ -345,8 +349,9 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 
 	cass_set_cid(hw, lni_priv->lni.rgid, lcid, cass_cp->id);
 
-	cxidev_dbg(dev, "%s lcid allocated: rgid=%u lcid=%u cp=%u\n", dev->name,
-		   lni_priv->lni.rgid, cp_priv->cp.lcid, cass_cp->id);
+	cxidev_dbg(dev, "lcid allocated: lni:%d rgid=%u lcid=%u cp=%u cp_type:%d\n",
+		   lni_priv->lni.id, lni_priv->lni.rgid, cp_priv->cp.lcid, cass_cp->id,
+		   cp_type);
 
 	cass_flush_pci(hw);
 
@@ -361,6 +366,29 @@ free_tx_profile:
 	cxi_tx_profile_dec_refcount(dev, tx_profile, true);
 
 	return ERR_PTR(rc);
+}
+EXPORT_SYMBOL(cxi_trig_cp_alloc);
+
+/**
+ * cxi_cp_alloc() - Allocate a communication profile
+ *
+ * @lni: LNI the communication profile should be mapped into
+ * @vni_pcp: VNI of communication profile. If using an ethernet tc
+ * this argument is treated as PCP.
+ * @tc: Traffic class of the communication profile
+ * @tc_type: Traffic class type of the communication profile
+ *
+ * Note: Allocating communication profiles with the same LNI, VNI, TC, and TC
+ * type will result in a redundant communication profile being mapped into the
+ * LNI.
+ *
+ * @return: Valid pointer on success. Else, negative errno value.
+ */
+struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
+			    unsigned int tc,
+			    enum cxi_traffic_class_type tc_type)
+{
+	return cxi_trig_cp_alloc(lni, vni_pcp, tc, tc_type, ANY_LCID);
 }
 EXPORT_SYMBOL(cxi_cp_alloc);
 
