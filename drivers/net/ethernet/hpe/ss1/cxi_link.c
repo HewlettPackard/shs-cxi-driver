@@ -106,6 +106,19 @@ void cxi_link_use_unsupported_cable(struct cxi_dev *cxi_dev, bool use)
 }
 EXPORT_SYMBOL(cxi_link_use_unsupported_cable);
 
+void cxi_link_use_supported_ss200_cable(struct cxi_dev *cxi_dev, bool use)
+{
+        struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
+
+        cxidev_dbg(&hw->cdev, "use supported ss200 cable\n");
+
+        if (use)
+                hw->sl.link_policy.options |= SL_LINK_POLICY_OPT_USE_SUPPORTED_SS200_CABLE;
+        else
+                hw->sl.link_policy.options &= ~SL_LINK_POLICY_OPT_USE_SUPPORTED_SS200_CABLE;
+}
+EXPORT_SYMBOL(cxi_link_use_supported_ss200_cable);
+
 void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore)
 {
         struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);

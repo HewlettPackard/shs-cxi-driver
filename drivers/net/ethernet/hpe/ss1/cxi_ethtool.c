@@ -35,6 +35,7 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"fec_monitor",
 	"auto-lane-degrade",
 	"ignore-media-error",
+	"use-supported-ss200-cable",
 };
 
 /* ethtool ops */
@@ -636,6 +637,16 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 		} else {
 			dev->priv_flags &= ~CXI_ETH_PF_USE_UNSUPPORTED_CABLE;
 			cxi_link_use_unsupported_cable(dev->cxi_dev, false);
+		}
+	}
+
+	if (changes & CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE) {
+		if (flags & CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE) {
+			dev->priv_flags |= CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE;
+			cxi_link_use_supported_ss200_cable(dev->cxi_dev, true);
+		} else {
+			dev->priv_flags &= ~CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE;
+			cxi_link_use_supported_ss200_cable(dev->cxi_dev, false);
 		}
 	}
 
