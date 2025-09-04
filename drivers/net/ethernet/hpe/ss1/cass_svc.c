@@ -34,6 +34,10 @@ module_param(enable_rgid_sharing, bool, 0644);
 MODULE_PARM_DESC(enable_rgid_sharing,
 		 "Allow future CXI service allocations to use RGID sharing.");
 
+static int default_lnis_per_rgid = CXI_DEFAULT_LNIS_PER_RGID;
+module_param(default_lnis_per_rgid, int, 0644);
+MODULE_PARM_DESC(default_lnis_per_rgid, "Number of LNIs per RGID");
+
 static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv);
 
 static enum cxi_resource_type stype_to_rtype(enum cxi_rsrc_type type, int pe)
@@ -150,6 +154,7 @@ int cass_svc_init(struct cass_dev *hw)
 		.resource_limits = true,
 	};
 	int i, svc_id;
+	struct cxi_svc_priv *svc_priv;
 	struct cxi_rsrc_limits limits;
 
 	/* TODO differentiate PF/VF */
@@ -200,6 +205,12 @@ int cass_svc_init(struct cass_dev *hw)
 	svc_id = cxi_svc_alloc(&hw->cdev, &svc_desc, NULL, "default");
 	if (svc_id < 0)
 		return svc_id;
+
+	mutex_lock(&hw->svc_lock);
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	mutex_unlock(&hw->svc_lock);
+
+	cxi_rgroup_set_lnis_per_rgid_compat(svc_priv->rgroup, 1);
 
 	svc_service_debugfs_create(hw);
 
@@ -722,7 +733,7 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	struct cxi_rgroup_attr attr = {
 		.cntr_pool_id = svc_desc->cntr_pool_id,
 		.system_service = svc_desc->is_system_svc,
-		.lnis_per_rgid = CXI_DEFAULT_LNIS_PER_RGID,
+		.lnis_per_rgid = default_lnis_per_rgid,
 	};
 
 	rc = validate_descriptor(hw, svc_desc);
@@ -753,6 +764,9 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	}
 
 	cxi_rgroup_set_name(rgroup, name);
+
+	if (svc_desc->is_system_svc)
+		cxi_rgroup_set_lnis_per_rgid(svc_priv->rgroup, 1);
 
 	rc = alloc_rgroup_ac_entries(dev, svc_priv);
 	if (rc)
