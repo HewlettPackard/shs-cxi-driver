@@ -678,9 +678,7 @@ static int svc_enable(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 						   svc_priv->tx_profile[i]);
 			if (rc)
 				goto disable;
-		}
 
-		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 			rc = cxi_rx_profile_enable(dev,
 						   svc_priv->rx_profile[i]);
 			if (rc)
@@ -694,11 +692,10 @@ disable:
 	cxi_rgroup_disable(svc_priv->rgroup);
 	svc_priv->svc_desc.enable = 0;
 
-	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++)
-		cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
-
-	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++)
+	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 		cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
+		cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
+	}
 
 	return rc;
 }
