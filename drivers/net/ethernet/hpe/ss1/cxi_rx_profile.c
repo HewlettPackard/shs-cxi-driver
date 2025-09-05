@@ -180,7 +180,12 @@ int cxi_rx_profile_enable(struct cxi_dev *dev,
 {
 	int index;
 	struct cass_dev *hw = get_cass_dev(dev);
-	struct cxi_rxtx_vni_attr *attr = &rx_profile->profile_common.vni_attr;
+	struct cxi_rxtx_vni_attr *attr;
+
+	if (!rx_profile)
+		return -EINVAL;
+
+	attr = &rx_profile->profile_common.vni_attr;
 
 	if (zero_vni(attr)) {
 		pr_debug("Cannot enable profile with invalid VNI\n");
@@ -212,6 +217,9 @@ void cxi_rx_profile_disable(struct cxi_dev *dev,
 {
 	struct cass_dev *hw = get_cass_dev(dev);
 
+	if (!rx_profile)
+		return;
+
 	if (!cxi_rx_profile_is_enabled(rx_profile))
 		return;
 
@@ -229,6 +237,9 @@ EXPORT_SYMBOL(cxi_rx_profile_disable);
  */
 bool cxi_rx_profile_is_enabled(const struct cxi_rx_profile *rx_profile)
 {
+	if (!rx_profile)
+		return false;
+
 	return rx_profile->profile_common.state.enable;
 }
 EXPORT_SYMBOL(cxi_rx_profile_is_enabled);

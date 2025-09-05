@@ -314,6 +314,9 @@ EXPORT_SYMBOL(cxi_dev_set_tx_profile_attr);
 int cxi_tx_profile_enable(struct cxi_dev *dev,
 			   struct cxi_tx_profile *tx_profile)
 {
+	if (!tx_profile)
+		return -EINVAL;
+
 	if (zero_vni(&tx_profile->profile_common.vni_attr)) {
 		pr_debug("Cannot enable profile with invalid VNI\n");
 		return -EINVAL;
@@ -335,6 +338,9 @@ EXPORT_SYMBOL(cxi_tx_profile_enable);
 void cxi_tx_profile_disable(struct cxi_dev *dev,
 			    struct cxi_tx_profile *tx_profile)
 {
+	if (!tx_profile)
+		return;
+
 	tx_profile->profile_common.state.enable = false;
 	cass_clear_cps(tx_profile);
 }
@@ -347,6 +353,9 @@ EXPORT_SYMBOL(cxi_tx_profile_disable);
  */
 bool cxi_tx_profile_is_enabled(const struct cxi_tx_profile *tx_profile)
 {
+	if (!tx_profile)
+		return false;
+
 	return tx_profile->profile_common.state.enable;
 }
 EXPORT_SYMBOL(cxi_tx_profile_is_enabled);
