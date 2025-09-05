@@ -79,7 +79,7 @@ void cass_atu_fini(struct cass_dev *hw)
 			 PAGE_SIZE, DMA_TO_DEVICE);
 	kfree(hw->oxe_dummy_addr);
 	ida_destroy(&hw->atu_table);
-	cass_iommu_fini(hw->cdev.pdev);
+	cass_iommu_fini(hw);
 	cass_nta_pri_fini(hw);
 	cass_nta_cq_fini(hw);
 	refcount_dec(&hw->refcount);
@@ -466,7 +466,6 @@ dec_rsrc_use:
 static void cass_ac_free(struct cass_dev *hw, struct cass_ac *cac)
 {
 	struct cxi_lni_priv *lni_priv = cac->lni_priv;
-	int pasid = cac->cfg_ac.ats_pasid;
 
 	pr_debug("freeing ac %d\n", cac->ac.acid);
 
@@ -488,8 +487,7 @@ static void cass_ac_free(struct cass_dev *hw, struct cass_ac *cac)
 	memset(&cac->cfg_ac, 0, sizeof(cac->cfg_ac));
 	cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid, false);
 
-	if ((cac->flags & CXI_MAP_ATS) && pasid)
-		cass_unbind_ac(lni_priv->dev->pdev, pasid);
+	cass_unbind_ac(hw, cac);
 
 	cass_lac_free(lni_priv, cac->ac.lac);
 	cass_cac_free(hw, cac);

@@ -336,6 +336,9 @@ struct cass_ac {
 	struct dentry *debug_dir;
 	struct dentry *lni_dir;
 	refcount_t refcount;
+
+	u32 pasid;
+	struct iommu_sva *sva;
 };
 
 struct cass_p2p_ops {
@@ -1325,9 +1328,9 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv, struct ac_map_opts *m_opts,
 		  struct cass_ac *cac);
 int cass_ats_md_init(struct cxi_md_priv *md_priv, const struct ac_map_opts *m_opts);
 void cass_amd_iommu_inval_cb_init(struct pci_dev *pdev);
-void cass_unbind_ac(struct pci_dev *pdev, int pasid);
-void cass_iommu_fini(struct pci_dev *pdev);
+void cass_unbind_ac(struct cass_dev *hw, const struct cass_ac *cac);
 void cass_iommu_init(struct cass_dev *hw);
+void cass_iommu_fini(struct cass_dev *hw);
 
 void cass_hni_init(struct cass_dev *hw);
 void cass_hni_fini(struct cass_dev *hw);

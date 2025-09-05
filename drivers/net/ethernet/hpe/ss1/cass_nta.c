@@ -1784,6 +1784,7 @@ static void cass_pri_fault(struct cass_dev *hw,
 	/* Adjust iova to match va_start offset from addr */
 	m_opts.iova = iova - (addr - m_opts.va_start);
 	m_opts.md_priv = e;
+	m_opts.flags |= CXI_MAP_FAULT;
 
 	atu_debug("req_iova:%llx addr:%llx md:%d md.va:%llx iova:%llx start:%llx end:%llx va_len:%lx\n",
 		  iova, addr, e->md.id, e->md.va, m_opts.iova, m_opts.va_start,
@@ -1791,7 +1792,7 @@ static void cass_pri_fault(struct cass_dev *hw,
 
 	npages = m_opts.va_len >> cac->page_shift;
 	rc = cass_mirror_odp(&m_opts, cac, npages, m_opts.va_start);
-	if (!rc)
+	if (rc >= 0)
 		status = C_ATU_ODP_SUCCESS;
 	else {
 		atomic_inc(&hw->atu_odp_fails);

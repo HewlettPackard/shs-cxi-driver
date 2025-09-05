@@ -9,7 +9,6 @@
 #include <linux/pci.h>
 #include <linux/types.h>
 #include <linux/iommu.h>
-#include <linux/amd-iommu.h>
 
 #include "cass_core.h"
 
@@ -22,8 +21,11 @@
 #define ATU_NUM_PASIDS ATU_PHYS_AC
 #define MAX_PAGE_REQS 512
 
-/* PPR_FAULT_EXEC was removed with the iommu_v2 module */
-#ifdef PPR_FAULT_EXEC
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+#undef CONFIG_IOMMU_SVA
+#endif
+
+#ifdef CONFIG_IOMMU_SVA
 
 static bool enable_ats = true;
 module_param(enable_ats, bool, 0644);
@@ -34,97 +36,92 @@ module_param(odp_mode_nic_pri, bool, 0644);
 MODULE_PARM_DESC(odp_mode_nic_pri,
 		 "ODP mode used for ATS. ATS_PRS:0, NIC_PRI:1");
 
+static int cass_bind_sva(struct pci_dev *pdev, struct cass_ac *cac)
+{
+	u32 pasid;
+	struct iommu_sva *sva;
+
+	sva = iommu_sva_bind_device(&pdev->dev, current->mm);
+	if (IS_ERR(sva)) {
+		pr_err("iommu_sva_bind_device failed ret:%ld\n", PTR_ERR(sva));
+		return PTR_ERR(sva);
+	}
+
+	pasid = iommu_sva_get_pasid(sva);
+	if (pasid == IOMMU_PASID_INVALID) {
+		pr_err("pasid invalid\n");
+		iommu_sva_unbind_device(sva);
+		return -ENODEV;
+	}
+
+	cac->sva = sva;
+	cac->pasid = pasid;
+
+	return 0;
+}
+
+static void cass_unbind_sva(const struct cass_ac *cac)
+{
+	iommu_sva_unbind_device(cac->sva);
+}
+
 /**
  * cass_bind_ac() - Bind an address context to the current task.
  *
- * @pdev: pci device
- * @index: Use the AC index as the Process address space ID.
+ * @hw:  Cassini device
+ * @cac: Cassini AC struct
  *
  * @return: 0 on success
  */
-static int cass_bind_ac(struct pci_dev *pdev, int index)
+static int cass_bind_ac(struct cass_dev *hw, struct cass_ac *cac)
 {
-	return amd_iommu_bind_pasid(pdev, index, current);
+	struct pci_dev *pdev = hw->cdev.pdev;
+
+	if (!pdev->ats_enabled) {
+		cxidev_dbg(&hw->cdev, "ATS not enabled\n");
+		return -EOPNOTSUPP;
+	}
+
+	if (!pdev->pasid_enabled) {
+		cxidev_dbg(&hw->cdev, "PASID not enabled\n");
+		return -EOPNOTSUPP;
+	}
+
+	return cass_bind_sva(pdev, cac);
 }
 
 /**
  * cass_unbind_ac() - Unbind an address context. Called during AC cleanup.
  *
- * @pdev: pci device
- * @pasid: The AC index is used as the Process address space ID.
+ * @hw:  Cassini device
+ * @cac: Cassini AC struct
  */
-void cass_unbind_ac(struct pci_dev *pdev, int pasid)
+void cass_unbind_ac(struct cass_dev *hw, const struct cass_ac *cac)
 {
 	if (!enable_ats)
 		return;
 
-	amd_iommu_unbind_pasid(pdev, pasid);
+	if (cac->sva)
+		cass_unbind_sva(cac);
 }
 
-void cass_iommu_fini(struct pci_dev *pdev)
+void cass_iommu_fini(struct cass_dev *hw)
 {
-	if (!enable_ats)
-		return;
-
-	amd_iommu_free_device(pdev);
 }
 
 /**
- * cass_iommu_init() - Initialize the AMD IOMMU for the physical device
+ * cass_iommu_init() - Initialize the AMD/Intel IOMMU for the physical device
  *
- * If the AMD IOMMU is not enabled or available, ATS mode is not
- * supported.
+ * If the IOMMU is not enabled or available, ATS mode is not supported.
  *
  * @hw: Cassini device
  */
 void cass_iommu_init(struct cass_dev *hw)
 {
-	int ret;
 	int pos;
 	u32 filter_mask;
 	u32 max_requests;
 	struct pci_dev *pdev = hw->cdev.pdev;
-	struct amd_iommu_device_info info;
-	const u32 flags_req = AMD_IOMMU_DEVICE_FLAG_ATS_SUP |
-				AMD_IOMMU_DEVICE_FLAG_PRI_SUP |
-				AMD_IOMMU_DEVICE_FLAG_PASID_SUP;
-
-	if (!enable_ats)
-		return;
-
-	ret = amd_iommu_device_info(pdev, &info);
-	if (ret < 0)
-		return;
-
-	if ((info.flags & flags_req) != flags_req) {
-		dev_WARN(&pdev->dev,
-			 "Error: missing required iommu flag(s) %s %s %s %x\n",
-			 (info.flags & AMD_IOMMU_DEVICE_FLAG_ATS_SUP) ?
-				"" : "ATS",
-			 (info.flags & AMD_IOMMU_DEVICE_FLAG_PRI_SUP) ?
-				"" : "PRI",
-			 (info.flags & AMD_IOMMU_DEVICE_FLAG_PASID_SUP) ?
-				"" : "PASID",
-			 info.flags);
-		return;
-	}
-
-	if (info.max_pasids < ATU_NUM_PASIDS) {
-		dev_WARN(&pdev->dev,
-			 "Error max_pasids is %d, required %d\n",
-			 info.max_pasids, ATU_NUM_PASIDS);
-		return;
-	}
-
-	ret = amd_iommu_init_device(pdev, ATU_NUM_PASIDS);
-	if (ret < 0) {
-		dev_WARN(&pdev->dev,
-			 "Error initializing iommu device (%d)\n", ret);
-		return;
-	}
-
-	cass_amd_iommu_inval_cb_init(pdev);
-
 
 	/*
 	 * Mask length match for completions.
@@ -188,19 +185,18 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv,
 		  struct cass_ac *cac)
 {
 	int ret;
-	int pasid = 0;
 	bool privileged = !(m_opts->flags & CXI_MAP_USER_ADDR);
 	union c_atu_cfg_ac_table *ac = &cac->cfg_ac;
 	struct cxi_dev *cdev = lni_priv->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	bool have_pri = hw->cdev.pdev->pri_enabled;
 
 	if (!enable_ats)
 		return -EOPNOTSUPP;
 
-	ret = cass_bind_ac(cdev->pdev, cac->ac.acid);
+	ret = cass_bind_ac(hw, cac);
 	if (ret)
 		return ret;
-
-	pasid = cac->ac.acid;
 
 	if (m_opts->flags & CXI_MAP_ATS_PT)
 		ac->ta_mode = C_ATU_PASSTHROUGH_MODE;
@@ -219,14 +215,14 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv,
 	ac->ats_vf_en = 0;
 	ac->ats_vf_num = 0;
 	ac->ats_no_write = 0;
-	ac->ats_pasid = pasid;
-	ac->ats_pasid_en = !!pasid;
+	ac->ats_pasid = cac->pasid;
+	ac->ats_pasid_en = 1;
 	ac->ats_pasid_er = 0;
 	ac->ats_pasid_pmr = !!privileged;
 	ac->mem_base = cac->iova_base >> ATU_CFG_AC_TABLE_MB_SHIFT;
 	ac->mem_size = cac->iova_len >> C_ADDR_SHIFT;
-	ac->odp_mode = odp_mode_nic_pri ?
-			C_ATU_ODP_MODE_NIC_PRI : C_ATU_ODP_MODE_ATS_PRS;
+	ac->odp_mode = have_pri && !odp_mode_nic_pri ?
+			C_ATU_ODP_MODE_ATS_PRS : C_ATU_ODP_MODE_NIC_PRI;
 
 	return 0;
 }
@@ -250,12 +246,14 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 	int npages = md_priv->md.len >> md_priv->md.page_shift;
 	struct page **pages;
 	size_t size = npages * sizeof(*pages);
+	struct cass_dev *hw = container_of(md_priv->lni_priv->dev,
+					   struct cass_dev, cdev);
 
 	if (!enable_ats)
 		return -EOPNOTSUPP;
 
 	if (!(m_opts->flags & CXI_MAP_PIN)) {
-		if (odp_mode_nic_pri)
+		if (odp_mode_nic_pri || !hw->cdev.pdev->pri_enabled)
 			return cass_mmu_notifier_insert(md_priv, m_opts);
 
 		return 0;
@@ -277,12 +275,12 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 	return ret;
 }
 
-#else
-void cass_unbind_ac(struct pci_dev *pdev, int pasid)
+#else /* CONFIG_IOMMU_SVA */
+void cass_unbind_ac(struct cass_dev *hw, const struct cass_ac *cac)
 {
 }
 
-void cass_iommu_fini(struct pci_dev *pdev)
+void cass_iommu_fini(struct cass_dev *hw)
 {
 }
 
@@ -302,4 +300,4 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 {
 	return -ENODEV;
 }
-#endif /* CONFIG_AMD_IOMMU */
+#endif /* !CONFIG_IOMMU_SVA */
