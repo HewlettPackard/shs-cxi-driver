@@ -145,7 +145,6 @@ int cass_svc_init(struct cass_dev *hw)
 		.resource_limits = true,
 	};
 	int i, svc_id;
-	struct cxi_svc_priv *svc_priv;
 	struct cxi_rsrc_limits limits;
 
 	/* TODO differentiate PF/VF */
@@ -196,15 +195,6 @@ int cass_svc_init(struct cass_dev *hw)
 	svc_id = cxi_svc_alloc(&hw->cdev, &svc_desc, NULL, "default");
 	if (svc_id < 0)
 		return svc_id;
-
-	mutex_lock(&hw->svc_lock);
-	svc_priv = idr_find(&hw->svc_ids, svc_id);
-	mutex_unlock(&hw->svc_lock);
-
-	if (disable_default_svc) {
-		svc_priv->svc_desc.enable = 0;
-		cxi_rgroup_disable(svc_priv->rgroup);
-	}
 
 	svc_service_debugfs_create(hw);
 
@@ -773,16 +763,20 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		goto unlock;
 
 	/* SVC is enabled by default for backwards compatibility.
-	 * However, setting restricted_vnis = 0 now indicates that
-	 * VNI range will be setup after the service is enabled.
-	 * Do not enable the svc or the rgroup until then.
+	 * If disable_default_svc is true, the default service
+	 * will be disabled.
+	 * Setting restricted_vnis = 0 now indicates that a
+	 * VNI range will be set up after the service is enabled.
+	 * Do not enable the svc/rgroup/profiles until then.
 	 */
-	if (svc_desc->restricted_vnis) {
+	if (((cxi_rgroup_id(rgroup) == CXI_DEFAULT_SVC_ID) &&
+	     disable_default_svc) ||
+	    !svc_desc->restricted_vnis) {
+		svc_priv->svc_desc.enable = 0;
+	} else {
 		rc = svc_enable(dev, svc_priv, true);
 		if (rc)
 			goto free_resources;
-	} else {
-		svc_priv->svc_desc.enable = 0;
 	}
 
 	list_add_tail(&svc_priv->list, &hw->svc_list);
