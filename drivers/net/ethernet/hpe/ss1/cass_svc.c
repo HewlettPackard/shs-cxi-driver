@@ -1264,6 +1264,9 @@ int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
 		return -EINVAL;
 	}
 
+	if (!svc_priv->tx_profile[0])
+		return -ENOENT;
+
 	/* Grab the first TX Profile and report its exclusive_cp value */
 	rc = cxi_tx_profile_exclusive_cp(svc_priv->tx_profile[0]);
 
@@ -1398,6 +1401,11 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	if (!svc_priv->svc_desc.num_vld_vnis) {
 		cxidev_err(dev, "svc_id %u has no valid TX/RX profiles", svc_id);
 		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	if (!svc_priv->tx_profile[0]) {
+		rc = -ENOENT;
 		goto unlock_return;
 	}
 

@@ -439,6 +439,7 @@ EXPORT_SYMBOL(cxi_eth_tx_profile_cleanup);
  *
  * Return:
  * * 0      - success
+ * * -ENOENT - No tx_profile
  * * -EBADR - tx_profile_id unknown
  */
 int cxi_tx_profile_get_info(struct cxi_dev *dev,
@@ -446,6 +447,9 @@ int cxi_tx_profile_get_info(struct cxi_dev *dev,
 			    struct cxi_tx_attr *tx_attr,
 			    struct cxi_rxtx_profile_state *state)
 {
+	if (!tx_profile)
+		return -ENOENT;
+
 	cxi_rxtx_profile_get_info(&tx_profile->profile_common,
 				  &tx_attr->vni_attr, state);
 
@@ -772,6 +776,9 @@ EXPORT_SYMBOL(cxi_tx_profile_remove_ac_entries);
  */
 bool cxi_tx_profile_exclusive_cp(struct cxi_tx_profile *tx_profile)
 {
+	if (!tx_profile)
+		return false;
+
 	return tx_profile->config.exclusive_cp;
 }
 EXPORT_SYMBOL(cxi_tx_profile_exclusive_cp);
