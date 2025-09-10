@@ -389,8 +389,6 @@ static int validate_descriptor(struct cass_dev *hw,
 	int i;
 
 	if (svc_desc->restricted_vnis) {
-		if (!svc_desc->num_vld_vnis)
-			return -EINVAL;
 		if (svc_desc->num_vld_vnis > CXI_SVC_MAX_VNIS)
 			return -EINVAL;
 		for (i = 0; i < svc_desc->num_vld_vnis; i++) {
