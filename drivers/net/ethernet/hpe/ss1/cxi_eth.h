@@ -247,7 +247,7 @@ struct cxi_eth {
 
 	bool is_active;
 
-	struct cxi_rgroup *rgroup;
+	int svc_id;
 	u32 min_free;
 	u64 mac_addr;
 
