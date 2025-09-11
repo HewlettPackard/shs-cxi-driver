@@ -1258,16 +1258,18 @@ int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
 
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
 	if (!svc_priv) {
-		mutex_unlock(&hw->svc_lock);
-		return -EINVAL;
+		rc = -EINVAL;
+		goto unlock;
 	}
 
-	if (!svc_priv->tx_profile[0])
-		return -ENOENT;
+	if (!svc_priv->tx_profile[0]) {
+		rc = -ENOENT;
+		goto unlock;
+	}
 
 	/* Grab the first TX Profile and report its exclusive_cp value */
 	rc = cxi_tx_profile_exclusive_cp(svc_priv->tx_profile[0]);
-
+unlock:
 	mutex_unlock(&hw->svc_lock);
 
 	return rc;
