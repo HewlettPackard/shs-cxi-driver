@@ -605,6 +605,8 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 	}
 
 	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
+		struct cxi_tx_attr tx_attr = {};
+		struct cxi_rx_attr rx_attr = {};
 		struct cxi_rxtx_vni_attr restricted_vni_attr = {
 			.ignore = 0,
 			.match = svc_desc->vnis[i],
@@ -615,12 +617,8 @@ static int alloc_rxtx_profiles(struct cxi_dev *dev,
 		if (!svc_desc->restricted_vnis)
 			vni_attr = vni_range_attr;
 
-		struct cxi_tx_attr tx_attr = {
-			.vni_attr = *vni_attr
-		};
-		struct cxi_rx_attr rx_attr = {
-			.vni_attr = *vni_attr
-		};
+		tx_attr.vni_attr = *vni_attr;
+		rx_attr.vni_attr = *vni_attr;
 
 		svc_priv->tx_profile[i] = cxi_dev_alloc_tx_profile(dev,
 								   &tx_attr);
