@@ -94,7 +94,8 @@ test_expect_success "Invalid param test program for configfs" "
 	$CONFIG_UTILITY  set-tc --tx-profile tx1 low_latency true &&
 	$CONFIG_UTILITY  set-tc --tx-profile tx1 bulk_data true &&
 	$CONFIG_UTILITY enable --tx-profile tx1 &&
-	test_expect_code 1 ../../../ucxi/test_ucxi_atu -s 1 -v 123 -d cxi0 &> ../$(basename "$0").inv.vni.test.output &&
+	test_expect_code 0 ../../../ucxi/test_ucxi_atu -s 1 -v 123 -d cxi0 &> ../$(basename "$0").inv.vni.test.output &&
+	test_expect_code 1 ../../../ucxi/test_ucxi_atu -u 791 -s 1 -v 123 -d cxi0 &> ../$(basename "$0").inv.vni.test.output &&
 	test_expect_code 1 ../../../ucxi/test_ucxi_atu -s 2 -v 130 -d cxi0 &> ../$(basename "$0").inv.rgroup.test.output &&
 	test_expect_code 1 ../../../ucxi/test_ucxi_atu -s 1 -v 134 -d cxi6 &> ../$(basename "$0").inv.device.test.output
 "
