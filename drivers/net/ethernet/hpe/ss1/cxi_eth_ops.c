@@ -1065,6 +1065,8 @@ int hw_setup(struct cxi_eth *dev)
 		.limits = limits,
 		.is_system_svc = true,
 		.restricted_members = true,
+		.restricted_vnis = true,
+		.num_vld_vnis = 0,
 		.enable = true,
 		.members[0] = {
 			.type = CXI_SVC_MEMBER_UID,
