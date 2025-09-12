@@ -1219,8 +1219,7 @@ int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
 	/* One VNI Range will be allowed, tied to tx_profile 0.
 	 * This call will fail if the svc/tx_profile is already enabled
 	 */
-	if (!svc_priv->tx_profile ||
-	    !svc_priv->tx_profile[0]) {
+	if (!svc_priv->tx_profile[0]) {
 		cxidev_err(dev, "tx_profile[0] not initialized for svc_id: %d\n",
 			   svc_id);
 		rc = -EINVAL;
@@ -1261,8 +1260,7 @@ int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
 		goto unlock;
 	}
 
-	if (!svc_priv->tx_profile ||
-	    !svc_priv->tx_profile[0]) {
+	if (!svc_priv->tx_profile[0]) {
 		rc = -ENOENT;
 		goto unlock;
 	}
@@ -1404,8 +1402,7 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 		goto unlock_return;
 	}
 
-	if (!svc_priv->tx_profile ||
-	    !svc_priv->tx_profile[0]) {
+	if (!svc_priv->tx_profile[0]) {
 		rc = -ENOENT;
 		goto unlock_return;
 	}
