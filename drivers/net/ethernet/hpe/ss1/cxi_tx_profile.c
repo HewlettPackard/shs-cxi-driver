@@ -317,6 +317,9 @@ int cxi_tx_profile_enable(struct cxi_dev *dev,
 	if (!tx_profile)
 		return -EINVAL;
 
+	if (cxi_tx_profile_is_enabled(tx_profile))
+		return 0;
+
 	if (zero_vni(&tx_profile->profile_common.vni_attr)) {
 		pr_debug("Cannot enable profile with invalid VNI\n");
 		return -EINVAL;
@@ -339,6 +342,9 @@ void cxi_tx_profile_disable(struct cxi_dev *dev,
 			    struct cxi_tx_profile *tx_profile)
 {
 	if (!tx_profile)
+		return;
+
+	if (!cxi_tx_profile_is_enabled(tx_profile))
 		return;
 
 	tx_profile->profile_common.state.enable = false;

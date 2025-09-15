@@ -185,6 +185,9 @@ int cxi_rx_profile_enable(struct cxi_dev *dev,
 	if (!rx_profile)
 		return -EINVAL;
 
+	if (cxi_rx_profile_is_enabled(rx_profile))
+		return 0;
+
 	attr = &rx_profile->profile_common.vni_attr;
 
 	if (zero_vni(attr)) {
