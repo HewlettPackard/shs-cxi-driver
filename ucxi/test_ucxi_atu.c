@@ -282,7 +282,7 @@ int main(int argc, char **argv)
 	DPRINT("Target CQ allocated: %d\n", target_cq->cq);
 
 	/* Set an LCID */
-	rc = cxi_cq_emit_cq_lcid(&transmit_cq->cmdq, 0);
+	rc = cxi_cq_emit_cq_lcid(&transmit_cq->cmdq, cp->lcid);
 	if (rc) {
 		fprintf(stderr, "Command emit failure\n");
 		return 1;

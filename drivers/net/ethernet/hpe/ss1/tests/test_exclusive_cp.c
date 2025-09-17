@@ -378,8 +378,7 @@ static int test_setup(struct cxi_dev *dev)
 		      dev->prop.pid_bits, pid_offset,
 		      &dfa, &index_ext);
 
-	/* Set LCID to index 0 */
-	rc = cxi_cq_emit_cq_lcid(cq_transmit, 0);
+	rc = cxi_cq_emit_cq_lcid(cq_transmit, cp->lcid);
 	if (rc)
 		pr_err("Emit LCID failed: %d\n", rc);
 

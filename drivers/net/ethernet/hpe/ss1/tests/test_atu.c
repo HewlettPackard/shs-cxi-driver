@@ -445,8 +445,7 @@ static int test_setup(struct tdev *tdev, int svc_id)
 		      tdev->dev->prop.pid_bits, tdev->pid_offset,
 		      &tdev->dfa, &tdev->index_ext);
 
-	/* Set LCID to index 0 */
-	rc = cxi_cq_emit_cq_lcid(tdev->cq_transmit, 0);
+	rc = cxi_cq_emit_cq_lcid(tdev->cq_transmit, tdev->cp->lcid);
 	if (rc)
 		pr_err("Emit LCID failed: %d\n", rc);
 
@@ -1926,7 +1925,7 @@ static int test_atu(struct tdev *tdev)
 		tdev->index_ext);
 
 	/* Set LCID to index 0 */
-	rc = cxi_cq_emit_cq_lcid(tdev->cq_transmit, 0);
+	rc = cxi_cq_emit_cq_lcid(tdev->cq_transmit, tdev->cp->lcid);
 	if (rc)
 		pr_err("Emit LCID failed: %d\n", rc);
 

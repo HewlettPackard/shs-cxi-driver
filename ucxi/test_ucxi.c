@@ -429,7 +429,7 @@ int test_main(char *device, int service)
 	fprintf(stderr, "Attempt illegal multicast address reuse passed\n");
 
 	/* Set an LCID */
-	rc = cxi_cq_emit_cq_lcid(&transmit_cq->cmdq, 0);
+	rc = cxi_cq_emit_cq_lcid(&transmit_cq->cmdq, cp->lcid);
 	if (rc) {
 		fprintf(stderr, "Command emit failure\n");
 		return 1;
