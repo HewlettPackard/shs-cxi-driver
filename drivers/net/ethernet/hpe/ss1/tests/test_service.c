@@ -8,7 +8,15 @@
 #define TLE_COUNT 10U
 #define TIMEOUT 2U
 
-static bool test_pass = true;
+/* List of devices registered with this client */
+static LIST_HEAD(dev_list);
+static DEFINE_MUTEX(dev_list_mutex);
+
+/* Keep track of known devices. Protected by dev_list_mutex. */
+struct tdev {
+	struct list_head dev_list;
+	struct cxi_dev *dev;
+};
 
 #define test_err(fmt, ...) pr_err("%s:%d " fmt, __func__, __LINE__, \
 	##__VA_ARGS__)
@@ -411,6 +419,7 @@ static int test_service_busy(struct cxi_dev *dev)
 	struct cxi_svc_desc desc = {
 		.enable = 1,
 		.is_system_svc = 1,
+		.restricted_vnis = 1,
 		.num_vld_vnis = 1,
 		.vnis[0] = VNI,
 		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
@@ -462,7 +471,7 @@ static int test_service_busy(struct cxi_dev *dev)
 err_free_lni:
 	cxi_lni_free(lni);
 err_free_svc:
-	rc = cxi_svc_destroy(dev, desc.svc_id);
+	cxi_svc_destroy(dev, desc.svc_id);
 err:
 	return rc;
 }
@@ -632,56 +641,102 @@ err:
 	return rc;
 }
 
-static int add_device(struct cxi_dev *dev)
+static int run_tests(struct cxi_dev *dev)
 {
 	int rc;
 
 	rc = test_service_busy(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_service_busy failed: %d\n", rc);
+		return -EIO;
 	}
 
 	rc = test_service_tle_in_use(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_service_tle_in_use failed: %d\n", rc);
+		return -EIO;
 	}
 
 	rc = test_service_modify(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_service_modify failed: %d\n", rc);
+		return -EIO;
 	}
 
 	rc = test_disabled_service(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_service_tle_in_use failed: %d\n", rc);
+		return -EIO;
 	}
 
 	rc = test_default_service(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_default_service failed: %d\n", rc);
+		return -EIO;
 	}
 
 	rc = test_restricted_members_service(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_restricted_members_service failed: %d\n", rc);
+		return -EIO;
 	}
 	rc = test_service_vni_range(dev);
 	if (rc) {
-		test_pass = false;
 		test_err("test_service_vni failed: %d\n", rc);
+		return -EIO;
 	}
 
-	return rc;
+	return 0;
+}
+
+static int add_device(struct cxi_dev *dev)
+{
+	int rc;
+	struct tdev *tdev;
+
+	tdev = kzalloc(sizeof(*tdev), GFP_KERNEL);
+	if (!tdev)
+		return -ENOMEM;
+
+	tdev->dev = dev;
+
+	rc = run_tests(dev);
+	if (rc)
+		goto fail;
+
+	pr_info("Tests passed\n");
+
+	pr_info("Adding template client for device %s\n", dev->name);
+	mutex_lock(&dev_list_mutex);
+	list_add_tail(&tdev->dev_list, &dev_list);
+	mutex_unlock(&dev_list_mutex);
+
+	return 0;
+
+fail:
+	return -ENODEV;
 }
 
 static void remove_device(struct cxi_dev *dev)
 {
+	struct tdev *tdev;
+	bool found = false;
+
+	/* Find the device in the list */
+	mutex_lock(&dev_list_mutex);
+	list_for_each_entry_reverse(tdev, &dev_list, dev_list) {
+		if (tdev->dev == dev) {
+			found = true;
+			list_del(&tdev->dev_list);
+			break;
+		}
+	}
+	mutex_unlock(&dev_list_mutex);
+
+	if (!found)
+		return;
+
+	kfree(tdev);
 }
 
 static struct cxi_client cxiu_client = {
@@ -691,20 +746,23 @@ static struct cxi_client cxiu_client = {
 
 static int __init init(void)
 {
-	int rc;
+	int ret;
 
-	rc = cxi_register_client(&cxiu_client);
-	if (rc)
-		test_err("cxi_register_client failed: %d\n", rc);
+	ret = cxi_register_client(&cxiu_client);
+	if (ret) {
+		pr_err("Couldn't register client\n");
+		goto out;
+	}
 
-	if (!test_pass)
-		rc = -EIO;
+	return 0;
 
-	return rc;
+out:
+	return ret;
 }
 
 static void __exit cleanup(void)
 {
+	pr_info("Removing template client\n");
 	cxi_unregister_client(&cxiu_client);
 }
 

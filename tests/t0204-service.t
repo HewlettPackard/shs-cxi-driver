@@ -21,10 +21,19 @@ test_expect_success "Inserting service API test driver" "
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
-test_expect_success "Removing service API test driver" "
-	rmmod test-service
+test_expect_success "Check for success" "
+	[ $(dmesg | grep -c 'Tests passed') -eq 1 ]
 "
 
+if [ $(dmesg | grep -c 'Tests passed') -eq 0 ]; then
+	dmesg
+fi
+
 dmesg > ../$(basename "$0").dmesg.txt
+
+test_expect_success "Removing service API test driver" "
+	rmmod test-service &&
+	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
+"
 
 test_done
