@@ -20,27 +20,36 @@ VM_INIT_SCRIPT=${VM_INIT_SCRIPT:='./startvm-setup.sh'}
 
 export OMPI_MCA_btl_base_warn_component_unused=0
 
-# If the emulator is not running, start it. This script must run under
-# its control, so qemu can connect to it. Simply relaunch self under
-# netsim's control.
-if [[ ! -v NETSIM_ID ]]; then
-	exec ../../nic-emu/netsim $@ $(basename $0)
-fi
-
 # Check whether this script is already in a VM or not (ie. running
 # under a hypervisor.) If not, we'll need a different setup for nested
 # VMs.
 HYP=$(grep -c "^flags.* hypervisor" /proc/cpuinfo)
 
+# If the emulator is not running, start it. This script must run under
+# its control, so qemu can connect to it. Simply relaunch self under
+# netsim's control.
+if [[ $HYP -eq 0 ]]; then
+	if [[ ! -v NETSIM_ID ]]; then
+		exec ../../nic-emu/netsim $@ $(basename $0)
+	fi
+
+	if [[ $NETSIM_NICS -eq 1 ]]; then
+		CCN_OPTS="-device $NETSIM_CCN,addr=8"
+	elif [[ $NETSIM_NICS -eq 2 ]]; then
+		CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=13"
+	elif [[ $NETSIM_NICS -eq 4 ]]; then
+		CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=0xd -device $NETSIM_CCN,addr=0x12 -device $NETSIM_CCN,addr=0x17"
+	fi
+else
+	NETSIM_NICS=0
+	echo "****** This VM is running inside another VM ******"
+fi
+
 . ../tests/framework.sh
 
-if [[ $NETSIM_NICS -eq 1 ]]; then
-	CCN_OPTS="-device $NETSIM_CCN,addr=8"
-elif [[ $NETSIM_NICS -eq 2 ]]; then
-	CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=13"
-elif [[ $NETSIM_NICS -eq 4 ]]; then
-	CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=0xd -device $NETSIM_CCN,addr=0x12 -device $NETSIM_CCN,addr=0x17"
-fi
+# Load vsock modules on host for VF-PF communication
+modprobe vsock 2>/dev/null || echo "Warning: Could not load vsock module"
+modprobe vhost_vsock 2>/dev/null || echo "Warning: Could not load vhost_vsock module"
 
 # -M q35 = Standard PC (Q35 + ICH9, 2009) (alias of pc-q35-2.10)
 # MSI-X needs interrupt remapping enabled to fully work.
@@ -85,7 +94,7 @@ else
 	DEVICE=$(cat /sys/class/cxi/cxi0/device/virtfn0/device)
 
 	# Unbind VF from cxi core driver. cxi1 no longer exists
-	echo $PCIFN > /sys/bus/pci/drivers/cxi-ss1/unbind
+	echo $PCIFN > /sys/bus/pci/drivers/cxi_ss1/unbind
 
 	# Bind the VF to vfio driver
 	modprobe vfio_pci
@@ -93,6 +102,9 @@ else
 
 	# Tell qemu to bind the VF
 	QEMU_OPTS="$QEMU_OPTS -device vfio-pci,host=$PCIFN"
+
+	# Add vhost-vsock device for VF-PF communication
+	QEMU_OPTS="$QEMU_OPTS -device vhost-vsock-pci,guest-cid=4"
 fi
 
 PATH=$QEMU_DIR:$VIRTME_DIR:/sbin:$PATH
