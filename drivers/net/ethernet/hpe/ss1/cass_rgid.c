@@ -199,7 +199,7 @@ int cass_rgid_get(struct cass_dev *hw, struct cxi_rgroup *rgroup)
 
 	xa_lock(&hw->rgid_array);
 
-	xa_for_each_start(&hw->rgid_array, idx, rgidp, 1) {
+	xa_for_each(&hw->rgid_array, idx, rgidp) {
 		if ((rgidp->svc_id == rgroup->id) &&
 		    (rgidp->lnis == lnis_per_rgid) &&
 		    (refcount_read(&rgidp->refcount) < rgidp->lnis)) {
