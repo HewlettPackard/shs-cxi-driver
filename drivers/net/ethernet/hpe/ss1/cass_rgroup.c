@@ -114,7 +114,7 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		if (le_pool_id < 0) {
 			pr_debug("%s pool unavailable.\n",
 				 cxi_resource_type_to_str(resource->type));
-			rc = -ENOSPC;
+			rc = -EBADR;
 			goto unlock;
 		}
 
@@ -129,7 +129,7 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		if (tle_pool_id < 0) {
 			pr_debug("%s pool unavailable.\n",
 				 cxi_resource_type_to_str(resource->type));
-			rc = -ENOSPC;
+			rc = -EBADR;
 			goto unlock;
 		}
 

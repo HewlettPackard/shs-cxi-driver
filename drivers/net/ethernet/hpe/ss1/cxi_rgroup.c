@@ -840,6 +840,8 @@ bool cxi_rgroup_valid_user(struct cxi_rgroup *rgroup)
  * * -ENOMEM - unable to allocate memory for resources
  * * -EEXIST - resource already exists within group
  * * -EBUSY  - rgroup is enabled
+ * * -ENOSPC - No space to add resource
+ * * -EBADR  - Failed to allocate an LE or TLE pool
  */
 int cxi_rgroup_add_resource(struct cxi_rgroup *rgroup,
 			    enum cxi_resource_type type,

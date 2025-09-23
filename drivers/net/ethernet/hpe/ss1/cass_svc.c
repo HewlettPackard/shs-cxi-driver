@@ -364,6 +364,14 @@ nospace:
 			pr_debug("resource %s add_resource failed %d\n",
 				 cxi_rsrc_type_to_str(i), rc);
 
+			if (rc == -EBADR) {
+				if (i == CXI_RSRC_TYPE_TLE)
+					fail_info->no_tle_pools = true;
+
+				if (i == CXI_RSRC_TYPE_LE)
+					fail_info->no_le_pools = true;
+			}
+
 			goto err;
 		}
 	}
