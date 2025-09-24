@@ -3,6 +3,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/hpe/cxi/cxi.h>
+#include "cass_core.h"
 
 #define VNI 8U
 #define TLE_COUNT 10U
@@ -10,9 +11,9 @@
 
 /* List of devices registered with this client */
 static LIST_HEAD(dev_list);
-static DEFINE_MUTEX(dev_list_mutex);
+static DEFINE_MUTEX(device_list_mutex);
 
-/* Keep track of known devices. Protected by dev_list_mutex. */
+/* Keep track of known devices. Protected by device_list_mutex. */
 struct tdev {
 	struct list_head dev_list;
 	struct cxi_dev *dev;
@@ -641,9 +642,153 @@ err:
 	return rc;
 }
 
+static int test_le_full(struct cxi_dev *dev)
+{
+	int i;
+	int j;
+	int rc;
+	int rc1;
+	int pools = CASS_NUM_LE_POOLS;
+	struct cxi_svc_fail_info info = {};
+	int svc_ids[CASS_NUM_LE_POOLS + 1];
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_desc desc = {
+		.enable = 1,
+		.is_system_svc = 1,
+		.restricted_vnis = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = 16,
+		.resource_limits = 1,
+		.limits.type[CXI_RSRC_TYPE_LE].max = 1,
+		.limits.type[CXI_RSRC_TYPE_LE].res = 1,
+	};
+
+	/* get the next le pool id */
+	rc = ida_simple_get(&hw->le_pool_ids[0], DEFAULT_LE_POOL_ID,
+			    CASS_NUM_LE_POOLS, GFP_NOWAIT);
+	if (rc < 0) {
+		test_err("ida_simple_get failed %d\n", rc);
+		goto err;
+	}
+	ida_simple_remove(&hw->le_pool_ids[0], rc);
+	pools -= rc;
+	rc = 0;
+
+	for (i = 0; i <= pools; i++) {
+		desc.vnis[0] = 16 + i;
+		rc = cxi_svc_alloc(dev, &desc, &info, "le-full");
+		if (i == pools && rc == -EBADR) {
+			if (!info.no_le_pools)
+				test_err("iter:%d no_le_pools check failed\n",
+					 i);
+			rc = 0;
+			break;
+		}
+
+		if (rc < 0) {
+			test_err("iter:%d cxi_svc_alloc failed:%d\n", i, rc);
+			test_err("failinfo no_le_pools:%d no_tle_pools:%d\n",
+				 info.no_le_pools, info.no_tle_pools);
+			break;
+		}
+		svc_ids[i] = rc;
+	}
+
+	for (j = i - 1; j >= 0; j--) {
+		rc1 = cxi_svc_destroy(dev, svc_ids[j]);
+		if (rc1) {
+			test_err("iter:%d cxi_svc_destroy svc_id:%d failed:%d\n",
+				 j, svc_ids[j], rc1);
+			rc = rc1;
+			goto err;
+		}
+	}
+
+err:
+	return rc;
+}
+
+static int test_tle_full(struct cxi_dev *dev)
+{
+	int i;
+	int j;
+	int rc;
+	int rc1;
+	int pools = C_CQ_CFG_TLE_POOL_ENTRIES;
+	struct cxi_svc_fail_info info = {};
+	int svc_ids[C_CQ_CFG_TLE_POOL_ENTRIES + 1];
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_desc desc = {
+		.enable = 1,
+		.is_system_svc = 1,
+		.restricted_vnis = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = 16,
+		.resource_limits = 1,
+		.limits.type[CXI_RSRC_TYPE_TLE].max = 8,
+		.limits.type[CXI_RSRC_TYPE_TLE].res = 8,
+	};
+
+	/* get the next tle pool id */
+	rc = ida_simple_get(&hw->tle_pool_ids, DEFAULT_TLE_POOL_ID,
+			    C_CQ_CFG_TLE_POOL_ENTRIES, GFP_NOWAIT);
+	if (rc < 0) {
+		test_err("ida_simple_get failed %d\n", rc);
+		goto err;
+	}
+	ida_simple_remove(&hw->tle_pool_ids, rc);
+	pools -= rc;
+	rc = 0;
+
+	for (i = 0; i <= pools; i++) {
+		desc.vnis[0] = 16 + i;
+		rc = cxi_svc_alloc(dev, &desc, &info, "tle-full");
+		if (i == pools && rc == -EBADR) {
+			if (!info.no_tle_pools)
+				test_err("iter:%d no_tle_pools check failed\n",
+					 i);
+			rc = 0;
+			break;
+		}
+
+		if (rc < 0) {
+			test_err("iter:%d cxi_svc_alloc failed:%d\n", i, rc);
+			test_err("failinfo no_le_pools:%d no_tle_pools:%d\n",
+				 info.no_le_pools, info.no_tle_pools);
+			break;
+		}
+		svc_ids[i] = rc;
+	}
+
+	for (j = i - 1; j >= 0; j--) {
+		rc1 = cxi_svc_destroy(dev, svc_ids[j]);
+		if (rc1) {
+			test_err("iter:%d cxi_svc_destroy svc_id:%d failed:%d\n",
+				 j, svc_ids[j], rc1);
+			rc = rc1;
+			goto err;
+		}
+	}
+
+err:
+	return rc;
+}
+
 static int run_tests(struct cxi_dev *dev)
 {
 	int rc;
+
+	rc = test_le_full(dev);
+	if (rc) {
+		test_err("test_le_full failed: %d\n", rc);
+		return -EIO;
+	}
+
+	rc = test_tle_full(dev);
+	if (rc) {
+		test_err("test_tle_full failed: %d\n", rc);
+		return -EIO;
+	}
 
 	rc = test_service_busy(dev);
 	if (rc) {
@@ -707,9 +852,9 @@ static int add_device(struct cxi_dev *dev)
 	pr_info("Tests passed\n");
 
 	pr_info("Adding template client for device %s\n", dev->name);
-	mutex_lock(&dev_list_mutex);
+	mutex_lock(&device_list_mutex);
 	list_add_tail(&tdev->dev_list, &dev_list);
-	mutex_unlock(&dev_list_mutex);
+	mutex_unlock(&device_list_mutex);
 
 	return 0;
 
@@ -723,7 +868,7 @@ static void remove_device(struct cxi_dev *dev)
 	bool found = false;
 
 	/* Find the device in the list */
-	mutex_lock(&dev_list_mutex);
+	mutex_lock(&device_list_mutex);
 	list_for_each_entry_reverse(tdev, &dev_list, dev_list) {
 		if (tdev->dev == dev) {
 			found = true;
@@ -731,7 +876,7 @@ static void remove_device(struct cxi_dev *dev)
 			break;
 		}
 	}
-	mutex_unlock(&dev_list_mutex);
+	mutex_unlock(&device_list_mutex);
 
 	if (!found)
 		return;
