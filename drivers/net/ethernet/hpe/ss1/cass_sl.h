@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2022,2023,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2022,2023,2024,2025 Hewlett Packard Enterprise Development LP */
 
 #ifndef _CASS_SL_H_
 #define _CASS_SL_H_
 
-#include <linux/sl_media.h>
-#include <linux/sl_link.h>
-#include <linux/sl_llr.h>
-#include <linux/sl_mac.h>
-#include <linux/sl_lgrp.h>
-#include <linux/sl_ldev.h>
-#include <linux/sl_fec.h>
+#include <linux/hpe/sl/sl_media.h>
+#include <linux/hpe/sl/sl_link.h>
+#include <linux/hpe/sl/sl_llr.h>
+#include <linux/hpe/sl/sl_mac.h>
+#include <linux/hpe/sl/sl_lgrp.h>
+#include <linux/hpe/sl/sl_ldev.h>
+#include <linux/hpe/sl/sl_fec.h>
 
 struct cass_sl_dev {
 	bool                         is_initialized;
