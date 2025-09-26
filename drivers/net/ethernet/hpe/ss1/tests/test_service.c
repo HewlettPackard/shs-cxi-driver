@@ -677,7 +677,7 @@ static int test_le_full(struct cxi_dev *dev)
 	for (i = 0; i <= pools; i++) {
 		desc.vnis[0] = 16 + i;
 		rc = cxi_svc_alloc(dev, &desc, &info, "le-full");
-		if (i == pools && rc == -EBADR) {
+		if (i == pools && rc == -ENOSPC) {
 			if (!info.no_le_pools)
 				test_err("iter:%d no_le_pools check failed\n",
 					 i);
@@ -743,7 +743,7 @@ static int test_tle_full(struct cxi_dev *dev)
 	for (i = 0; i <= pools; i++) {
 		desc.vnis[0] = 16 + i;
 		rc = cxi_svc_alloc(dev, &desc, &info, "tle-full");
-		if (i == pools && rc == -EBADR) {
+		if (i == pools && rc == -ENOSPC) {
 			if (!info.no_tle_pools)
 				test_err("iter:%d no_tle_pools check failed\n",
 					 i);

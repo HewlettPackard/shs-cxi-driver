@@ -370,6 +370,7 @@ nospace:
 
 				if (i == CXI_RSRC_TYPE_LE)
 					fail_info->no_le_pools = true;
+				rc = -ENOSPC;
 			}
 
 			goto err;
