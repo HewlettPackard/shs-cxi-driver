@@ -1118,8 +1118,8 @@ int register_error_handlers(struct cass_dev *hw)
 		vec = pci_irq_vector(hw->cdev.pdev, irq);
 		hw->err_irq_vecs[irq] = vec;
 
-		sprintf(hw->err_int_names[irq], "%s_err_%s",
-			hw->cdev.name, INFO(irq, 0).csr_name_lo);
+		scnprintf(hw->err_int_names[irq], sizeof(hw->err_int_names[irq]),
+			  "%s_err_%s", hw->cdev.name, INFO(irq, 0).csr_name_lo);
 		rc = request_irq(vec, error_irq_cb, 0,
 				 hw->err_int_names[irq], hw);
 		if (rc) {

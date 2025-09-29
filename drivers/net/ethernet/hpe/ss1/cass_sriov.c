@@ -466,7 +466,8 @@ int cass_vf_init(struct cass_dev *hw)
 
 	init_completion(&hw->pf_to_vf_comp);
 
-	sprintf(hw->pf_vf_int_name, "%s_from_pf", hw->cdev.name);
+	scnprintf(hw->pf_vf_int_name, sizeof(hw->pf_vf_int_name),
+		  "%s_from_pf", hw->cdev.name);
 	hw->pf_vf_vec = pci_irq_vector(hw->cdev.pdev, 0);
 	rc = request_irq(hw->pf_vf_vec, pf_to_vf_int_cb, 0, hw->pf_vf_int_name, hw);
 	if (rc)

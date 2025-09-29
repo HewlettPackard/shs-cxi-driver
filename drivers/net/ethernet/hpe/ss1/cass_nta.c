@@ -142,7 +142,8 @@ int cass_nta_cq_init(struct cass_dev *hw)
 	mutex_init(&cq->atu_ib_mutex);
 	cass_write(hw, C_ATU_CFG_WB_DATA, &wb_data, sizeof(wb_data));
 
-	sprintf(cq->cmpl_wait_int_name, "%s_atu_cq", hw->cdev.name);
+	scnprintf(cq->cmpl_wait_int_name, sizeof(cq->cmpl_wait_int_name),
+		  "%s_atu_cq", hw->cdev.name);
 	rc = request_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_cq_vec),
 			 cass_nta_cq_cb, 0, cq->cmpl_wait_int_name, hw);
 	if (rc) {
@@ -212,7 +213,8 @@ int cass_nta_pri_init(struct cass_dev *hw)
 
 	hw->pri_rd_ptr = 0;
 
-	sprintf(hw->odp_pri_int_name, "%s_odp_pri", hw->cdev.name);
+	scnprintf(hw->odp_pri_int_name, sizeof(hw->odp_pri_int_name),
+		  "%s_odp_pri", hw->cdev.name);
 	rc = request_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec),
 			 cass_pri_int_cb, 0, hw->odp_pri_int_name, hw);
 	if (rc) {

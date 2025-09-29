@@ -183,7 +183,8 @@ int cass_irq_init(struct cass_dev *hw)
 		irq->vec = pci_irq_vector(pdev, irq->idx);
 		mutex_init(&irq->lock);
 
-		sprintf(irq->irq_name, "%s_comp%d", hw->cdev.name, i);
+		scnprintf(irq->irq_name, sizeof(irq->irq_name),
+			  "%s_comp%d", hw->cdev.name, i);
 		cpumask_set_cpu(cpumask_local_spread(i, numa), &irq->mask);
 	}
 
