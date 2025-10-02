@@ -908,22 +908,33 @@ int cxi_svc_rsrc_list_get(struct cxi_dev *dev, int count,
 {
 
 	int i = 0;
-	struct cxi_svc_priv *svc_priv;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	unsigned int rgroup_count;
+	unsigned long index;
+	struct cxi_rgroup *rgroup;
 
 	mutex_lock(&hw->svc_lock);
+	cxi_dev_lock_rgroup_list(hw);
 
-	if (count < hw->svc_count) {
+	rgroup_count = cxi_dev_get_rgroup_count(dev);
+	if (count < rgroup_count) {
+		cxi_dev_unlock_rgroup_list(hw);
 		mutex_unlock(&hw->svc_lock);
-		return hw->svc_count;
+		return rgroup_count;
 	}
 
-	list_for_each_entry(svc_priv, &hw->svc_list, list) {
-		copy_rsrc_use(dev, &rsrc_list[i], svc_priv->rgroup);
-		rsrc_list[i].svc_id = svc_priv->svc_desc.svc_id;
+	for_each_rgroup(index, rgroup) {
+		if (i >= rgroup_count) {
+			pr_debug("Found more rgroups than expected: %u\n", rgroup_count);
+			break;
+		}
+
+		copy_rsrc_use(dev, &rsrc_list[i], rgroup);
+		rsrc_list[i].svc_id = rgroup->id;
 		i++;
 	}
 
+	cxi_dev_unlock_rgroup_list(hw);
 	mutex_unlock(&hw->svc_lock);
 
 	return i;
@@ -957,6 +968,67 @@ int cxi_svc_rsrc_get(struct cxi_dev *dev, unsigned int svc_id,
 }
 EXPORT_SYMBOL(cxi_svc_rsrc_get);
 
+static enum cxi_svc_member_type ac_type_to_svc_mbr(enum cxi_ac_type type)
+{
+	switch (type) {
+	case CXI_AC_UID:
+		return CXI_SVC_MEMBER_UID;
+	case CXI_AC_GID:
+		return CXI_SVC_MEMBER_GID;
+	default:
+		return CXI_SVC_MEMBER_IGNORE;
+	}
+}
+
+static void add_rgroup_ac_entry_to_svc(struct cxi_svc_desc *desc,
+				       struct cxi_rgroup *rgroup)
+{
+	int i;
+	int rc;
+	size_t num_ids;
+	size_t max_ids;
+	unsigned int *ac_entry_ids = NULL;
+	enum cxi_ac_type ac_type;
+	union cxi_ac_data ac_data;
+
+	desc->restricted_members = false;
+
+	rc = cxi_rgroup_get_ac_entry_ids(rgroup, 0, ac_entry_ids, &num_ids);
+	if (rc && rc != -ENOSPC)
+		return;
+
+	ac_entry_ids = kmalloc_array(num_ids, sizeof(*ac_entry_ids),
+				     GFP_ATOMIC);
+	if (!ac_entry_ids)
+		return;
+
+	rc = cxi_rgroup_get_ac_entry_ids(rgroup, num_ids, ac_entry_ids,
+					 &max_ids);
+	if (rc)
+		goto freemem;
+
+	for (i = 0; i < num_ids; i++) {
+		rc = cxi_rgroup_get_ac_entry_data(rgroup, ac_entry_ids[i],
+						  &ac_type, &ac_data);
+		if (rc || ac_type == CXI_AC_OPEN)
+			goto freemem;
+	}
+
+	desc->restricted_members = true;
+	for (i = 0; i < num_ids && i < CXI_SVC_MAX_MEMBERS; i++) {
+		rc = cxi_rgroup_get_ac_entry_data(rgroup, ac_entry_ids[i],
+						  &ac_type, &ac_data);
+		if (rc)
+			continue;
+
+		desc->members[i].type = ac_type_to_svc_mbr(ac_type);
+		desc->members[i].svc_member.uid = ac_data.uid;
+	}
+
+freemem:
+	kfree(ac_entry_ids);
+}
+
 /*
  * cxi_svc_list_get - Assemble list of active services descriptors
  *
@@ -975,22 +1047,66 @@ int cxi_svc_list_get(struct cxi_dev *dev, int count,
 {
 
 	int i = 0;
+	int ret;
+	enum cxi_resource_type rt;
+	enum cxi_rsrc_type svc_rt;
+	unsigned int rgroup_count;
 	struct cxi_svc_priv *svc_priv;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_desc rgroup_svc_desc;
+	unsigned long index;
+	struct cxi_rgroup *rgroup;
+	struct cxi_resource_entry *entry;
 
 	mutex_lock(&hw->svc_lock);
+	cxi_dev_lock_rgroup_list(hw);
 
-	if (count < hw->svc_count) {
+	rgroup_count = cxi_dev_get_rgroup_count(dev);
+	if (count < rgroup_count) {
+		cxi_dev_unlock_rgroup_list(hw);
 		mutex_unlock(&hw->svc_lock);
-		return hw->svc_count;
+		return rgroup_count;
 	}
 
-	list_for_each_entry(svc_priv, &hw->svc_list, list) {
-		svc_list[i] = svc_priv->svc_desc;
-		i++;
+	for_each_rgroup(index, rgroup) {
+		svc_priv = idr_find(&hw->svc_ids, cxi_rgroup_id(rgroup));
+		if (svc_priv) {
+			svc_list[i++] = svc_priv->svc_desc;
+			continue;
+		}
+
+		memset(&rgroup_svc_desc, 0, sizeof(rgroup_svc_desc));
+		rgroup_svc_desc.svc_id = rgroup->id;
+		rgroup_svc_desc.enable = rgroup->state.enabled;
+		rgroup_svc_desc.resource_limits = true;
+		rgroup_svc_desc.is_system_svc =
+					cxi_rgroup_system_service(rgroup);
+		add_rgroup_ac_entry_to_svc(&rgroup_svc_desc, rgroup);
+
+		for (rt = 1, svc_rt = 0; rt < CXI_RESOURCE_MAX; rt++) {
+			ret = cxi_rgroup_get_resource_entry(rgroup, rt,
+							    &entry);
+			if (!ret) {
+				if (svc_rt == CXI_RSRC_TYPE_MAX)
+					break;
+
+				if (rt == CXI_RESOURCE_PE1_LE ||
+				    rt == CXI_RESOURCE_PE2_LE ||
+				    rt == CXI_RESOURCE_PE3_LE)
+					continue;
+
+				rgroup_svc_desc.limits.type[svc_rt].max =
+							entry->limits.max;
+				rgroup_svc_desc.limits.type[svc_rt].res =
+							entry->limits.reserved;
+			}
+			svc_rt++;
+		}
+		svc_list[i++] = rgroup_svc_desc;
 	}
+
+	cxi_dev_unlock_rgroup_list(hw);
 	mutex_unlock(&hw->svc_lock);
-
 	return i;
 }
 EXPORT_SYMBOL(cxi_svc_list_get);
@@ -1202,20 +1318,17 @@ EXPORT_SYMBOL(cxi_svc_set_lpr);
  */
 int cxi_svc_get_lpr(struct cxi_dev *dev, unsigned int svc_id)
 {
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-	struct cxi_svc_priv *svc_priv;
+	struct cxi_rgroup *rgroup;
+	int ret;
 
-	mutex_lock(&hw->svc_lock);
-
-	svc_priv = idr_find(&hw->svc_ids, svc_id);
-	if (!svc_priv) {
-		mutex_unlock(&hw->svc_lock);
+	ret = cxi_dev_find_rgroup_inc_refcount(dev, svc_id, &rgroup);
+	if (ret)
 		return -EINVAL;
-	}
 
-	mutex_unlock(&hw->svc_lock);
+	ret = cxi_rgroup_lnis_per_rgid(rgroup);
+	cxi_rgroup_dec_refcount(rgroup);
 
-	return cxi_rgroup_lnis_per_rgid(svc_priv->rgroup);
+	return ret;
 }
 EXPORT_SYMBOL(cxi_svc_get_lpr);
 
@@ -1415,11 +1528,21 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	struct cxi_svc_priv *svc_priv;
 	struct cxi_tx_attr tx_attr;
 	int rc = 0;
+	struct cxi_rgroup *rgroup;
 
 	mutex_lock(&hw->svc_lock);
 
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
 	if (!svc_priv) {
+		rc = cxi_dev_find_rgroup_inc_refcount(dev, svc_id, &rgroup);
+		if (!rc) {
+			/* We don't support getting a VNI range for rgroups */
+			cxi_rgroup_dec_refcount(rgroup);
+			cxidev_dbg(dev, "svc_id %u is a rgroup", svc_id);
+			rc = -EOPNOTSUPP;
+			goto unlock_return;
+		}
+
 		cxidev_err(dev, "svc_id %u not found", svc_id);
 		rc = -EINVAL;
 		goto unlock_return;

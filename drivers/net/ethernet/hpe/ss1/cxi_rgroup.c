@@ -1389,6 +1389,27 @@ static int rgroup_id_operator(struct cxi_rgroup *rgroup,
 }
 
 /**
+ * cxi_dev_get_rgroup_count() - Count the number of valid rgroups associated
+ * with a given device.
+ *
+ * @dev: Cassini Device
+ * Return: number of valid rgroups.
+ */
+unsigned int cxi_dev_get_rgroup_count(struct cxi_dev *dev)
+{
+	struct cxi_rgroup *rgroup;
+	unsigned long index = rgroup_id_limits.min;
+	unsigned int count = 0;
+	struct cass_dev *hw = get_cass_dev(dev);
+
+	for_each_rgroup(index, rgroup)
+		count++;
+
+	return count;
+}
+EXPORT_SYMBOL(cxi_dev_get_rgroup_count);
+
+/**
  * cxi_dev_get_rgroup_ids() - Retrieve the rgroup ids associated
  * with a given device.
  *

@@ -273,6 +273,8 @@ int cxi_dev_find_rgroup_inc_refcount(struct cxi_dev *dev,
 				     unsigned int id,
 				     struct cxi_rgroup **rgroup);
 
+unsigned int cxi_dev_get_rgroup_count(struct cxi_dev *dev);
+
 int cxi_dev_get_rgroup_ids(struct cxi_dev *dev,
 			   size_t max_ids,
 			   unsigned int *rgroup_ids,
