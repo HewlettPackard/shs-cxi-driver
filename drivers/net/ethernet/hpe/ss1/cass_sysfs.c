@@ -27,7 +27,22 @@ static ssize_t nid_show(struct kobject *kobj, struct kobj_attribute *kattr,
 
 	return scnprintf(buf, PAGE_SIZE, "0x%x\n", hw->cdev.prop.nid);
 }
-PROP_ATTR_RO(nid);
+
+static ssize_t nid_store(struct kobject *kobj, struct kobj_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct cass_dev *hw = container_of(kobj, struct cass_dev,
+					   properties_kobj);
+	u32 nid;
+
+	if (kstrtoint(buf, 0, &nid) < 0)
+		return -EINVAL;
+
+	cxi_set_nid(&hw->cdev, nid);
+
+	return count;
+}
+PROP_ATTR_RW(nid);
 
 static ssize_t pid_bits_show(struct kobject *kobj, struct kobj_attribute *kattr,
 			     char *buf)

@@ -1161,6 +1161,9 @@ struct cxi_properties_info {
 		uint32_t nid;
 	};
 
+	/* NID explicitly configured by user */
+	bool nid_configured;
+
 	/* Width of PID field */
 	unsigned int pid_bits;
 

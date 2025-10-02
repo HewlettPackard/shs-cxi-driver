@@ -446,7 +446,8 @@ struct cxi_client {
 };
 int cxi_register_client(struct cxi_client *client);
 void cxi_unregister_client(struct cxi_client *client);
-void cxi_set_nid(struct cxi_dev *dev, const u8 *mac_addr);
+void cxi_set_nid(struct cxi_dev *dev, u32 nid);
+void cxi_set_nid_from_mac(struct cxi_dev *cdev, const u8 *addr);
 
 typedef int (*cxi_msg_relay_t)(void *data, unsigned int vf_num,
 			       const void *req, size_t req_len,

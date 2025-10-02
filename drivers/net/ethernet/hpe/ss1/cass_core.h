@@ -1149,12 +1149,6 @@ static inline void cass_clear(struct cass_dev *hw, u64 offset, size_t len)
 /* must come after cass_read/write/clear definitions. */
 #include "libcassini.h"
 
-#define CASS_NID_MASK	0xFFFFFULL
-static inline u32 cass_mac_to_nid(const u8 *mac_addr)
-{
-	return ether_addr_to_u64(mac_addr) & CASS_NID_MASK;
-}
-
 static inline bool cass_version(const struct cass_dev *hw,
 				enum cassini_version version)
 {

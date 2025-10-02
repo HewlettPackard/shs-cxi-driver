@@ -2211,9 +2211,15 @@ int cxi_eth_mac_addr(struct net_device *ndev, void *p)
 		return rc;
 
 	dev->mac_addr = ether_addr_to_u64(ndev->dev_addr);
+	ether_addr_copy(dev->cxi_dev->mac_addr, ndev->dev_addr);
 
 	cxi_eth_set_rx_mode(ndev);
-	cxi_set_nid(dev->cxi_dev, ndev->dev_addr);
+
+	/* We expect the NID to be configured before the MAC address is set.
+	 * To be backwards compatible, we will attempt to set the NID from the MAC address.
+	 * If the NID was not set, it will be derived from the MAC. Otherwise this will be ignored
+	 */
+	cxi_set_nid_from_mac(dev->cxi_dev, ndev->dev_addr);
 
 	return 0;
 }

@@ -447,16 +447,15 @@ static int wait_hw_ready(struct cass_dev *hw)
 }
 
 /* Program the device NID. */
-void cxi_set_nid(struct cxi_dev *cdev, const u8 *mac_addr)
+static void program_nid(struct cass_dev *hw, u32 nid)
 {
-	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	struct cxi_dev *cdev = &hw->cdev;
 	union c_oxe_cfg_fab_sfa cfg_fab_sfa = {};
 	union c_lpe_cfg_get_ctrl cfg_get_ctrl;
 	union c_ixe_cfg_dfa cfg_dfa = {};
 	union c_pct_cfg_pkt_misc cfg_pkt_misc;
 
-	ether_addr_copy(cdev->mac_addr, mac_addr);
-	cdev->prop.nid = cass_mac_to_nid(mac_addr);
+	cdev->prop.nid = nid;
 
 	cass_read(hw, C_PCT_CFG_PKT_MISC, &cfg_pkt_misc, sizeof(cfg_pkt_misc));
 	cfg_pkt_misc.sfa_nid = cdev->prop.nid;
@@ -475,7 +474,31 @@ void cxi_set_nid(struct cxi_dev *cdev, const u8 *mac_addr)
 
 	cxi_send_async_event(cdev, CXI_EVENT_NID_CHANGED);
 }
+
+void cxi_set_nid(struct cxi_dev *cdev, u32 nid)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	program_nid(hw, nid);
+	hw->cdev.prop.nid_configured = true;
+}
 EXPORT_SYMBOL(cxi_set_nid);
+
+void cxi_set_nid_from_mac(struct cxi_dev *cdev, const u8 *addr)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	u32 nid;
+
+	/* If the NID has already been explicitly configured, do not override it. */
+	if (hw->cdev.prop.nid_configured)
+		return;
+
+	nid = ether_addr_to_u64(addr) & 0xFFFFFULL;
+	program_nid(hw, nid);
+	cxidev_warn(&hw->cdev,
+		    "NID has not been explicitly set. NID derived from MAC: 0x%x\n", nid);
+}
+EXPORT_SYMBOL(cxi_set_nid_from_mac);
 
 /* Determine the Cassini link speed. When CCIX Extended Speed Mode
  * (ESM) is enabled, non-standard speeds exist.
@@ -784,6 +807,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct cass_dev *hw;
 	bool is_physfn;
 	int pos;
+	u32 nid;
 
 	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
 	if (!hw)
@@ -1057,21 +1081,24 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		uc_cmd_set_link_leds(hw, LED_FAST_GRN);
 
 		if (HW_PLATFORM_ASIC(hw)) {
-			/* Program NID with burned-in MAC. */
-			cxi_set_nid(&hw->cdev, hw->default_mac_addr);
+			/* Program MAC and NID with burned-in MAC. */
+			ether_addr_copy(hw->cdev.mac_addr, hw->default_mac_addr);
 		} else {
 			u64 reg;
 			u8 mac_addr[ETH_ALEN];
 
-			/* Pull NID from a scratch register on netsim */
+			/* Pull MAC from a scratch register on netsim and derive NID from it. */
 			if (HW_PLATFORM_NETSIM(hw))
 				cass_read(hw, NICSIM_NIC_ID, &reg, 8);
 			else
 				cass_read(hw, C_MB_DBG_SCRATCH(1), &reg, 8);
 
 			u64_to_ether_addr(reg, mac_addr);
-			cxi_set_nid(&hw->cdev, mac_addr);
+			ether_addr_copy(hw->cdev.mac_addr, mac_addr);
 		}
+
+		nid = ether_addr_to_u64(hw->cdev.mac_addr) & 0xFFFFFULL;
+		program_nid(hw, nid);
 
 		/* SBL init must happen after uC init, since SBL needs to know
 		 * which NIC is associated with this driver instance
