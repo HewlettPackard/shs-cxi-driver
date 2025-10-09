@@ -17,9 +17,9 @@ modprobe ptp
 modprobe amd_iommu_v2 || modprobe iommu_v2
 insmod ../../slingshot_base_link/cxi-sbl.ko
 insmod ../../sl-driver/knl/cxi-sl.ko
-insmod ../cxi/cxi-ss1.ko disable_default_svc=0
-insmod ../cxi/cxi-user.ko
-insmod ../cxi/cxi-eth.ko
+insmod ../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0
+insmod ../drivers/net/ethernet/hpe/ss1/cxi-user.ko
+insmod ../drivers/net/ethernet/hpe/ss1/cxi-eth.ko
 
 # Wait for the new devices to appear
 sleep 1
