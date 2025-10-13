@@ -18,12 +18,13 @@
  */
 #define LOW_LATENCY_SRB_RSVD 32U
 
-/* SRB Space Reserved for the Global Restricted BC - C1 Only */
+/* SRB Space Reserved for the Global Restricted BC */
 #define C1_SRB_GLOBAL_RES_BC_RSVD 39U
+#define C2_SRB_GLOBAL_RES_BC_RSVD 39U
 
 /* SRB Space Available to Split Between other RDMA TCs */
 #define C1_SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX - C1_SRB_GLOBAL_RES_BC_RSVD - LOW_LATENCY_SRB_RSVD)
-#define C2_SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX - LOW_LATENCY_SRB_RSVD)
+#define C2_SRB_RESERVED (SRB_MAX_SIZE - SRB_SHARED_MAX - C2_SRB_GLOBAL_RES_BC_RSVD - LOW_LATENCY_SRB_RSVD)
 
 
 struct qos_profile profiles[CXI_QOS_NUM_PROF] = {

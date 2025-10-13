@@ -1330,6 +1330,7 @@ static void cass_tc_hni_cfg(struct cass_dev *hw, enum cxi_traffic_class tc,
 }
 
 #define C1_RESTRICTED_BC_SPT_RSVD 1500U
+#define C2_RESTRICTED_BC_SPT_RSVD 1400U
 #define RESTRICTED_BC_SMT_RSVD 0U
 #define RESTRICTED_BC_SCT_RSVD 0U
 #define RESTRICTED_BC_SRB_RSVD 39U
@@ -1344,13 +1345,19 @@ static void cass_tc_hni_cfg(struct cass_dev *hw, enum cxi_traffic_class tc,
  * This buffer class is to be used by all CXI_TC_TYPE_HRP and
  * CXI_TC_TYPE_RESTRICTED traffic class types.
  *
- * This only applies for C1.
+ * This applies for both C1 and C2.
  */
 static int cass_tc_init_res_req_oxe_bc(struct cass_dev *hw)
 {
 	int bc;
+	unsigned int spt_rsvd;
 
-	bc = cass_tc_req_oxe_bc_cfg(hw, C1_RESTRICTED_BC_SPT_RSVD,
+	/* Use version-specific SPT reservation */
+	spt_rsvd = cass_version(hw, CASSINI_2) ?
+		   C2_RESTRICTED_BC_SPT_RSVD :
+		   C1_RESTRICTED_BC_SPT_RSVD;
+
+	bc = cass_tc_req_oxe_bc_cfg(hw, spt_rsvd,
 				    RESTRICTED_BC_SMT_RSVD,
 				    RESTRICTED_BC_SCT_RSVD,
 				    RESTRICTED_BC_SRB_RSVD,
@@ -1624,13 +1631,12 @@ static int cass_tc_cfg(struct cass_dev *hw, unsigned int tc,
 		tc_cfg->ocuset = ocuset;
 		tc_cfg->cq_tc = cq_tc;
 
-		/* For C1 Restricted and HRP Labels, use the global restricted
-		 * buffer class.
-		 * For all other labels, or C2, use the parent TC req_bc
+		/* For Restricted and HRP Labels, use the global restricted
+		 * buffer class for both C1 and C2.
+		 * For all other labels, use the parent TC req_bc
 		 */
-		if (!cass_version(hw, CASSINI_2) &&
-		    (tc_type == CXI_TC_TYPE_RESTRICTED ||
-		     tc_type == CXI_TC_TYPE_HRP))
+		if (tc_type == CXI_TC_TYPE_RESTRICTED ||
+		    tc_type == CXI_TC_TYPE_HRP)
 			tc_cfg->req_bc = hw->qos.tc_restricted_oxe_req_bc;
 		else
 			tc_cfg->req_bc = cxi_tc->req_bc;
@@ -1758,12 +1764,10 @@ static int cass_tc_restricted_cfg(struct cass_dev *hw,
 
 	tou_mcu = cq_tc + C_OXE_TOU_MCU_START;
 
-	/* For Restricted TC "Type" use the same BC as the parent TC for C2.
-	 * For C1 use the global restricted buffer class.
+	/* For Restricted TC "Type" use the global restricted buffer class
+	 * for both C1 and C2.
 	 */
-	restricted_bc = cass_version(hw, CASSINI_2) ?
-			hw->qos.tcs[tc].req_bc :
-			hw->qos.tc_restricted_oxe_req_bc;
+	restricted_bc = hw->qos.tc_restricted_oxe_req_bc;
 
 	ret = cass_tc_oxe_mcu_cfg(hw, cq_mcu_base, cq_mcu_count, mcu_pcp,
 				  hw->qos.tcs[tc].leaf[0],
@@ -2110,12 +2114,10 @@ int cass_tc_init(struct cass_dev *hw)
 	rx_ctrl_cfg.pause_rec_enable = 0;
 	cass_write(hw, C_HNI_CFG_PAUSE_RX_CTRL, &rx_ctrl_cfg, sizeof(rx_ctrl_cfg));
 
-	/* Setup Global OXE BC for restricted request MCUs for C1 */
-	if (!cass_version(hw, CASSINI_2)) {
-		ret = cass_tc_init_res_req_oxe_bc(hw);
-		if (ret)
-			return ret;
-	}
+	/* Setup Global OXE BC for restricted request MCUs for both C1 and C2 */
+	ret = cass_tc_init_res_req_oxe_bc(hw);
+	if (ret)
+		return ret;
 
 	for (tc = 0; tc < CXI_MAX_RDMA_TCS; tc++) {
 		/* Don't configure inactive TCs */
