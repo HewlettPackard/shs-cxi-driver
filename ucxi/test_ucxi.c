@@ -50,6 +50,55 @@ void dump_services(char *device)
 	}
 }
 
+int set_enable_rgid_sharing(char value)
+{
+	FILE *fd;
+
+	fd = fopen("/sys/module/cxi_ss1/parameters/enable_rgid_sharing", "w");
+	if (!fd)
+		return -EINVAL;
+
+	fputc(value, fd);
+	fclose(fd);
+
+	return 0;
+}
+
+int test_enable_rgid_sharing(struct cass_dev *dev, int svc_id)
+{
+	int rc;
+	int lpr = 5;
+
+	/* disable rgid sharing */
+	rc = set_enable_rgid_sharing('0');
+	if (rc) {
+		fprintf(stderr, "cannot disable rgid sharing rc: %d\n", rc);
+		return 1;
+	}
+
+	/* check if we can change lpr */
+	rc = set_svc_lpr(dev, svc_id, lpr);
+	if (rc == 0) {
+		fprintf(stderr, "lnis_per_rgid rc: %d\n", rc);
+		return 1;
+	}
+
+	rc = get_svc_lpr(dev, svc_id);
+	if (rc == lpr) {
+		fprintf(stderr, "Should not set/get lnis_per_rgid rc: %d\n", rc);
+		return 1;
+	}
+
+	/* enable rgid sharing */
+	rc = set_enable_rgid_sharing('1');
+	if (rc) {
+		fprintf(stderr, "cannot enable rgid sharing rc: %d\n", rc);
+		return 1;
+	}
+
+	return 0;
+}
+
 int test_main(char *device, int service)
 {
 	int lni;
@@ -132,9 +181,17 @@ int test_main(char *device, int service)
 		svc_desc.svc_id = rc;
 		dump_services(device);
 
+		rc = test_enable_rgid_sharing(dev, svc_desc.svc_id);
+		if (rc) {
+			fprintf(stderr, "test disable of rgid sharing failed rc: %d\n", rc);
+			svc_destroy(dev, svc_desc.svc_id);
+			return 1;
+		}
+
 		rc = set_svc_lpr(dev, svc_desc.svc_id, LPR);
 		if (rc <= 0) {
 			fprintf(stderr, "cannot set lnis_per_rgid rc: %d\n", rc);
+			svc_destroy(dev, svc_desc.svc_id);
 			return 1;
 		}
 		printf("Set lnis_per_rgid success\n");
@@ -142,6 +199,7 @@ int test_main(char *device, int service)
 		rc = get_svc_lpr(dev, svc_desc.svc_id);
 		if (rc != LPR) {
 			fprintf(stderr, "cannot get lnis_per_rgid rc: %d\n", rc);
+			svc_destroy(dev, svc_desc.svc_id);
 			return 1;
 		}
 		printf("Get lnis_per_rgid success\n");
