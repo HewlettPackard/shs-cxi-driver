@@ -698,9 +698,9 @@ void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2)
 	 * Divide up the non-shared srb space between them.
 	 */
 	if (is_c2)
-		srb_rsvd = C1_SRB_RESERVED / num_active_tcs;
-	else
 		srb_rsvd = C2_SRB_RESERVED / num_active_tcs;
+	else
+		srb_rsvd = C1_SRB_RESERVED / num_active_tcs;
 
 	for (tc = 0; tc < CXI_TC_MAX; tc++) {
 		if (!qos->tcs_active[tc])
