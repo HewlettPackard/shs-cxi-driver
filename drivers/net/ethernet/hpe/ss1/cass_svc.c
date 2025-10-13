@@ -29,6 +29,11 @@ module_param_array(default_vnis, uint, NULL, 0444);
 MODULE_PARM_DESC(default_vnis,
 		 "Default VNIS. Should be consistent at the fabric level");
 
+static bool enable_rgid_sharing = true;
+module_param(enable_rgid_sharing, bool, 0644);
+MODULE_PARM_DESC(enable_rgid_sharing,
+		 "Allow future CXI service allocations to use RGID sharing.");
+
 static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv);
 
 static enum cxi_resource_type stype_to_rtype(enum cxi_rsrc_type type, int pe)
@@ -1145,6 +1150,11 @@ int cxi_svc_set_lpr(struct cxi_dev *dev, unsigned int svc_id,
 
 	if (lnis_per_rgid > C_NUM_LACS)
 		return -EINVAL;
+
+	if (!enable_rgid_sharing) {
+		cxidev_warn(dev, "RGID sharing is disabled\n");
+		return 0;
+	}
 
 	mutex_lock(&hw->svc_lock);
 
