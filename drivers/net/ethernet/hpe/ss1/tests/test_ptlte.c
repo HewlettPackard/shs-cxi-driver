@@ -54,11 +54,12 @@ static int test_1_verify_plec_limit(void)
 		}
 
 		pte_priv = container_of(ptes[i], struct cxi_pte_priv, pte);
-		if (i > PLEC_SIZE && pte_priv->plec_enabled) {
+
+		if (i >= PLEC_SIZE && pte_priv->plec_enabled) {
 			rc = -EINVAL;
 			pr_err("PtlTE %d incorrectly marked for PLEC enabled\n", i);
 			goto free_ptes;
-		} else if (!pte_priv->plec_enabled) {
+		} else if (i < PLEC_SIZE && !pte_priv->plec_enabled) {
 			rc = -EINVAL;
 			pr_err("PtlTE %d incorrectly marked for PLEC disabled\n", i);
 			goto free_ptes;
