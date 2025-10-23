@@ -425,7 +425,7 @@ struct cxi_pte *cxi_pte_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 
 		while (true) {
 			count = atomic_read(&hw->plec_count);
-			if (count > PLEC_SIZE) {
+			if (count >= PLEC_SIZE) {
 				cxidev_dbg(cdev, "plec full\n");
 				break;
 			}
