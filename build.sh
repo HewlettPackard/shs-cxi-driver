@@ -29,4 +29,4 @@ fi
 setup_dst_env
 
 dst_build_rpm -c ${CE_BUILD_SCRIPT_REPO}/build/configs/cxi-driver.yaml $@
-#dst_build_deb --yamlfile ${CE_BUILD_SCRIPT_REPO}/build/configs/${CE_CONFIG_FILE} --ps ${PRODUCT} --main-branch "main" $@
+dst_build_deb --yamlfile ${CE_BUILD_SCRIPT_REPO}/build/configs/${CE_CONFIG_FILE} --ps ${PRODUCT} --main-branch "main" $@
