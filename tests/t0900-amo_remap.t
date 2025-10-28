@@ -14,7 +14,7 @@ test_expect_success "Inserting base link driver" "
 "
 
 test_expect_success "Inserting slingshot link driver" "
-	insmod ../../../../sl-driver/knl/cxi-sl.ko &&
+	insmod ../../../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko &&
 	[ $(lsmod | awk '{ print $1 }' | grep -c cxi-sl) -eq 0 ]
 "
 
