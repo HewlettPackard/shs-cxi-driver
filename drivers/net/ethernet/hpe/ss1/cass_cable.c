@@ -99,8 +99,8 @@ static int cass_hdsh_get_format(struct cass_dev *hw, u8 *qsfp_format)
 			/* CMIS V3.0-V4.0 are mostly compatible.
 			 * Version-specific differences are handled in the code.
 			 */
-			/* allow CMIS v5.1 */
-			if (hw->qsfp_eeprom_page0[QSFP_REV_CMPL_OFFSET] > 0x51) {
+			/* allow CMIS v5.* */
+			if (hw->qsfp_eeprom_page0[QSFP_REV_CMPL_OFFSET] >= 0x60) {
 				cxidev_err(&hw->cdev,
 					   "Failed to parse headshell data. Bad CMIS rev (%d)!\n",
 					   hw->qsfp_eeprom_page0[QSFP_REV_CMPL_OFFSET]);
