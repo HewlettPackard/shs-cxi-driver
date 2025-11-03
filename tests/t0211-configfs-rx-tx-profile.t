@@ -28,12 +28,12 @@ test_expect_success "Run test program for configfs" "
 	../../../scripts/cxi_mgmt add-ac-entry --rx-profile rx1 ac 0 1 &&
 	../../../scripts/cxi_mgmt enable --rx-profile rx1 &&
 	../../../scripts/cxi_mgmt create --tx-profile tx1 &&
-	../../../scripts/cxi_mgmt set-vni --tx-profile tx1 128 127 true &&
+	../../../scripts/cxi_mgmt set-vni --tx-profile tx1 128 127 1 &&
 	../../../scripts/cxi_mgmt add-ac-entry --tx-profile tx1 ac 0 1 &&
-	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 dedicated true &&
-	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 best_effort true &&
-	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 low_latency true &&
-	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 bulk_data true &&
+	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 dedicated 1 &&
+	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 best_effort 1 &&
+	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 low_latency 1 &&
+	../../../scripts/cxi_mgmt  set-tc --tx-profile tx1 bulk_data 1 &&
 	../../../scripts/cxi_mgmt enable --tx-profile tx1 &&
 	../../../ucxi/test_ucxi_atu -s 1 -v 129 -d cxi0 &> ../$(basename "$0").test.output
 "

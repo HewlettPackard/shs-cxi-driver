@@ -31,12 +31,12 @@ test_expect_success "Run test program for configfs invalid UID" "
 	$CONFIG_UTILITY add-ac-entry --rx-profile rx1 ac 790 1 &&
 	$CONFIG_UTILITY enable --rx-profile rx1 &&
 	$CONFIG_UTILITY create --tx-profile tx1 &&
-	$CONFIG_UTILITY set-vni --tx-profile tx1 128 127 true &&
+	$CONFIG_UTILITY set-vni --tx-profile tx1 128 127 1 &&
 	$CONFIG_UTILITY add-ac-entry --tx-profile tx1 ac 790 1 &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 dedicated true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 best_effort true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 low_latency true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 bulk_data true &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 dedicated 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 best_effort 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 low_latency 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 bulk_data 1 &&
 	$CONFIG_UTILITY enable --tx-profile tx1 &&
 	test_expect_code 1 ../../../ucxi/test_ucxi_atu -u 791 -s 1 -v 129 -d cxi0 &> ../$(basename "$0").test.output
 "
@@ -52,12 +52,12 @@ test_expect_success "Run test program for configfs invalid GID" "
 	$CONFIG_UTILITY add-ac-entry --rx-profile rx2 ac 790 2 &&
 	$CONFIG_UTILITY enable --rx-profile rx2 &&
 	$CONFIG_UTILITY create --tx-profile tx2 &&
-	$CONFIG_UTILITY set-vni --tx-profile tx2 258 0 true &&
+	$CONFIG_UTILITY set-vni --tx-profile tx2 258 0 1 &&
 	$CONFIG_UTILITY add-ac-entry --tx-profile tx2 ac 790 2 &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx2 dedicated true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx2 best_effort true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx2 low_latency true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx2 bulk_data true &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx2 dedicated 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx2 best_effort 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx2 low_latency 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx2 bulk_data 1 &&
 	$CONFIG_UTILITY enable --tx-profile tx2 &&
 	test_expect_code 1 ../../../ucxi/test_ucxi_atu -g 791 -s 1 -v 258 -d cxi0 &> ../$(basename "$0").test.output
 "

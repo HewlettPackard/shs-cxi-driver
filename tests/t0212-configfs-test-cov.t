@@ -87,12 +87,12 @@ test_expect_success "Invalid param test program for configfs" "
 	$CONFIG_UTILITY add-ac-entry --rx-profile rx1 ac 0 1 &&
 	$CONFIG_UTILITY enable --rx-profile rx1 &&
 	$CONFIG_UTILITY create --tx-profile tx1 &&
-	$CONFIG_UTILITY set-vni --tx-profile tx1 128 127 true &&
+	$CONFIG_UTILITY set-vni --tx-profile tx1 128 127 1 &&
 	$CONFIG_UTILITY add-ac-entry --tx-profile tx1 ac 0 1 &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 dedicated true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 best_effort true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 low_latency true &&
-	$CONFIG_UTILITY  set-tc --tx-profile tx1 bulk_data true &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 dedicated 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 best_effort 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 low_latency 1 &&
+	$CONFIG_UTILITY  set-tc --tx-profile tx1 bulk_data 1 &&
 	$CONFIG_UTILITY enable --tx-profile tx1 &&
 	test_expect_code 0 ../../../ucxi/test_ucxi_atu -s 1 -v 123 -d cxi0 &> ../$(basename "$0").inv.vni.test.output &&
 	test_expect_code 1 ../../../ucxi/test_ucxi_atu -u 791 -s 1 -v 123 -d cxi0 &> ../$(basename "$0").inv.vni.test.output &&
