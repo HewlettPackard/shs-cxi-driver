@@ -762,9 +762,10 @@ int cxi_program_firmware(struct cxi_dev *cdev, const struct firmware *fw)
 	}
 
 	/* Poll the uC until the reset bit is set. Reset should take
-	 * about 2 seconds. Set the timeout to 20 seconds.
+	 * about 2 seconds, but may take as long as 90 seconds if the partner
+	 * node is flashing the other NIC. Set the timeout to 120 seconds.
 	 */
-	timeout = ktime_add_ms(ktime_get(), 20 * MSEC_PER_SEC);
+	timeout = ktime_add_ms(ktime_get(), 120 * MSEC_PER_SEC);
 	while (1) {
 		u32 isr;
 
