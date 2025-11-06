@@ -362,6 +362,9 @@ int cxi_get_qsfp_data(struct cxi_dev *cdev, u32 offset, u32 len, u32 page, u8 *d
 	     !HW_PLATFORM_NETSIM(hw)))
 		return -ENOMEDIUM;
 
+	if (hw->uc_i2c_locked)
+		return -EBUSY;
+
 	mutex_lock(&hw->uc_mbox_mutex);
 
 	/* Read up to 128 bytes at a time, since the CUC command can
@@ -451,6 +454,9 @@ int uc_cmd_qsfp_write(struct cass_dev *hw, u8 page, u8 addr,
 
 	if (!hw->uc_present)
 		return -EIO;
+
+	if (hw->uc_i2c_locked)
+		return -EBUSY;
 
 	if (data_len > ETH_MODULE_SFF_8436_LEN)
 		return -EINVAL;
@@ -1689,6 +1695,112 @@ static void create_sensors_intf(struct cass_dev *hw)
 	}
 }
 
+static int cass_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+{
+	struct cass_dev *hw = i2c_get_adapdata(adap);
+	int ret = 0;
+	int i;
+
+	mutex_lock(&hw->uc_mbox_mutex);
+
+	for (i = 0; i < num; i++) {
+		struct i2c_msg *msg = &msgs[i];
+
+		uc_prepare_comm(hw);
+
+		if (msg->flags & I2C_M_RD) {
+			struct cuc_i2c_read_req *req_data =
+				(struct cuc_i2c_read_req *)hw->uc_req.data;
+
+			hw->uc_req.cmd = CUC_CMD_I2C_READ;
+			hw->uc_req.count = 1 + sizeof(*req_data);
+			req_data->bus = QSFP_I2C_BUS_REDIRECT;
+			req_data->addr = msg->addr;
+			req_data->count = msg->len;
+		} else {
+			struct cuc_i2c_write_req *req_data =
+				(struct cuc_i2c_write_req *)hw->uc_req.data;
+
+			hw->uc_req.cmd = CUC_CMD_I2C_WRITE;
+			hw->uc_req.count = 1 + sizeof(*req_data) + msg->len;
+			req_data->bus = QSFP_I2C_BUS_REDIRECT;
+			req_data->addr = msg->addr;
+			req_data->count = msg->len;
+			memcpy(req_data->buf, msg->buf, msg->len);
+		}
+
+		ret = uc_wait_for_response(hw);
+		if (ret) {
+			cxidev_err(&hw->cdev, "uC failed to perform i2c request\n");
+			goto out;
+		}
+
+		if (msg->flags & I2C_M_RD)
+			memcpy(msg->buf, hw->uc_resp.data, msg->len);
+	}
+
+out:
+	mutex_unlock(&hw->uc_mbox_mutex);
+
+	return ret ?: num;
+}
+
+static u32 cass_i2c_func(struct i2c_adapter *adap)
+{
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
+}
+
+static const struct i2c_adapter_quirks uc_i2c_quirks = {
+	.max_read_len = CUC_DATA_BYTES - sizeof(struct cuc_i2c_read_req),
+	.max_write_len = CUC_DATA_BYTES - sizeof(struct cuc_i2c_write_req),
+};
+
+static const struct i2c_algorithm cass_i2c_algo = {
+	.master_xfer = cass_i2c_xfer,
+	.functionality = cass_i2c_func,
+};
+
+/* The i2c bus device whose sole purpose is to access the QSFP headshell. */
+static int uc_register_i2c(struct cass_dev *hw)
+{
+	int ret;
+
+	if (!hw->uc_present)
+		return 0;
+
+	if (hw->uc_platform != CUC_BOARD_TYPE_BRAZOS &&
+	    hw->uc_platform != CUC_BOARD_TYPE_KENNEBEC &&
+	    hw->uc_platform != CUC_BOARD_TYPE_SOUHEGAN &&
+	    !HW_PLATFORM_NETSIM(hw))
+		return 0;
+
+	hw->uc_i2c.owner = THIS_MODULE;
+	hw->uc_i2c.algo = &cass_i2c_algo;
+	hw->uc_i2c.timeout = msecs_to_jiffies(1000);
+	hw->uc_i2c.retries = 2;
+	hw->uc_i2c.quirks = &uc_i2c_quirks;
+	hw->uc_i2c.dev.parent = &hw->cdev.pdev->dev;
+	i2c_set_adapdata(&hw->uc_i2c, hw);
+
+	snprintf(hw->uc_i2c.name, sizeof(hw->uc_i2c.name), "%s headshell", hw->cdev.name);
+
+	ret = i2c_add_adapter(&hw->uc_i2c);
+	if (ret) {
+		hw->uc_i2c.algo = NULL;
+		return ret;
+	}
+
+	dev_dbg(&hw->cdev.pdev->dev, "Added i2c controller %d\n", hw->uc_i2c.nr);
+
+	return 0;
+}
+
+static void uc_unregister_i2c(struct cass_dev *hw)
+{
+	if (hw->uc_i2c.algo)
+		i2c_del_adapter(&hw->uc_i2c);
+}
+
 int cass_register_uc(struct cass_dev *hw)
 {
 	int rc;
@@ -1761,6 +1873,8 @@ int cass_register_uc(struct cass_dev *hw)
 
 	uc_update_cable_info(hw);
 
+	uc_register_i2c(hw);
+
 	return 0;
 
 free_wq:
@@ -1779,6 +1893,7 @@ void cass_unregister_uc(struct cass_dev *hw)
 	int id;
 
 	uc_cmd_update_ier(hw, 0, ATT1_ALL_INTERRUPTS);
+	uc_unregister_i2c(hw);
 	if (hw->hwmon.dev)
 		hwmon_device_unregister(hw->hwmon.dev);
 	kobject_put(&hw->uc_kobj);
