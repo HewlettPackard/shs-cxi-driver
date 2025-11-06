@@ -1156,6 +1156,16 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	cass_probe_debugfs_init(hw);
 
+	/* Hack to grant exclusive access to userspace for QSFP
+	 * firmware flashing. The SL driver must not be able to query
+	 * the QSFP module while an upgrade is happening. Since the UC
+	 * accesses are serialized, we shouldn't need anything
+	 * stronger than that. More ideally, we should have this file
+	 * attached to the i2c debugfs entry, but this was only made
+	 * available in kernel 6.8.
+	 */
+	debugfs_create_bool("i2c_locked", 0644, hw->debug_dir, &hw->uc_i2c_locked);
+
 	/* RX and TX profile setup */
 	cass_dev_rx_tx_profiles_init(hw);
 

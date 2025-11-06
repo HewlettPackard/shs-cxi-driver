@@ -20,6 +20,7 @@
 #include <linux/hrtimer.h>
 #include <linux/hwmon.h>
 #include <linux/socket.h>
+#include <linux/i2c.h>
 
 #include "cxi_link.h"
 #include "cxi_core.h"
@@ -895,6 +896,8 @@ struct cass_dev {
 	struct workqueue_struct *uc_attn1_wq;
 	struct work_struct uc_attn1_work;
 	struct mutex uc_mbox_mutex;
+	struct i2c_adapter uc_i2c;
+	bool uc_i2c_locked;
 	s8 uc_nic;		/* NIC index from uC point of view */
 	u8 default_mac_addr[ETH_ALEN];
 	struct kobject uc_kobj;
