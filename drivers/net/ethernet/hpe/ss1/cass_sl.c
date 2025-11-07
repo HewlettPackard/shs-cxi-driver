@@ -802,7 +802,7 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
 	}
 }
 
-#define CASS_SL_LINK_UP_TIMEOUT_MS    15000
+#define CASS_SL_LINK_UP_TIMEOUT_MS    35000
 #define CASS_SL_LLR_SETUP_TIMEOUT_MS  4000
 #define CASS_SL_LLR_START_TIMEOUT_MS  3000
 static void cass_sl_config_init(struct cass_dev *cass_dev)
