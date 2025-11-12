@@ -18,7 +18,7 @@
 #include "uapi/ethernet/cxi-abi.h"
 
 #define TRANSACTION_TYPE 0xF
-
+#define CXI_INVALID_NID 0xFFFFFFFF
 /**
  * struct cxi_dev - A CXI device
  *

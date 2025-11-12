@@ -807,7 +807,6 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct cass_dev *hw;
 	bool is_physfn;
 	int pos;
-	u32 nid;
 
 	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
 	if (!hw)
@@ -930,6 +929,9 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		(1 << (DFA_EP_BITS - hw->cdev.prop.pid_bits));
 
 	hw->cdev.prop.min_free_shift = min_free_shift;
+
+	/* Set the NID to invalid */
+	hw->cdev.prop.nid = CXI_INVALID_NID;
 
 	/* Enable DMA */
 	pci_set_master(pdev);
@@ -1081,7 +1083,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		uc_cmd_set_link_leds(hw, LED_FAST_GRN);
 
 		if (HW_PLATFORM_ASIC(hw)) {
-			/* Program MAC and NID with burned-in MAC. */
+			/* Program MAC with burned-in MAC. */
 			ether_addr_copy(hw->cdev.mac_addr, hw->default_mac_addr);
 		} else {
 			u64 reg;
@@ -1095,10 +1097,8 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 			u64_to_ether_addr(reg, mac_addr);
 			ether_addr_copy(hw->cdev.mac_addr, mac_addr);
+			program_nid(hw, ether_addr_to_u64(hw->cdev.mac_addr) & 0xFFFFFULL);
 		}
-
-		nid = ether_addr_to_u64(hw->cdev.mac_addr) & 0xFFFFFULL;
-		program_nid(hw, nid);
 
 		/* SBL init must happen after uC init, since SBL needs to know
 		 * which NIC is associated with this driver instance
