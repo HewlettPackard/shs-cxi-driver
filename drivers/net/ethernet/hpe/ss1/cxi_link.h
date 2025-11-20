@@ -35,6 +35,7 @@ void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore);
 void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable);
 void cxi_link_fec_monitor(struct cxi_dev *cxi_dev, bool on);
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set);
+void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable);
 
 struct cxi_link_ops {
 	int (*init)(struct cass_dev *hw);

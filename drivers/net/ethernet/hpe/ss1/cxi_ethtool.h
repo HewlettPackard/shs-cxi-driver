@@ -18,6 +18,7 @@
 #define CXI_ETH_PF_ALD                       BIT(13) /* control auto lane degrade */
 #define CXI_ETH_PF_IGNORE_MEDIA_ERROR        BIT(14) /* ignore media error */
 #define CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE BIT(15) /* allow link up with supported ss200 cable */
+#define CXI_ETH_PF_LOS_LOL_HIDE              BIT(16) /* hide LOS/LOL down and link up fail cause */
 
-#define PRIV_FLAGS_COUNT 16
+#define PRIV_FLAGS_COUNT 17
 #define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)

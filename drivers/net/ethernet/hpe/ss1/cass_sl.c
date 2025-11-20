@@ -278,6 +278,21 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		break;
 	}
 
+	switch (link_info->flags & CXI_ETH_PF_LOS_LOL_HIDE) {
+	case 0:
+		if (!(link_config->options & SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE))
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set - los_los_hide to off\n");
+		is_mode_changed = true;
+		break;
+	case CXI_ETH_PF_LOS_LOL_HIDE:
+		if (link_config->options & SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE)
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set - los_los_hide to on\n");
+		is_mode_changed = true;
+		break;
+	}
+
 	/* if anything changed bounce the link */
 	if (is_mode_changed)
 		cass_phy_bounce(cass_dev);
