@@ -163,6 +163,19 @@ void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set)
 }
 EXPORT_SYMBOL(cxi_pml_recovery_set);
 
+void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable)
+{
+       struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
+
+       cxidev_dbg(&hw->cdev, "los_lol_hide\n");
+
+       if (enable)
+               hw->sl.link_config.options |= SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE;
+       else
+               hw->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE;
+}
+EXPORT_SYMBOL(cxi_link_los_lol_hide);
+
 /**
  * cxi_is_link_up() - Returns whether the link is up or down
  *
