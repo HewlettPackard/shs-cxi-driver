@@ -4,8 +4,8 @@
 #ifndef _CASS_SL_IO_H_
 #define _CASS_SL_IO_H_
 
-int cass_sl_uc_read8(void *uc_accessor, u32 offset, u32 page, u8 *data);
 int cass_sl_uc_write8(void *uc_accessor, u8 page, u8 addr, u8 data);
+int cass_sl_uc_read(void *uc_accessor, u32 offset, u32 page, u8 *data, u32 len);
 u64 cass_sl_read64(void *pci_accessor, long addr);
 void cass_sl_write64(void *pci_accessor, long addr, u64 data64);
 int cass_sl_sbus_rd(void *sbus_accessor, u32 sbus_addr, u8 reg_addr, u32 *rd_data);

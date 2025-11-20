@@ -732,7 +732,7 @@ static void cass_sl_uc_led_set(void *uc_accessor, u8 led_state)
 
 static void cass_sl_uc_ops_init(struct cass_dev *cass_dev)
 {
-	cass_dev->sl.uc_ops.uc_read8   = cass_sl_uc_read8;
+	cass_dev->sl.uc_ops.uc_read    = cass_sl_uc_read;
 	cass_dev->sl.uc_ops.uc_write8  = cass_sl_uc_write8;
 	cass_dev->sl.uc_ops.uc_led_set = cass_sl_uc_led_set;
 
