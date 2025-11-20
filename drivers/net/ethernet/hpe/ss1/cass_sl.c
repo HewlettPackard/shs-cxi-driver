@@ -1319,8 +1319,10 @@ void cass_sl_exit(struct cass_dev *cass_dev)
 	if (rtn != 0)
 		cxidev_warn(&cass_dev->cdev, "sl_ldev_del failed [%d]\n", rtn);
 
-	kobject_put(&cass_dev->port_num_kobj);
-	kobject_put(&cass_dev->port_kobj);
+	if (cass_dev->sl.is_initialized) {
+		kobject_put(&cass_dev->port_num_kobj);
+		kobject_put(&cass_dev->port_kobj);
+	}
 }
 
 void cass_sl_link_fini(struct cass_dev *cass_dev)
