@@ -4,18 +4,6 @@
 #include "cass_core.h"
 #include "cass_sl_io.h"
 
-int cass_sl_uc_read8(void *uc_accessor, u32 offset, u32 page, u8 *data)
-{
-	struct cass_dev *cass_dev = uc_accessor;
-	int              rtn;
-
-	rtn = cxi_get_qsfp_data(&cass_dev->cdev, offset, sizeof(*data), page, data);
-
-	cxidev_dbg(&cass_dev->cdev, "sl_uc_read8 0x%x = 0x%x\n", offset, *data);
-
-	return rtn;
-}
-
 int cass_sl_uc_write8(void *uc_accessor, u8 page, u8 addr, u8 data)
 {
 	struct cass_dev *cass_dev = uc_accessor;
@@ -26,6 +14,16 @@ int cass_sl_uc_write8(void *uc_accessor, u8 page, u8 addr, u8 data)
 	cxidev_dbg(&cass_dev->cdev, "sl_uc_write8 0x%x <- 0x%x\n", addr, data);
 
 	return rtn;
+}
+
+int cass_sl_uc_read(void *uc_accessor, u32 offset, u32 page, u8 *data, u32 len)
+{
+	struct cass_dev *cass_dev = uc_accessor;
+
+	cxidev_dbg(&cass_dev->cdev, "sl uc read (offset = 0x%X, page = %u, len = %u)\n",
+		offset, page, len);
+
+	return cxi_get_qsfp_data(&cass_dev->cdev, offset, len, page, data);
 }
 
 u64 cass_sl_read64(void *pci_accessor, long addr)
