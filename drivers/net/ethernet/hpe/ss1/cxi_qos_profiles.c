@@ -718,5 +718,7 @@ void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2)
 		 */
 		if (tc == CXI_TC_LOW_LATENCY)
 			continue;
+
+		qos->tcs[tc].oxe_settings.srb_rsvd = srb_rsvd;
 	}
 }
