@@ -689,8 +689,14 @@ void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2)
 	unsigned int num_active_tcs = 0;
 	unsigned int srb_rsvd;
 
+	/* Count active TCs that need dynamically calculated SRB.
+	 * LOW_LATENCY has an explicit srb_rsvd value and should not be
+	 * counted or overwritten.
+	 */
 	for (tc = 0; tc < CXI_TC_MAX; tc++) {
 		if (!qos->tcs_active[tc])
+			continue;
+		if (tc == CXI_TC_LOW_LATENCY)
 			continue;
 		num_active_tcs++;
 	}
@@ -706,6 +712,11 @@ void cxi_qos_calculate_limits(struct qos_profile *qos, bool is_c2)
 	for (tc = 0; tc < CXI_TC_MAX; tc++) {
 		if (!qos->tcs_active[tc])
 			continue;
-		qos->tcs->oxe_settings.srb_rsvd = srb_rsvd;
+
+		/* Skip LOW_LATENCY TC - it has an explicit srb_rsvd value set
+		 * in the QoS profile.
+		 */
+		if (tc == CXI_TC_LOW_LATENCY)
+			continue;
 	}
 }
