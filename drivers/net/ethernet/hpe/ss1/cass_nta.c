@@ -363,6 +363,10 @@ static void cass_completion_wait(struct cass_dev *hw, unsigned int wr_index)
 	cass_nta_cmdproc_write(hw, wr_index);
 	cass_flush_pci(hw);
 
+	/* increase the timeout on the emulator */
+	if (HW_PLATFORM_Z1(hw))
+		timeout *= 10;
+
 	do {
 		ret = readq_poll_timeout_atomic(&cq->wait_rsp_data.cmp,
 						cw_rsp_read_data,
