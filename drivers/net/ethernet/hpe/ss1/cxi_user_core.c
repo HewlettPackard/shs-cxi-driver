@@ -851,18 +851,18 @@ static int cxi_user_domain_free(struct user_client *client,
 }
 
 /* Allocate a Command Queue, and return an index plus some memory mappings. */
-static int cxi_user_cq_alloc(struct user_client *client,
-			     const void *cmd_in,
-			     void *resp_out, size_t *resp_out_len)
+static int cxi_user_cq_alloc_buf(struct user_client *client,
+				 const void *cmd_in,
+				 void *resp_out, size_t *resp_out_len)
 {
 	int rc;
 	phys_addr_t csr_addr;
 	size_t csr_size;
 	size_t queue_size;
 	struct cxi_cq *cq;
-	const struct cxi_cq_alloc_cmd *cmd = cmd_in;
+	const struct cxi_cq_alloc_buf_cmd *cmd = cmd_in;
 	struct cxi_cq_alloc_resp resp = {};
-	struct cxi_cq_alloc_opts opts = cmd->opts;
+	struct cxi_cq_alloc_opts_buf opts_b = cmd->opts;
 	struct cxi_mmap_info *mminfo;  /* CSR and queue mappings */
 	struct page *queue_pages;
 	struct ucxi_obj *lni;
@@ -903,9 +903,10 @@ static int cxi_user_cq_alloc(struct user_client *client,
 
 	read_unlock(&client->res_lock);
 
-	opts.flags |= CXI_CQ_USER;
-	cq = cxi_cq_alloc(lni->lni, eq_obj ? eq_obj->eq : NULL, &opts,
-			  numa_node_id());
+	opts_b.opts.flags |= CXI_CQ_USER;
+
+	cq = cxi_cq_alloc_buf(lni->lni, eq_obj ? eq_obj->eq : NULL, &opts_b,
+			      numa_node_id());
 	if (IS_ERR(cq)) {
 		rc = PTR_ERR(cq);
 		goto free_obj;
@@ -933,16 +934,18 @@ static int cxi_user_cq_alloc(struct user_client *client,
 	if (!mminfo)
 		goto release_cq_idr;
 
-	//TODO: none of that in the PF if VF CQ
-	fill_mmap_info(client, &mminfo[0], (uintptr_t)queue_pages, queue_size,
-		       MMAP_LOGICAL);
-	resp.cmds = mminfo[0].mminfo;
+	fill_mmap_info(client, &mminfo[0], csr_addr, csr_size, MMAP_PHYSICAL);
+	resp.wp_addr = mminfo[0].mminfo;
 	mminfo[0].obj = obj;
+	mminfo[0].wc = true;
 
-	fill_mmap_info(client, &mminfo[1], csr_addr, csr_size, MMAP_PHYSICAL);
-	resp.wp_addr = mminfo[1].mminfo;
-	mminfo[1].obj = obj;
-	mminfo[1].wc = true;
+	//TODO: none of that in the PF if VF CQ
+	if (!opts_b.buf) {
+		fill_mmap_info(client, &mminfo[1], (uintptr_t)queue_pages,
+			       queue_size, MMAP_LOGICAL);
+		resp.cmds = mminfo[1].mminfo;
+		mminfo[1].obj = obj;
+	}
 
 	resp.count = cq->size;
 
@@ -968,6 +971,22 @@ free_obj:
 	free_obj(obj);
 
 	return rc;
+}
+
+static int cxi_user_cq_alloc(struct user_client *client,
+			     const void *cmd_in,
+			     void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_cq_alloc_cmd *cmdi = cmd_in;
+	const struct cxi_cq_alloc_buf_cmd cmd = {
+		.op = cmdi->op,
+		.resp = cmdi->resp,
+		.lni = cmdi->lni,
+		.eq = cmdi->eq,
+		.opts.opts = cmdi->opts,
+	};
+
+	return cxi_user_cq_alloc_buf(client, &cmd, resp_out, resp_out_len);
 }
 
 static int cxi_user_cq_free(struct user_client *client,
@@ -2515,7 +2534,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "SVC_GET_NETNS",
 		.handler    = cxi_user_svc_get_netns,
 	},
-
+	[CXI_OP_CQ_ALLOC_BUF] = {
+		.req_size   = sizeof(struct cxi_cq_alloc_buf_cmd),
+		.name       = "CQ_ALLOC_BUF",
+		.handler    = cxi_user_cq_alloc_buf,
+	},
 };
 
 /* Read and process a command from userspace or from a Virtual

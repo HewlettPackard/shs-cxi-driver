@@ -403,6 +403,9 @@ int cxi_eq_resize_complete(struct cxi_eq *evtq);
 struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 			    const struct cxi_cq_alloc_opts *opts,
 			    int numa_node);
+struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
+				const struct cxi_cq_alloc_opts_buf *opts,
+				int numa_node);
 int cxi_cq_user_info(struct cxi_cq *cmdq,
 		     size_t *cmds_size, struct page **cmds_pages,
 		     phys_addr_t *wp_addr, size_t *wp_addr_size);

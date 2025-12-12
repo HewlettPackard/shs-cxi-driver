@@ -121,6 +121,7 @@ enum cxi_command_opcode {
 
 		CXI_OP_SVC_SET_NETNS,
 		CXI_OP_SVC_GET_NETNS,
+		CXI_OP_CQ_ALLOC_BUF,
 
 		CXI_OP_MAX,
 };
@@ -430,6 +431,13 @@ struct cxi_cq_alloc_opts {
 	unsigned int lpe_cdt_thresh_id;
 };
 
+struct cxi_cq_alloc_opts_buf {
+	struct cxi_cq_alloc_opts opts;
+
+	/* Pointer to an optional user buffer. */
+	void __user *buf;
+};
+
 struct cxi_cq_alloc_cmd {
 	enum cxi_command_opcode op;
 	void  __user *resp;
@@ -440,6 +448,18 @@ struct cxi_cq_alloc_cmd {
 	unsigned int eq;
 
 	struct cxi_cq_alloc_opts opts;
+};
+
+struct cxi_cq_alloc_buf_cmd {
+	enum cxi_command_opcode op;
+	void  __user *resp;
+
+	unsigned int lni;  /* LNI to associate with the event queue */
+
+	/* EQ handle to report CQ errors to. May be set to C_EQ_NONE. */
+	unsigned int eq;
+
+	struct cxi_cq_alloc_opts_buf opts;
 };
 
 struct cxi_cq_alloc_resp {

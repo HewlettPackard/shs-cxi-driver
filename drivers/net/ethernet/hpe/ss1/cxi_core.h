@@ -386,6 +386,7 @@ struct cxi_cq_priv {
 	/* DMA mapped CQ */
 	size_t cmds_len;
 	size_t cmds_order;
+	struct page **pages;
 	struct page *cmds_pages;
 	void *cmds;
 	dma_addr_t cmds_dma_addr;

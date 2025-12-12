@@ -295,10 +295,66 @@ static void put_cq_id(struct cxi_cq_priv *cq)
 	kfree(cq);
 }
 
+static int get_dma_addr_if_contig(struct cass_dev *hw, void *addr, size_t len,
+				  enum dma_data_direction dir,
+				  struct page ***pages, dma_addr_t *dma_addr)
+{
+	int i;
+	int rc;
+	int npinned;
+	dma_addr_t pa;
+	size_t npg = len >> PAGE_SHIFT;
+
+	*pages = kmalloc_array(npg, sizeof(struct page *), GFP_KERNEL);
+	if (!*pages)
+		return -ENOMEM;
+
+	npinned = pin_user_pages_fast((u64)addr, npg, FOLL_WRITE, *pages);
+	if (npinned < 0) {
+		rc = npinned;
+		goto free_pages;
+	}
+
+	if (npinned != npg) {
+		rc = -EFAULT;
+		goto put_pages;
+	}
+
+	/* Naively check that each page is in sequence. */
+	pa = page_to_phys((*pages)[0]);
+	for (i = 1; i < npg; i++) {
+		pa += PAGE_SIZE;
+		if (pa != page_to_phys((*pages)[i])) {
+			cxidev_dbg(&hw->cdev,
+				   "Buffer supplied is required to be contiguous\n");
+			rc = -EINVAL;
+			goto put_pages;
+		}
+	}
+
+	*dma_addr = dma_map_page(&hw->cdev.pdev->dev, (*pages)[0], 0, len, dir);
+	if (dma_mapping_error(&hw->cdev.pdev->dev, *dma_addr)) {
+		rc = -ENOMEM;
+		goto put_pages;
+	}
+
+	return 0;
+
+put_pages:
+	unpin_user_pages(*pages, npinned);
+
+free_pages:
+	kfree(*pages);
+
+	return rc;
+}
+
 /**
- * cxi_cq_alloc() - Allocate a new command queue
+ * cxi_cq_alloc_buf() - Allocate a new command queue
  *
  * The new CQ is attached to attached to the NI.
+ * The CQ buffer may be supplied by the user. It must be physically
+ * contiguous.
  *
  * @lni: LNI to associate with the command queue.
  * @evtq: Event Queue to associate with the command queue, for error
@@ -308,14 +364,15 @@ static void put_cq_id(struct cxi_cq_priv *cq)
  *
  * @return: the command queue or an error pointer
  */
-struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
-			    const struct cxi_cq_alloc_opts *opts,
-			    int numa_node)
+struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
+				const struct cxi_cq_alloc_opts_buf *opts_b,
+				int numa_node)
 {
 	struct cxi_lni_priv *lni_priv =
 		container_of(lni, struct cxi_lni_priv, lni);
 	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	const struct cxi_cq_alloc_opts *opts = &opts_b->opts;
 	struct cxi_eq_priv *eq;
 	struct cxi_cq_priv *cq;
 	int cq_idx;
@@ -344,8 +401,11 @@ struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 	cmds_len = (1 << cmds_order) * PAGE_SIZE;
 	cmds_count = cmds_len / C_CQ_CMD_SIZE;
 
-	if (cmds_count > CXI_MAX_CQ_COUNT)
+	if (cmds_count > CXI_MAX_CQ_COUNT) {
+		cxidev_dbg(cdev, "cmds_count:%ld is > CXI_MAX_CQ_COUNT:%d\n",
+			   cmds_count, CXI_MAX_CQ_COUNT);
 		return ERR_PTR(-E2BIG);
+	}
 
 	/* At least one communication profile is needed for a transmit
 	 * CQ.
@@ -364,17 +424,9 @@ struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 	if ((opts->flags & CXI_CQ_TX_ETHERNET) && !capable(CAP_NET_RAW))
 		return ERR_PTR(-EPERM);
 
-	/* CQ needs contiguous memory region. */
-	cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
-				      cmds_order);
-	if (cmds_pages == NULL)
-		return ERR_PTR(-ENOMEM);
-
 	cq = pf_get_cq_id(lni_priv, opts);
-	if (IS_ERR(cq)) {
-		rc = PTR_ERR(cq);
-		goto cmds_free;
-	}
+	if (IS_ERR(cq))
+		return ERR_PTR(PTR_ERR(cq));
 
 	cq_idx = cq->cass_cq.idx;
 
@@ -387,15 +439,41 @@ struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 	cq->eq = eq;
 	cq->flags = opts->flags;
 	cq->cmds_len = cmds_len;
-	cq->cmds_order = cmds_order;
-	cq->cmds_pages = cmds_pages;
-	cq->cmds = page_address(cmds_pages);
-	cq->cmds_dma_addr = dma_map_page(&hw->cdev.pdev->dev, cmds_pages, 0,
-					 cq->cmds_len, DMA_BIDIRECTIONAL);
 
-	if (dma_mapping_error(&hw->cdev.pdev->dev, cq->cmds_dma_addr)) {
-		rc = -ENOMEM;
-		goto put_id;
+	if (opts_b->buf) {
+		if (!IS_ALIGNED((u64)opts_b->buf, PAGE_SIZE)) {
+			cxidev_dbg(cdev, "buffer %llx not aligned to PAGE_SIZE\n",
+				   (u64)opts_b->buf);
+			rc = -EINVAL;
+			goto put_id;
+		}
+
+		rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
+					    DMA_BIDIRECTIONAL, &cq->pages,
+					    &cq->cmds_dma_addr);
+		if (rc)
+			goto put_id;
+
+		cq->cmds = page_address(cq->pages[0]);
+	} else {
+		/* CQ needs contiguous memory region. */
+		cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
+					      cmds_order);
+		if (!cmds_pages) {
+			rc = -ENOMEM;
+			goto put_id;
+		}
+
+		cq->cmds_order = cmds_order;
+		cq->cmds = page_address(cmds_pages);
+		cq->cmds_pages = cmds_pages;
+		cq->cmds_dma_addr = dma_map_page(&hw->cdev.pdev->dev,
+						 cmds_pages, 0, cq->cmds_len,
+						 DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(&hw->cdev.pdev->dev, cq->cmds_dma_addr)) {
+			rc = -ENOMEM;
+			goto free_pages;
+		}
 	}
 
 	if (!is_user) {
@@ -451,13 +529,43 @@ cq_release:
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
 
+	if (cq->pages) {
+		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
+		kfree(cq->pages);
+	}
+
+free_pages:
+	if (cq->cmds_pages)
+		__free_pages(cq->cmds_pages, cmds_order);
+
 put_id:
 	put_cq_id(cq);
 
-cmds_free:
-	__free_pages(cmds_pages, cmds_order);
-
 	return ERR_PTR(rc);
+}
+EXPORT_SYMBOL(cxi_cq_alloc_buf);
+
+/**
+ * cxi_cq_alloc() - Allocate a new command queue
+ *
+ * The new CQ is attached to attached to the NI.
+ *
+ * @lni: LNI to associate with the command queue.
+ * @evtq: Event Queue to associate with the command queue, for error
+ *        reporting. May be NULL.
+ * @opts: Options affecting the CQ.
+ * @numa_node: NUMA node ID CQ memory should be allocated from.
+ *
+ * @return: the command queue or an error pointer
+ */
+struct cxi_cq *cxi_cq_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
+			    const struct cxi_cq_alloc_opts *opts,
+			    int numa_node)
+{
+	struct cxi_cq_alloc_opts_buf opts_b = {};
+
+	opts_b.opts = *opts;
+	return cxi_cq_alloc_buf(lni, evtq, &opts_b, numa_node);
 }
 EXPORT_SYMBOL(cxi_cq_alloc);
 
@@ -529,6 +637,7 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 		cass_read(hw, C_CQ_TXQ_RDPTR_TABLE(cq_n),
 			  &rd_ptr, sizeof(rd_ptr));
 		mem_q_rd_ptr = rd_ptr.mem_q_rd_ptr;
+
 		while (true) {
 			cass_read(hw, C_CQ_TXQ_RDPTR_TABLE(cq_n),
 				  &rd_ptr, sizeof(rd_ptr));
@@ -560,7 +669,13 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
-	__free_pages(cq->cmds_pages, cq->cmds_order);
+
+	if (cq->cmds_pages) {
+		__free_pages(cq->cmds_pages, cq->cmds_order);
+	} else {
+		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
+		kfree(cq->pages);
+	}
 
 	if (eq)
 		refcount_dec(&eq->refcount);
