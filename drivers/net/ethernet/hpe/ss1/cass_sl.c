@@ -51,27 +51,27 @@ bool cass_sl_is_pcs_aligned(struct cass_dev *cass_dev)
 	return !!sts.align_status;
 }
 
-static u32 cass_sl_speed_get(struct cass_dev *cass_dev, const struct cxi_link_info *link_info)
+static int cass_sl_speed_get(u32 tech)
 {
-	cass_dev->sl.ck_speed = !!(link_info->flags & CXI_ETH_PF_CK_SPEED);
+	switch (tech) {
+	case SL_LGRP_CONFIG_TECH_BJ_100G:
+		return SPEED_100000;
+	case SL_LGRP_CONFIG_TECH_BS_200G:
+		return SPEED_200000;
+	case SL_LGRP_CONFIG_TECH_CK_400G:
+		return SPEED_400000;
+	default:
+		return 0;
+	}
+}
 
-	cxidev_dbg(&cass_dev->cdev, "sl speed get (speed = %d, ck = %s)\n",
-		link_info->speed, (cass_dev->sl.ck_speed) ? "on" : "off");
-
-	switch (link_info->speed) {
-	case SPEED_50000:
-		return SL_LGRP_CONFIG_TECH_CD_50G;
+static u32 cass_sl_tech_get(int speed)
+{
+	switch (speed) {
 	case SPEED_100000:
-		if (cass_dev->sl.ck_speed)
-			return SL_LGRP_CONFIG_TECH_CK_100G;
-		else
-			return SL_LGRP_CONFIG_TECH_BJ_100G;
+		return SL_LGRP_CONFIG_TECH_BJ_100G;
 	case SPEED_200000:
-	case SPEED_UNKNOWN:
-		if (cass_dev->sl.ck_speed)
-			return SL_LGRP_CONFIG_TECH_CK_200G;
-		else
-			return SL_LGRP_CONFIG_TECH_BS_200G;
+		return SL_LGRP_CONFIG_TECH_BS_200G;
 	case SPEED_400000:
 		return SL_LGRP_CONFIG_TECH_CK_400G;
 	default:
@@ -86,24 +86,17 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	memset(link_info, 0, sizeof(*link_info));
 
 	/* auto neg */
-	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE)
+	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE) {
+		cxidev_dbg(&cass_dev->cdev, "sl mode get autoneg enabled\n");
 		link_info->autoneg = AUTONEG_ENABLE;
-	else
+		link_info->speed   = cass_sl_speed_get(cass_dev->sl.link_up_mode);
+	} else {
+		cxidev_dbg(&cass_dev->cdev,
+			   "sl mode get autoneg disabled (tech_map = 0x%X)\n",
+			   cass_dev->sl.static_tech_map);
 		link_info->autoneg = AUTONEG_DISABLE;
-
-	/* speed */
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_CD_50G)
-		link_info->speed = SPEED_50000;
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_BJ_100G)
-		link_info->speed = SPEED_100000;
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_CK_100G)
-		link_info->speed = SPEED_100000;
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_BS_200G)
-		link_info->speed = SPEED_200000;
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_CK_200G)
-		link_info->speed = SPEED_200000;
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_CK_400G)
-		link_info->speed = SPEED_400000;
+		link_info->speed   = cass_sl_speed_get(cass_dev->sl.static_tech_map);
+	}
 
 	/* llr */
 	if (cass_dev->sl.enable_llr)
@@ -121,9 +114,6 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	else
 		link_info->flags &= ~CXI_ETH_PF_LINKTRAIN;
 
-	if (cass_dev->sl.ck_speed)
-		link_info->flags |= CXI_ETH_PF_CK_SPEED;
-
 	/* FEC Monitor */
 	if (cass_dev->sl.link_policy.fec_mon_period_ms > 0)
 		link_info->flags |= CXI_ETH_PF_FEC_MONITOR;
@@ -134,12 +124,24 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 		   link_info->flags & LOOPBACK_MODE);
 }
 
+static void cass_sl_mode_set_autoneg_enable(struct cass_dev *cass_dev)
+{
+	cass_dev->sl.link_config.options |= SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+	cass_dev->sl.lgrp_config.tech_map = cass_dev->sl.autoneg_tech_map;
+}
+
+static void cass_sl_mode_set_autoneg_disable(struct cass_dev *cass_dev)
+{
+	cass_dev->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+	cass_dev->sl.lgrp_config.tech_map = cass_dev->sl.static_tech_map;
+}
+
 void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *link_info)
 {
 	struct sl_link_config *link_config;
 	struct sl_lgrp_config *lgrp_config;
-	u32                    an_mode;
-	u32                    speed_mode;
+	u32                    autoneg_mode;
+	u32                    tech_mode;
 	bool                   is_mode_changed;
 
 	cxidev_dbg(&cass_dev->cdev, "sl mode set\n");
@@ -148,34 +150,35 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	lgrp_config = &cass_dev->sl.lgrp_config;
 	is_mode_changed = false;
 
+	/* speed */
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (speed = %d)\n", link_info->speed);
+	tech_mode = cass_sl_tech_get(link_info->speed);
+	if (tech_mode && cass_dev->sl.static_tech_map != tech_mode) {
+		cxidev_dbg(&cass_dev->cdev, "sl mode set - tech_mode to 0x%X\n", tech_mode);
+	        cass_dev->sl.static_tech_map = tech_mode;
+		if (!(cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE))
+	        	cass_dev->sl.lgrp_config.tech_map = cass_dev->sl.static_tech_map;
+		is_mode_changed = true;
+	}
+
 	/* auto neg */
-	cxidev_dbg(&cass_dev->cdev, "sl mode set (an_mode = %d)\n", link_info->autoneg);
-	an_mode = link_config->options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (autoneg = %d)\n", link_info->autoneg);
+	autoneg_mode = link_config->options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
 	switch (link_info->autoneg) {
 	case AUTONEG_DISABLE:
-		if (an_mode == 0)
+		if (autoneg_mode == 0)
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set - AN to off\n");
-		link_config->options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+		cass_sl_mode_set_autoneg_disable(cass_dev);
 		is_mode_changed = true;
 		break;
 	case AUTONEG_ENABLE:
-		if (an_mode != 0)
+		if (autoneg_mode != 0)
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set - AN to on\n");
-		link_config->options |= SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+		cass_sl_mode_set_autoneg_enable(cass_dev);
 		is_mode_changed = true;
 		break;
-	}
-
-	/* speed */
-	speed_mode = cass_sl_speed_get(cass_dev, link_info);
-	if ((cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_MASK) != speed_mode) {
-		cxidev_dbg(&cass_dev->cdev, "sl speed set to %d\n", speed_mode);
-		cass_dev->sl.lgrp_config.tech_map =
-			((cass_dev->sl.lgrp_config.tech_map & ~SL_LGRP_CONFIG_TECH_MASK) |
-			speed_mode);
-		is_mode_changed = true;
 	}
 
 	/* llr */
@@ -232,9 +235,9 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
 		link_config->options &= ~SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
 		if (cass_dev->sl.old_an_mode == AUTONEG_ENABLE)
-			link_config->options |= SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+			cass_sl_mode_set_autoneg_enable(cass_dev);
 		else
-			link_config->options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+			cass_sl_mode_set_autoneg_disable(cass_dev);
 		if (cass_dev->sl.old_lt_mode)
 			link_config->hpe_map |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 		else
@@ -246,7 +249,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set - internal loopback to on\n");
 		lgrp_config->options |= SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
-		link_config->options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+		cass_sl_mode_set_autoneg_disable(cass_dev);
 		link_config->options &= ~SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
 		cass_dev->sl.old_an_mode = link_info->autoneg;
 		cass_dev->sl.old_lt_mode = (link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN);
@@ -258,7 +261,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set - external loopback to on\n");
 		link_config->options |= SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
-		link_config->options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+		cass_sl_mode_set_autoneg_disable(cass_dev);
 		link_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
 		cass_dev->sl.old_an_mode = link_info->autoneg;
 		cass_dev->sl.old_lt_mode = (link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN);
@@ -717,8 +720,6 @@ static void cass_sl_ops_init(struct cass_dev *cass_dev)
 	cass_dev->sl.accessors.dmac          = cass_dev;
 
 	cass_dev->sl.enable_llr              = true;
-	cass_dev->sl.ck_speed                = true;
-
 	cass_dev->sl.is_canceled             = false;
 }
 
@@ -765,10 +766,10 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
 		cass_dev->sl.media_attr = msg->info.media_attr;
 		if (msg->info.media_attr.type & SL_MEDIA_TYPE_ACTIVE) {
 			cass_dev->sl.link_config.hpe_map &= ~SL_LINK_CONFIG_HPE_LINKTRAIN;
-			cass_dev->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+			cass_sl_mode_set_autoneg_disable(cass_dev);
 		} else {
 			cass_dev->sl.link_config.hpe_map |= SL_LINK_CONFIG_HPE_LINKTRAIN;
-			cass_dev->sl.link_config.options |= SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
+			cass_sl_mode_set_autoneg_enable(cass_dev);
 		}
 		cass_dev->sl.has_cable = true;
 		break;
@@ -782,6 +783,7 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
                 break;
 	case SL_LGRP_NOTIF_LINK_UP:
 		cass_dev->sl.link_state = SL_LINK_STATE_UP;
+		cass_dev->sl.link_up_mode = msg->info.link_up.mode;
 		complete(&(cass_dev->sl.step_complete));
 		break;
 	case SL_LGRP_NOTIF_LINK_UP_FAIL:
@@ -836,16 +838,19 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.ldev_config.accessors = &(cass_dev->sl.accessors);
 	cass_dev->sl.ldev_config.ops       = &(cass_dev->sl.ops);
 
-	cass_dev->sl.lgrp_config.magic             = SL_LGRP_CONFIG_MAGIC;
-	cass_dev->sl.lgrp_config.ver               = SL_LGRP_CONFIG_VER;
-	cass_dev->sl.lgrp_config.mfs               = 9216;
-	cass_dev->sl.lgrp_config.furcation         = SL_MEDIA_FURCATION_X1;
-	cass_dev->sl.lgrp_config.fec_mode          = SL_LGRP_FEC_MODE_OFF;
-	if (cass_dev->sl.ck_speed)
-		cass_dev->sl.lgrp_config.tech_map  = SL_LGRP_CONFIG_TECH_CK_400G;
-	else
-		cass_dev->sl.lgrp_config.tech_map  = SL_LGRP_CONFIG_TECH_BS_200G;
-	cass_dev->sl.lgrp_config.fec_map           = SL_LGRP_CONFIG_FEC_RS;
+	cass_dev->sl.lgrp_config.magic     = SL_LGRP_CONFIG_MAGIC;
+	cass_dev->sl.lgrp_config.ver       = SL_LGRP_CONFIG_VER;
+	cass_dev->sl.lgrp_config.mfs       = 9216;
+	cass_dev->sl.lgrp_config.furcation = SL_MEDIA_FURCATION_X1;
+	cass_dev->sl.lgrp_config.fec_mode  = SL_LGRP_FEC_MODE_OFF;
+	cass_dev->sl.lgrp_config.fec_map   = SL_LGRP_CONFIG_FEC_RS;
+	cass_dev->sl.static_tech_map       = SL_LGRP_CONFIG_TECH_CK_400G;
+	cass_dev->sl.autoneg_tech_map      = SL_LGRP_CONFIG_TECH_CK_400G |
+					     SL_LGRP_CONFIG_TECH_BS_200G |
+					     SL_LGRP_CONFIG_TECH_BJ_100G;
+	cass_dev->sl.link_up_mode          = 0;
+	cass_sl_mode_set_autoneg_enable(cass_dev);
+	
 
 	cass_dev->sl.link_config.magic                 = SL_LINK_CONFIG_MAGIC;
 	cass_dev->sl.link_config.ver                   = SL_LINK_CONFIG_VER;
@@ -855,7 +860,6 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.link_config.fec_up_check_wait_ms  = -1;
 	cass_dev->sl.link_config.fec_up_ucw_limit      = -1;
 	cass_dev->sl.link_config.fec_up_ccw_limit      = -1;
-	cass_dev->sl.link_config.options               = SL_LINK_CONFIG_OPT_AUTONEG_ENABLE;
 	cass_dev->sl.link_config.pause_map             = 0;
 	cass_dev->sl.link_config.hpe_map               = SL_LINK_CONFIG_HPE_C2;
 	cass_dev->sl.link_config.hpe_map              |= SL_LINK_CONFIG_HPE_LINKTRAIN;
@@ -1095,8 +1099,9 @@ int cass_sl_link_up(struct cass_dev *cass_dev)
 	/* initial delay between attempts */
 	msleep(1000);
 
-	cass_dev->sl.link_state = SL_LINK_STATE_DOWN;
-	cass_dev->sl.llr_state  = SL_LLR_STATE_OFF;
+	cass_dev->sl.link_state   = SL_LINK_STATE_DOWN;
+	cass_dev->sl.llr_state    = SL_LLR_STATE_OFF;
+	cass_dev->sl.link_up_mode = 0;
 
 	if (!cass_dev->sl.is_fw_loaded) {
 		rtn = sl_ldev_serdes_init(cass_dev->sl.ldev);

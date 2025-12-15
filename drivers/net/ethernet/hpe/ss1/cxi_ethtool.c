@@ -29,7 +29,6 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"ignore-align",
 	"disable-pml-recovery",
 	"link-train",
-	"ck-speed",
 	"remote-fault-recovery",
 	"use-unsupported-cable",
 	"fec_monitor",
@@ -503,22 +502,28 @@ static int cxi_get_link_ksettings(struct net_device *ndev,
 	ethtool_link_ksettings_add_link_mode(s, supported, FIBRE);
 	ethtool_link_ksettings_add_link_mode(s, supported, TP);
 	ethtool_link_ksettings_add_link_mode(s, supported, Pause);
-	ethtool_link_ksettings_add_link_mode(s, supported, 50000baseKR_Full);
-	ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR2_Full);
-	ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR4_Full);
-	ethtool_link_ksettings_add_link_mode(s, supported, 200000baseCR4_Full);
-	if (s->base.autoneg == AUTONEG_ENABLE)
-		ethtool_link_ksettings_add_link_mode(s, advertising, Autoneg);
-
-	ethtool_link_ksettings_add_link_mode(s, advertising, Pause);
-	ethtool_link_ksettings_add_link_mode(s, advertising, 50000baseKR_Full);
-	ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR2_Full);
-	ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR4_Full);
-	ethtool_link_ksettings_add_link_mode(s, advertising, 200000baseCR4_Full);
-
-	if (cassini_version(&dev->cxi_dev->prop, CASSINI_2)) {
+	if (cassini_version(&dev->cxi_dev->prop, CASSINI_1)) {
+		ethtool_link_ksettings_add_link_mode(s, supported, 50000baseKR_Full);
+		ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR2_Full);
+		ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR4_Full);
+		ethtool_link_ksettings_add_link_mode(s, supported, 200000baseCR4_Full);
+		if (s->base.autoneg == AUTONEG_ENABLE)
+			ethtool_link_ksettings_add_link_mode(s, advertising, Autoneg);
+		ethtool_link_ksettings_add_link_mode(s, advertising, Pause);
+		ethtool_link_ksettings_add_link_mode(s, advertising, 50000baseKR_Full);
+		ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR2_Full);
+		ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR4_Full);
+		ethtool_link_ksettings_add_link_mode(s, advertising, 200000baseCR4_Full);
+	} else if (cassini_version(&dev->cxi_dev->prop, CASSINI_2)) {
+		ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR2_Full);
+		ethtool_link_ksettings_add_link_mode(s, supported, 200000baseCR4_Full);
 		ethtool_link_ksettings_add_link_mode(s, supported, 400000baseCR4_Full);
-		ethtool_link_ksettings_add_link_mode(s, advertising, 400000baseCR4_Full);
+		if (s->base.autoneg == AUTONEG_ENABLE) {
+			ethtool_link_ksettings_add_link_mode(s, advertising, Autoneg);
+			ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR2_Full);
+			ethtool_link_ksettings_add_link_mode(s, advertising, 200000baseCR4_Full);
+			ethtool_link_ksettings_add_link_mode(s, advertising, 400000baseCR4_Full);
+		}
 	}
 
 	return 0;

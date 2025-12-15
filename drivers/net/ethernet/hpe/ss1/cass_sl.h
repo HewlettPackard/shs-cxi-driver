@@ -28,11 +28,14 @@ struct cass_sl_dev {
 	struct sl_lgrp              *lgrp;
 	struct sl_lgrp_config        lgrp_config;
 
+	u32                          static_tech_map;
+	u32                          autoneg_tech_map;
+	u32                          link_up_mode;
+
 	struct sl_link              *link;
 	struct sl_link_config        link_config;
 	struct sl_link_policy        link_policy;
 	u32                          link_state;
-	bool                         ck_speed;
 	bool                         is_fw_loaded;
 
 	struct sl_mac               *mac;
