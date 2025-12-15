@@ -10,15 +10,15 @@
 #define CXI_ETH_PF_ROCE_OPT                  BIT(5)  /* RoCE Cassini Optimizations */
 #define CXI_ETH_PF_IGNORE_ALIGN              BIT(6)  /* ignore align interrupt */
 #define CXI_ETH_PF_DISABLE_PML_RECOVERY      BIT(7)  /* disable pml recovery */
-#define CXI_ETH_PF_LINKTRAIN                 BIT(8)
-#define CXI_ETH_PF_CK_SPEED                  BIT(9)
-#define CXI_ETH_PF_REMOTE_FAULT_RECOVERY     BIT(10) /* enable pml recovery for remote faults */
-#define CXI_ETH_PF_USE_UNSUPPORTED_CABLE     BIT(11) /* allow link up with unsupported cable */
-#define CXI_ETH_PF_FEC_MONITOR               BIT(12) /* Turn FEC Monitor on/off */
-#define CXI_ETH_PF_ALD                       BIT(13) /* control auto lane degrade */
-#define CXI_ETH_PF_IGNORE_MEDIA_ERROR        BIT(14) /* ignore media error */
-#define CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE BIT(15) /* allow link up with supported ss200 cable */
-#define CXI_ETH_PF_LOS_LOL_HIDE              BIT(16) /* hide LOS/LOL down and link up fail cause */
+#define CXI_ETH_PF_LINKTRAIN                 BIT(8)  /* link training */
+#define CXI_ETH_PF_REMOTE_FAULT_RECOVERY     BIT(9)  /* enable pml recovery for remote faults */
+#define CXI_ETH_PF_USE_UNSUPPORTED_CABLE     BIT(10) /* allow link up with unsupported cable */
+#define CXI_ETH_PF_FEC_MONITOR               BIT(11) /* Turn FEC Monitor on/off */
+#define CXI_ETH_PF_ALD                       BIT(12) /* control auto lane degrade */
+#define CXI_ETH_PF_IGNORE_MEDIA_ERROR        BIT(13) /* ignore media error */
+#define CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE BIT(14) /* allow link up with supported ss200 cable */
+#define CXI_ETH_PF_LOS_LOL_HIDE              BIT(15) /* hide LOS/LOL down and link up fail cause */
 
-#define PRIV_FLAGS_COUNT 17
+#define PRIV_FLAGS_COUNT 16
+
 #define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)
