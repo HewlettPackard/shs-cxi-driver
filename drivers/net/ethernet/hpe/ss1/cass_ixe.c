@@ -329,8 +329,21 @@ int cass_ixe_init(struct cass_dev *hw)
 	set_bth_opcode(hw);
 
 	ret = cass_ixe_set_amo_remap_to_pcie_fadd(hw, amo_remap_to_pcie_fadd);
-	if (ret)
+	if (ret) {
 		pr_err("Failed to remap NIC AMO to PCIe fetch add: %d\n", ret);
+		return ret;
+	}
 
-	return ret;
+	hw->ixe_pbuf_rd_err.irq = C_IXE_IRQA_MSIX_INT;
+	hw->ixe_pbuf_rd_err.is_ext = false;
+	hw->ixe_pbuf_rd_err.err_flags.ixe_err_flg.pbuf_rd_err = 1;
+	hw->ixe_pbuf_rd_err.cb = uncor_cb;
+	cxi_register_hw_errors(hw, &hw->ixe_pbuf_rd_err);
+
+	return 0;
+}
+
+void cass_ixe_fini(struct cass_dev *hw)
+{
+	cxi_unregister_hw_errors(hw, &hw->ixe_pbuf_rd_err);
 }

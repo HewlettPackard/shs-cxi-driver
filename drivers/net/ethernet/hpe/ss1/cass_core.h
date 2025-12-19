@@ -438,6 +438,7 @@ union err_flags {
 	union c_lpe_err_flg lpe;
 	union c_pct_ext_err_flg pct_ext;
 	union c_ee_err_flg ee;
+	union c_ixe_err_flg ixe_err_flg;
 };
 
 struct cxi_reg_err_flg {
@@ -935,6 +936,9 @@ struct cass_dev {
 	struct cxi_reg_err_flg hni_uncor_err;
 	struct cxi_reg_err_flg hni_pml_uncor_err;
 
+	/* IXE */
+	struct cxi_reg_err_flg ixe_pbuf_rd_err;
+
 	/* PML */
 	struct cxi_reg_err_flg pml_err;
 	struct {
@@ -1320,6 +1324,7 @@ int cass_create_tc_sysfs(struct cass_dev *hw);
 void cass_destroy_tc_sysfs(struct cass_dev *hw);
 
 int cass_ixe_init(struct cass_dev *hw);
+void cass_ixe_fini(struct cass_dev *hw);
 
 int cass_register_uc(struct cass_dev *hw);
 void cass_unregister_uc(struct cass_dev *hw);
@@ -1407,5 +1412,10 @@ void cass_phy_set_state(enum cass_phy_state state, struct cass_dev *hw);
 void start_pcie_monitoring(struct cass_dev *hw);
 void stop_pcie_monitoring(struct cass_dev *hw);
 void cass_set_outstanding_limit(struct cass_dev *hw);
+
+void cass_disable_device(struct pci_dev *pdev, const char *reason);
+extern bool disable_on_error;
+void uncor_cb(struct cass_dev *hw, unsigned int irq, bool is_ext,
+	      unsigned int bitn);
 
 #endif	/* _CASS_CORE_H */
