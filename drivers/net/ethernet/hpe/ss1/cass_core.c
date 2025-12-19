@@ -64,6 +64,11 @@ module_param(ioi_enable, bool, 0444);
 MODULE_PARM_DESC(ioi_enable,
 		 "Enable the In-Out-In protocol for puts.");
 
+bool disable_on_error = true;
+module_param(disable_on_error, bool, 0644);
+MODULE_PARM_DESC(disable_on_error,
+		 "Disable cxi device on certain unrecoverable errors");
+
 #ifndef PCI_EXT_CAP_ID_DVSEC
 #define PCI_EXT_CAP_ID_DVSEC 0x23
 #define PCI_DVSEC_HEADER1       0x4 /* Designated Vendor-Specific Header1 */
@@ -742,6 +747,7 @@ static void fini_hw(struct cass_dev *hw)
 	cxi_eth_tx_profile_cleanup(hw);
 	cass_tc_fini(hw);
 	cass_atu_fini(hw);
+	cass_ixe_fini(hw);
 	cass_hni_fini(hw);
 	cass_telem_fini(hw);
 	cass_dmac_fini(hw);
@@ -1336,16 +1342,34 @@ static void cass_remove(struct pci_dev *pdev)
 	device_unregister(&hw->class_dev);
 }
 
-void cass_disable_device(struct pci_dev *pdev)
+void cass_disable_device(struct pci_dev *pdev, const char *reason)
 {
 	struct cass_dev *hw = pci_get_drvdata(pdev);
 
-	cxidev_warn(&hw->cdev, "disabling device");
+	if (reason)
+		cxidev_err(&hw->cdev, "Disabling device. Reason: %s", reason);
+	else
+		cxidev_err(&hw->cdev, "Disabling device");
 
 	pci_clear_master(pdev);
 	pci_disable_device(pdev);
 
 	hw->pci_disabled = true;
+}
+
+void uncor_cb(struct cass_dev *hw, unsigned int irq, bool is_ext,
+	      unsigned int bitn)
+{
+	char reason[200];
+
+	if (!disable_on_error)
+		return;
+
+	snprintf(reason, sizeof(reason),
+		 "Unrecoverable error: %s with bitn: %d",
+		 hw->err_handlers[irq][is_ext]->csr_name_lo, bitn);
+
+	cass_disable_device(hw->cdev.pdev, reason);
 }
 
 static struct pci_device_id cass_ids[] = {

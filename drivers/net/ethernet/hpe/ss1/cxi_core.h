@@ -159,7 +159,6 @@ extern atomic_t cxi_num;
 extern struct class cxi_class;
 extern struct dentry *cxi_debug_dir;
 
-extern void cass_disable_device(struct pci_dev *pdev);
 extern int hw_register(void);
 extern void hw_unregister(void);
 extern int cxi_configfs_subsys_init(void);

@@ -14,9 +14,6 @@ static unsigned int pause_too_long_timeout = 1000;
 module_param(pause_too_long_timeout, uint, 0444);
 MODULE_PARM_DESC(pause_too_long_timeout,
 		 "Pause too long error timeout in ms, up to 17 min (rounded up to pow 2)");
-static bool disable_on_error = true;
-module_param(disable_on_error, bool, 0644);
-MODULE_PARM_DESC(disable_on_error, "Disable cxi device on certain errors");
 
 /* 1ms at a 1GHz clock is 1000000 cycles, so we would need to monitor
  * bit 20 for a 1ms to 2ms timer.
@@ -69,15 +66,6 @@ static void pause_timeout_cb(struct cass_dev *hw, unsigned int irq,
 			     bool is_ext, unsigned int bitn)
 {
 	queue_work(system_long_wq, &hw->pause_timeout_work);
-}
-
-static void uncor_cb(struct cass_dev *hw, unsigned int irq, bool is_ext,
-		     unsigned int bitn)
-{
-	if (!disable_on_error)
-		return;
-
-	cass_disable_device(hw->cdev.pdev);
 }
 
 /* Re-program the HNI and OXE pause quanta when the link is going up,
