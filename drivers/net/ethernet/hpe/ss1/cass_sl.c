@@ -778,8 +778,8 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
 		cass_dev->sl.has_cable = false;
 		break;
 	case SL_LGRP_NOTIF_LANE_DEGRADE:
-                cxidev_info(&cass_dev->cdev, "lane degrade occurred (rx_lane_map = 0x%X, tx_lane_map = 0x%X)\n",
-                msg->info.degrade_info.rx_lane_map, msg->info.degrade_info.tx_lane_map);
+                cxidev_info(&cass_dev->cdev, "lane degrade occurred (rx_degrade_map = 0x%X, tx_degrade_map = 0x%X)\n",
+                msg->info.degrade_info.rx_degrade_map, msg->info.degrade_info.tx_degrade_map);
                 break;
 	case SL_LGRP_NOTIF_LINK_UP:
 		cass_dev->sl.link_state = SL_LINK_STATE_UP;
