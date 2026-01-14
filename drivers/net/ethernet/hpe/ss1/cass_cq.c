@@ -246,25 +246,23 @@ static struct cxi_cq_priv *pf_get_cq_id(struct cxi_lni_priv *lni_priv,
 	}
 
 	if (opts->flags & CXI_CQ_IS_TX)
-		rc = ida_simple_get(&hw->cq_table, 0,
-				    C_NUM_TRANSMIT_CQS, GFP_KERNEL);
+		rc = ida_alloc_range(&hw->cq_table, 0, C_NUM_TRANSMIT_CQS - 1, GFP_KERNEL);
 	else
-		rc = ida_simple_get(&hw->cq_table, C_NUM_TRANSMIT_CQS,
-				    C_NUM_TRANSMIT_CQS + C_NUM_TARGET_CQS,
-				    GFP_KERNEL);
+		rc = ida_alloc_range(&hw->cq_table, C_NUM_TRANSMIT_CQS,
+				     C_NUM_TRANSMIT_CQS + C_NUM_TARGET_CQS - 1,
+				     GFP_KERNEL);
 
 	if (rc < 0) {
 		/* Out of CQs. Accelerate possible CQ cleanup. */
 		lni_cleanups(hw, false);
 
 		if (opts->flags & CXI_CQ_IS_TX)
-			rc = ida_simple_get(&hw->cq_table, 0,
-					    C_NUM_TRANSMIT_CQS, GFP_KERNEL);
+			rc = ida_alloc_range(&hw->cq_table, 0,
+					     C_NUM_TRANSMIT_CQS - 1, GFP_KERNEL);
 		else
-			rc = ida_simple_get(&hw->cq_table, C_NUM_TRANSMIT_CQS,
-					    C_NUM_TRANSMIT_CQS +
-					    C_NUM_TARGET_CQS,
-					    GFP_KERNEL);
+			rc = ida_alloc_range(&hw->cq_table, C_NUM_TRANSMIT_CQS,
+					     C_NUM_TRANSMIT_CQS + C_NUM_TARGET_CQS - 1,
+					     GFP_KERNEL);
 	}
 
 	if (rc < 0)
@@ -289,7 +287,7 @@ static void put_cq_id(struct cxi_cq_priv *cq)
 	struct cxi_dev *dev = lni_priv->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 
-	ida_simple_remove(&hw->cq_table, cq->cass_cq.idx);
+	ida_free(&hw->cq_table, cq->cass_cq.idx);
 	if (cq->flags & CXI_CQ_IS_TX)
 		cxi_rgroup_free_resource(lni_priv->rgroup, CXI_RESOURCE_TXQ);
 	else

@@ -562,10 +562,9 @@ static struct cxi_eq_priv *pf_get_eq_id(struct cxi_lni_priv *lni_priv)
 	}
 
 	/* Get event queue ID */
-	rc = ida_simple_get(&hw->eq_index_table, 1, C_NUM_EQS,
-			    GFP_KERNEL);
+	rc = ida_alloc_range(&hw->eq_index_table, 1, C_NUM_EQS - 1, GFP_KERNEL);
 	if (rc < 0) {
-		cxidev_err(cdev, "ida_simple_get failed %d\n", rc);
+		cxidev_err(cdev, "ida_alloc_range failed %d\n", rc);
 		goto eq_free;
 	}
 
@@ -594,7 +593,7 @@ static void pf_put_eq_id(struct cxi_eq_priv *eq)
 		list_add_tail(&eq->list, &lni_priv->eq_cleanups_list);
 		spin_unlock(&lni_priv->res_lock);
 	} else {
-		ida_simple_remove(&hw->eq_index_table, eq->eq.eqn);
+		ida_free(&hw->eq_index_table, eq->eq.eqn);
 		cxi_rgroup_free_resource(lni_priv->rgroup, CXI_RESOURCE_EQ);
 		kfree(eq);
 	}
@@ -1045,7 +1044,7 @@ void finalize_eq_cleanups(struct cxi_lni_priv *lni)
 		refcount_dec(&lni->refcount);
 		atomic_dec(&hw->stats.eq);
 		cxi_rgroup_free_resource(lni->rgroup, CXI_RESOURCE_EQ);
-		ida_simple_remove(&hw->eq_index_table, eq->eq.eqn);
+		ida_free(&hw->eq_index_table, eq->eq.eqn);
 		kfree(eq);
 	}
 }

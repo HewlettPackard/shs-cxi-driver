@@ -665,13 +665,13 @@ static int test_le_full(struct cxi_dev *dev)
 	};
 
 	/* get the next le pool id */
-	rc = ida_simple_get(&hw->le_pool_ids[0], DEFAULT_LE_POOL_ID,
-			    CASS_NUM_LE_POOLS, GFP_NOWAIT);
+	rc = ida_alloc_range(&hw->le_pool_ids[0], DEFAULT_LE_POOL_ID,
+			     CASS_NUM_LE_POOLS - 1, GFP_NOWAIT);
 	if (rc < 0) {
-		test_err("ida_simple_get failed %d\n", rc);
+		test_err("ida_alloc_range failed %d\n", rc);
 		goto err;
 	}
-	ida_simple_remove(&hw->le_pool_ids[0], rc);
+	ida_free(&hw->le_pool_ids[0], rc);
 	pools -= rc;
 	rc = 0;
 
@@ -731,13 +731,13 @@ static int test_tle_full(struct cxi_dev *dev)
 	};
 
 	/* get the next tle pool id */
-	rc = ida_simple_get(&hw->tle_pool_ids, DEFAULT_TLE_POOL_ID,
-			    C_CQ_CFG_TLE_POOL_ENTRIES, GFP_NOWAIT);
+	rc = ida_alloc_range(&hw->tle_pool_ids, DEFAULT_TLE_POOL_ID,
+			     C_CQ_CFG_TLE_POOL_ENTRIES - 1, GFP_NOWAIT);
 	if (rc < 0) {
-		test_err("ida_simple_get failed %d\n", rc);
+		test_err("ida_alloc_range failed %d\n", rc);
 		goto err;
 	}
-	ida_simple_remove(&hw->tle_pool_ids, rc);
+	ida_free(&hw->tle_pool_ids, rc);
 	pools -= rc;
 	rc = 0;
 
