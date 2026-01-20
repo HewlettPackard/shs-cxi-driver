@@ -118,10 +118,20 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	if (cass_dev->sl.link_policy.fec_mon_period_ms > 0)
 		link_info->flags |= CXI_ETH_PF_FEC_MONITOR;
 
-	cxidev_dbg(&cass_dev->cdev, "sl mode get - AN = %d, speed = %d, llr = %ld, LB = %ld\n",
-		   link_info->autoneg, link_info->speed,
-		   link_info->flags & CXI_ETH_PF_LLR,
-		   link_info->flags & LOOPBACK_MODE);
+	/* type */
+	if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_BACKPLANE)
+		link_info->port_type = PORT_DA;
+	else if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_OPTICAL)
+		link_info->port_type = PORT_FIBRE;
+	else if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_ELECTRICAL)
+		link_info->port_type = PORT_TP;
+	else
+		link_info->port_type = PORT_OTHER;
+
+	cxidev_dbg(&cass_dev->cdev,
+		   "sl mode get (type = %u, AN = %d, speed = %d, llr = %ld, LB = %ld)\n",
+		   link_info->port_type, link_info->autoneg, link_info->speed,
+		   link_info->flags & CXI_ETH_PF_LLR, link_info->flags & LOOPBACK_MODE);
 }
 
 static void cass_sl_mode_set_autoneg_enable(struct cass_dev *cass_dev)
