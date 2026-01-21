@@ -5,11 +5,12 @@
 #define _CXI_CONFIGURATION_H_
 
 /* Parameter for use with the 'by_user' retrieve functions */
-#define CXI_AC_ANY (CXI_AC_UID | CXI_AC_GID | CXI_AC_OPEN)
+#define CXI_AC_ANY (CXI_AC_UID | CXI_AC_GID | CXI_AC_OPEN | CXI_AC_NETNS)
 
 #define AC_TYPE(type) \
 	ac_type == CXI_AC_UID ? "uid" : \
 	ac_type == CXI_AC_GID ? "gid" : \
+	ac_type == CXI_AC_NETNS ? "netns" : \
 	ac_type == CXI_AC_OPEN ? "open" : ""
 
 void cxi_ac_entry_list_init(struct cxi_ac_entry_list *list);
@@ -41,8 +42,12 @@ int cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
 int cxi_ac_entry_list_retrieve_by_user(struct cxi_ac_entry_list *list,
 				       uid_t uid,
 				       gid_t gid,
+				       unsigned int netns,
 				       cxi_ac_typeset_t desired_types,
 				       unsigned int *id);
+
+int cxi_ac_entry_list_retrieve_netns(struct cxi_ac_entry_list *list,
+				     union cxi_ac_data *ac_data);
 
 int cxi_ac_entry_list_get_ids(struct cxi_ac_entry_list *list,
 			      size_t max_ids,
@@ -97,6 +102,7 @@ int cxi_rx_profile_get_ac_entry_id_by_data(struct cxi_rx_profile *rx_profile,
 int cxi_rx_profile_get_ac_entry_id_by_user(struct cxi_rx_profile *rx_profile,
 					   uid_t uid,
 					   gid_t gid,
+					   unsigned int netns,
 					   cxi_ac_typeset_t desired_types,
 					   unsigned int *ac_entry_id);
 void cxi_rx_profile_print(struct seq_file *s);
@@ -138,6 +144,7 @@ int cxi_tx_profile_get_ac_entry_id_by_data(struct cxi_tx_profile *tx_profile,
 int cxi_tx_profile_get_ac_entry_id_by_user(struct cxi_tx_profile *tx_profile,
 					   uid_t uid,
 					   gid_t gid,
+					   unsigned int netns,
 					   cxi_ac_typeset_t desired_types,
 					   unsigned int *ac_entry_id);
 void cxi_tx_profile_print(struct seq_file *s);
@@ -261,6 +268,7 @@ int cxi_rgroup_get_ac_entry_id_by_data(struct cxi_rgroup *rgroup,
 int cxi_rgroup_get_ac_entry_by_user(struct cxi_rgroup *rgroup,
 				    uid_t uid,
 				    gid_t gid,
+				    unsigned int netns,
 				    cxi_ac_typeset_t desired_types,
 				    unsigned int *ac_entry_id);
 
@@ -315,6 +323,7 @@ int cxi_dev_rgroup_get_ac_entry_id_by_user(struct cxi_dev *dev,
 					   unsigned int rgroup_id,
 					   uid_t uid,
 					   gid_t gid,
+					   unsigned int netns,
 					   cxi_ac_typeset_t desired_types,
 					   unsigned int *ac_entry_id);
 

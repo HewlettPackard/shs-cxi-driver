@@ -278,6 +278,7 @@ int cxi_rxtx_profile_get_ac_entry_id_by_data(struct cxi_rxtx_profile *rxtx_profi
  * @rxtx_profile: pointer to Profile
  * @uid: user id
  * @gid: group id
+ * @netns: The Network Namespace id
  * @desired_types: one or more of the enum cxi_ac_type values OR's together
  * @ac_entry_id: location to store AC entry id on success
  *
@@ -286,21 +287,23 @@ int cxi_rxtx_profile_get_ac_entry_id_by_data(struct cxi_rxtx_profile *rxtx_profi
  * * -EPERM  - no AC entries found for given uid and gid
  *
  * Note: multiple AC entries may apply.  The priority of return is
- * CXI_AC_UID, CXI_AC_GID, CXI_AC_OPEN.
+ * CXI_AC_UID, CXI_AC_GID, CXI_AC_NETNS, CXI_AC_OPEN.
  */
 int cxi_rxtx_profile_get_ac_entry_id_by_user(struct cxi_rxtx_profile *rxtx_profile,
 					     uid_t uid,
 					     gid_t gid,
+					     unsigned int netns,
 					     cxi_ac_typeset_t desired_types,
 					     unsigned int *ac_entry_id)
 {
 	return cxi_ac_entry_list_retrieve_by_user(&rxtx_profile->ac_entry_list,
-						  uid, gid, desired_types, ac_entry_id);
+						  uid, gid, netns, desired_types, ac_entry_id);
 }
 
 struct valid_ac_data {
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;
 };
 
 struct valid_user_data {
@@ -367,6 +370,7 @@ static int valid_vni_operator(struct cxi_rxtx_profile *rxtx_profile,
 		rc = cxi_rxtx_profile_get_ac_entry_id_by_user(rxtx_profile,
 							      ac_data.uid,
 							      ac_data.gid,
+							      ac_data.netns,
 							      CXI_AC_ANY,
 							      &ac_entry_id);
 		if (!rc)
@@ -397,6 +401,7 @@ bool cxi_valid_vni(struct cxi_dev *dev, enum cxi_profile_type type,
 		.ac_data = {
 			.uid = __kuid_val(current_euid()),
 			.gid = __kgid_val(current_egid()),
+			.netns = CURRENT_NETNS_ID(),
 		},
 	};
 

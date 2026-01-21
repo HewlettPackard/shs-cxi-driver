@@ -4,6 +4,9 @@
 /* Resource Groups */
 
 #include "cass_core.h"
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
+#include <net/net_namespace.h>
 
 /**
  * get_cass_dev() - type-safe function to get Cassini device pointer
@@ -821,10 +824,11 @@ EXPORT_SYMBOL(cxi_rgroup_get_info);
 bool cxi_rgroup_valid_user(struct cxi_rgroup *rgroup)
 {
 	unsigned int ac_entry_id;
+	unsigned int netns = CURRENT_NETNS_ID();
 	uid_t uid = __kuid_val(current_euid());
 	gid_t gid = __kgid_val(current_egid());
 
-	return !cxi_rgroup_get_ac_entry_by_user(rgroup, uid, gid,
+	return !cxi_rgroup_get_ac_entry_by_user(rgroup, uid, gid, netns,
 						CXI_AC_ANY, &ac_entry_id);
 }
 
@@ -1103,6 +1107,36 @@ int cxi_rgroup_add_ac_entry(struct cxi_rgroup *rgroup,
 EXPORT_SYMBOL(cxi_rgroup_add_ac_entry);
 
 /**
+ * cxi_rgroup_update_ac_entry() - Add a new AC type to resource group
+ *
+ * The new AC type can be added only when rgroup is not enabled
+ *
+ * @rgroup: resource group pointer
+ * @type: type of the access control entry
+ * @data: access control parameters
+ * @ac_entry_id: location to store id of access control entry
+ *
+ * Return:
+ * * 0       - success
+ * * -EBADR  - invalid type value
+ * * -ENOMEM - unable to allocate memory for request
+ * * -EEXIST - access control entry already exists
+ * * -EBUSY  - rgroup is enabled
+ */
+int cxi_rgroup_update_ac_entry(struct cxi_rgroup *rgroup,
+			       enum cxi_ac_type type,
+			       const union cxi_ac_data *data,
+			       unsigned int *ac_entry_id)
+{
+	if (cxi_rgroup_is_enabled(rgroup))
+		return -EBUSY;
+
+	return cxi_ac_entry_list_insert(&rgroup->ac_entry_list,
+					type, data, ac_entry_id);
+}
+EXPORT_SYMBOL(cxi_rgroup_update_ac_entry);
+
+/**
  * cxi_rgroup_delete_ac_entry() - remove an access control entry from a
  * resource group
  *
@@ -1205,6 +1239,7 @@ EXPORT_SYMBOL(cxi_rgroup_get_ac_entry_id_by_data);
  * @rgroup: resource group pointer
  * @uid: user id
  * @gid: group id
+ * @netns: The Network namespace id
  * @desired_types: bitset of types to search
  * @ac_entry_id: location to store the id
  *
@@ -1215,11 +1250,12 @@ EXPORT_SYMBOL(cxi_rgroup_get_ac_entry_id_by_data);
 int cxi_rgroup_get_ac_entry_by_user(struct cxi_rgroup *rgroup,
 				    uid_t uid,
 				    gid_t gid,
+				    unsigned int netns,
 				    cxi_ac_typeset_t desired_types,
 				    unsigned int *ac_entry_id)
 {
 	return cxi_ac_entry_list_retrieve_by_user(&rgroup->ac_entry_list,
-						  uid, gid,
+						  uid, gid, netns,
 						  desired_types, ac_entry_id);
 }
 EXPORT_SYMBOL(cxi_rgroup_get_ac_entry_by_user);
@@ -1646,6 +1682,7 @@ EXPORT_SYMBOL(cxi_dev_rgroup_get_ac_entry_id_by_data);
  * @rgroup_id: ID of Resource Group
  * @uid: user id to match
  * @gid: group id to match
+ * @netns: The network namespace id
  * @desired_types: which type of AC Entry to search
  * @ac_entry_id: location to store AC Entry ID if found
  *
@@ -1658,6 +1695,7 @@ int cxi_dev_rgroup_get_ac_entry_id_by_user(struct cxi_dev *dev,
 					   unsigned int rgroup_id,
 					   uid_t uid,
 					   gid_t gid,
+					   unsigned int netns,
 					   cxi_ac_typeset_t desired_types,
 					   unsigned int *ac_entry_id)
 {
@@ -1668,7 +1706,7 @@ int cxi_dev_rgroup_get_ac_entry_id_by_user(struct cxi_dev *dev,
 	if (ret)
 		return ret;
 
-	ret = cxi_rgroup_get_ac_entry_by_user(rgroup, uid, gid,
+	ret = cxi_rgroup_get_ac_entry_by_user(rgroup, uid, gid, netns,
 					      desired_types,
 					      ac_entry_id);
 

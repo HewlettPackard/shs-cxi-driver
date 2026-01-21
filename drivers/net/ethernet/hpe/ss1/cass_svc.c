@@ -455,6 +455,8 @@ static enum cxi_ac_type svc_mbr_to_ac_type(enum cxi_svc_member_type type,
 		return CXI_AC_UID;
 	case CXI_SVC_MEMBER_GID:
 		return CXI_AC_GID;
+	case CXI_SVC_MEMBER_NET_NS:
+		return CXI_AC_NETNS;
 	case CXI_SVC_MEMBER_IGNORE:
 		fallthrough;
 	default:
@@ -545,13 +547,13 @@ static int alloc_profile_ac_entries(struct cxi_dev *dev,
 	if (!svc_desc->restricted_members) {
 		for (j = 0; j < svc_priv->svc_desc.num_vld_vnis; j++) {
 			rc = cxi_rx_profile_add_ac_entry(svc_priv->rx_profile[j],
-							 CXI_AC_OPEN, 0, 0,
+							 CXI_AC_OPEN, 0, 0, 0,
 							 &ac_entry_id);
 			if (rc)
 				goto cleanup;
 
 			rc = cxi_tx_profile_add_ac_entry(svc_priv->tx_profile[j],
-							 CXI_AC_OPEN, 0, 0,
+							 CXI_AC_OPEN, 0, 0, 0,
 							 &ac_entry_id);
 			if (rc)
 				goto cleanup;
@@ -571,6 +573,7 @@ static int alloc_profile_ac_entries(struct cxi_dev *dev,
 					svc_priv->rx_profile[j], type,
 					svc_desc->members[i].svc_member.uid,
 					svc_desc->members[i].svc_member.gid,
+					0,
 					&ac_entry_id);
 			if (rc)
 				goto cleanup;
@@ -579,6 +582,7 @@ static int alloc_profile_ac_entries(struct cxi_dev *dev,
 					svc_priv->tx_profile[j], type,
 					svc_desc->members[i].svc_member.uid,
 					svc_desc->members[i].svc_member.gid,
+					0,
 					&ac_entry_id);
 			if (rc)
 				goto cleanup;
@@ -605,6 +609,38 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 		cxi_tx_profile_dec_refcount(dev, svc_priv->tx_profile[i],
 					    true);
 	}
+}
+
+/* Update the Netns in RX/TX profile */
+static int update_profile_netns_entries(struct cxi_dev *dev,
+					struct cxi_svc_priv *svc_priv, unsigned int netns)
+{
+	int j;
+	int rc = 0;
+	union cxi_ac_data data = {};
+	unsigned int ac_entry_id;
+
+	for (j = 0; j < svc_priv->svc_desc.num_vld_vnis; j++) {
+		if (!svc_priv->rx_profile[j] || !svc_priv->tx_profile[j])
+			return -ENODATA;
+
+		data.netns = netns;
+		rc = cxi_rxtx_profile_add_ac_entry(&svc_priv->rx_profile[j]->profile_common,
+						   CXI_AC_NETNS, &data, &ac_entry_id);
+		if (rc)
+			goto cleanup;
+
+		rc = cxi_rxtx_profile_add_ac_entry(&svc_priv->tx_profile[j]->profile_common,
+						   CXI_AC_NETNS, &data, &ac_entry_id);
+		if (rc)
+			goto cleanup;
+	}
+
+	return 0;
+
+cleanup:
+	remove_profile_ac_entries(dev, svc_priv);
+	return rc;
 }
 
 /* Setup up to 4 RX/TX Profiles if restricted_vnis = 1
@@ -1456,6 +1492,97 @@ unlock_return:
 	return rc;
 }
 EXPORT_SYMBOL(cxi_svc_get_vni_range);
+
+/**
+ * cxi_svc_set_netns() - Set netns Access control to existing service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to be set.
+ * @netns: The Namespace id
+ * * Return:
+ * * 0       - success
+ * * -EEXIST - The service was originally created with a UID or GID,
+ * *           so netns access control cannot be applied
+ * * -EINVAL - The specified service does not exist
+ */
+int cxi_svc_set_netns(struct cxi_dev *dev, unsigned int svc_id, unsigned int netns)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	unsigned int ac_entry_id;
+	union cxi_ac_data ac_data = {};
+	struct cxi_ac_entry_list list = {};
+	int rc;
+
+	mutex_lock(&hw->svc_lock);
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+
+	/* Make sure that the ac list is empty.	 */
+	list = svc_priv->rgroup->ac_entry_list;
+	if (!xa_empty(&list.uid.xarray) || !xa_empty(&list.gid.xarray) || list.open_entry) {
+		cxidev_dbg(dev,
+			   "Failed to add netns for svc_id: %u (netns is not supported with uid/gid/open)",
+			   svc_id);
+		rc = -EEXIST;
+		goto unlock_return;
+	}
+
+	ac_data.netns = netns;
+
+	rc = cxi_rgroup_update_ac_entry(svc_priv->rgroup, CXI_AC_NETNS, &ac_data,
+					&ac_entry_id);
+	if (rc)
+		goto unlock_return;
+
+	rc = update_profile_netns_entries(dev, svc_priv, netns);
+	if (rc)
+		goto unlock_return;
+unlock_return:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_set_netns);
+
+/**
+ * cxi_svc_get_netns() - Get the network namespace associated with a service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to query.
+ * @netns: Pointer to store namespace ID
+ *
+ * Return: 0 on success, or negative errno value.
+ */
+int cxi_svc_get_netns(struct cxi_dev *dev, unsigned int svc_id,
+		      unsigned int *netns)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	union cxi_ac_data ac_data = {};
+	int rc;
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		cxidev_dbg(dev, "svc_id %u not found", svc_id);
+		rc = -EINVAL;
+		goto unlock_return;
+	}
+	rc = cxi_ac_entry_list_retrieve_netns(&svc_priv->rgroup->ac_entry_list, &ac_data);
+	if (rc)
+		goto unlock_return;
+
+	*netns = ac_data.netns;
+
+unlock_return:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_get_netns);
 
 void cass_svc_fini(struct cass_dev *hw)
 {

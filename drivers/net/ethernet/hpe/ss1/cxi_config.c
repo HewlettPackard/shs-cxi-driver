@@ -99,6 +99,8 @@ static ssize_t cxi_cfg_rgroup_ac_entry_sub_type_store(struct config_item *item,
 		ac_data_t.uid = ac_entry_sub->ac_data.uid;
 	else if (ac_type_val == CXI_AC_GID)
 		ac_data_t.gid = ac_entry_sub->ac_data.gid;
+	else if (ac_type_val == CXI_AC_NETNS)
+		ac_data_t.netns = ac_entry_sub->ac_data.netns;
 	else if (ac_type_val == CXI_AC_OPEN)
 		pr_debug("Setting type to CXI_AC_OPEN\n");
 	else
@@ -140,6 +142,8 @@ static ssize_t cxi_cfg_rgroup_ac_entry_sub_data_show(struct config_item *item,
 		return sprintf(page, "%d\n", ac_data.uid);
 	else if (ac_type == CXI_AC_GID)
 		return sprintf(page, "%d\n", ac_data.gid);
+	else if (ac_type == CXI_AC_NETNS)
+		return sprintf(page, "%d\n", ac_data.netns);
 	else if (ac_type == CXI_AC_OPEN)
 		return sprintf(page, "%d\n", CXI_AC_OPEN);
 
@@ -165,6 +169,9 @@ static ssize_t cxi_cfg_rgroup_ac_entry_sub_data_store(struct config_item *item,
 		return count;
 	} else if (ac_entry_sub->ac_type == CXI_AC_GID) {
 		ac_entry_sub->ac_data.gid = ac_data_val;
+		return count;
+	} else if (ac_entry_sub->ac_type == CXI_AC_NETNS) {
+		ac_entry_sub->ac_data.netns = ac_data_val;
 		return count;
 	}
 
@@ -265,6 +272,12 @@ cxi_cfg_rgroup_ac_entry_drop_item(struct config_group *group,
 							&ac_entry_sub->ac_data,
 							&ac_entry_id);
 
+		pr_debug("Getting an entry info rc = %d\n", rc);
+	} else if (ac_entry_sub->ac_type == CXI_AC_NETNS) {
+		rc = cxi_rgroup_get_ac_entry_id_by_data(ac_entry_sub->rgroup,
+							CXI_AC_NETNS,
+							&ac_entry_sub->ac_data,
+							&ac_entry_id);
 		pr_debug("Getting an entry info rc = %d\n", rc);
 	} else {
 		rc = cxi_rgroup_get_ac_entry_id_by_data(ac_entry_sub->rgroup,
@@ -1072,6 +1085,7 @@ static ssize_t cxi_cfg_tx_prof_ac_entry_sub_type_store(struct config_item *item,
 	enum cxi_ac_type ac_type_val;
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;
 	unsigned int ac_entry_id;
 
 	ac_entry_sub = to_cxi_cfg_tx_prof_ac_entry_sub(item);
@@ -1088,6 +1102,8 @@ static ssize_t cxi_cfg_tx_prof_ac_entry_sub_type_store(struct config_item *item,
 		uid = ac_entry_sub->ac_data.uid;
 	else if (ac_type_val == CXI_AC_GID)
 		gid = ac_entry_sub->ac_data.gid;
+	else if (ac_type_val == CXI_AC_NETNS)
+		netns = ac_entry_sub->ac_data.netns;
 	else if (ac_type_val == CXI_AC_OPEN)
 		pr_debug("Setting type to CXI_AC_OPEN\n");
 	else
@@ -1097,6 +1113,7 @@ static ssize_t cxi_cfg_tx_prof_ac_entry_sub_type_store(struct config_item *item,
 					 ac_type_val,
 					 uid,
 					 gid,
+					 netns,
 					 &ac_entry_id);
 	if (rc < 0) {
 		pr_debug("Unable to add ac entry to tx profile: err val %d\n", rc);
@@ -1130,6 +1147,8 @@ static ssize_t cxi_cfg_tx_prof_ac_entry_sub_data_show(struct config_item *item,
 		return sprintf(page, "%d\n", ac_data.uid);
 	else if (ac_type == CXI_AC_GID)
 		return sprintf(page, "%d\n", ac_data.gid);
+	else if (ac_type == CXI_AC_NETNS)
+		return sprintf(page, "%d\n", ac_data.netns);
 	else if (ac_type == CXI_AC_OPEN)
 		return sprintf(page, "%d\n", CXI_AC_OPEN);
 
@@ -1155,6 +1174,9 @@ static ssize_t cxi_cfg_tx_prof_ac_entry_sub_data_store(struct config_item *item,
 		return count;
 	} else if (ac_entry_sub->ac_type == CXI_AC_GID) {
 		ac_entry_sub->ac_data.gid = ac_data_val;
+		return count;
+	} else if (ac_entry_sub->ac_type == CXI_AC_NETNS) {
+		ac_entry_sub->ac_data.netns = ac_data_val;
 		return count;
 	}
 
@@ -1251,6 +1273,13 @@ cxi_cfg_tx_prof_ac_entry_drop_item(struct config_group *group,
 							    &ac_entry_id);
 
 		pr_debug("Getting an entry info type gid rc = %d\n", rc);
+	} else if (tx_prof_ac_entry_sub->ac_type == CXI_AC_NETNS) {
+		rc = cxi_tx_profile_get_ac_entry_id_by_data(tx_prof_ac_entry_sub->tx_profile,
+							    CXI_AC_NETNS,
+							    &tx_prof_ac_entry_sub->ac_data,
+							    &ac_entry_id);
+
+		pr_debug("Getting an entry info type netns rc = %d\n", rc);
 	} else {
 		rc = cxi_tx_profile_get_ac_entry_id_by_data(tx_prof_ac_entry_sub->tx_profile,
 							    CXI_AC_OPEN,
@@ -2034,6 +2063,7 @@ static ssize_t cxi_cfg_rx_prof_ac_entry_sub_type_store(struct config_item *item,
 	enum cxi_ac_type ac_type_val;
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;
 	unsigned int ac_entry_id;
 
 	ac_entry_sub = to_cxi_cfg_rx_prof_ac_entry_sub(item);
@@ -2050,6 +2080,8 @@ static ssize_t cxi_cfg_rx_prof_ac_entry_sub_type_store(struct config_item *item,
 		uid = ac_entry_sub->ac_data.uid;
 	else if (ac_type_val == CXI_AC_GID)
 		gid = ac_entry_sub->ac_data.gid;
+	else if (ac_type_val == CXI_AC_NETNS)
+		netns = ac_entry_sub->ac_data.netns;
 	else if (ac_type_val == CXI_AC_OPEN)
 		pr_debug("Setting type to CXI_AC_OPEN\n");
 	else
@@ -2059,6 +2091,7 @@ static ssize_t cxi_cfg_rx_prof_ac_entry_sub_type_store(struct config_item *item,
 					 ac_type_val,
 					 uid,
 					 gid,
+					 netns,
 					 &ac_entry_id);
 	if (rc < 0) {
 		pr_debug("Unable to add ac entry to rx profile: err val %d\n", rc);
@@ -2092,6 +2125,8 @@ static ssize_t cxi_cfg_rx_prof_ac_entry_sub_data_show(struct config_item *item,
 		return sprintf(page, "%d\n", ac_data.uid);
 	else if (ac_type == CXI_AC_GID)
 		return sprintf(page, "%d\n", ac_data.gid);
+	else if (ac_type == CXI_AC_NETNS)
+		return sprintf(page, "%d\n", ac_data.netns);
 	else if (ac_type == CXI_AC_OPEN)
 		return sprintf(page, "%d\n", CXI_AC_OPEN);
 
@@ -2117,6 +2152,9 @@ static ssize_t cxi_cfg_rx_prof_ac_entry_sub_data_store(struct config_item *item,
 		return count;
 	} else if (ac_entry_sub->ac_type == CXI_AC_GID) {
 		ac_entry_sub->ac_data.gid = ac_data_val;
+		return count;
+	} else if (ac_entry_sub->ac_type == CXI_AC_NETNS) {
+		ac_entry_sub->ac_data.netns = ac_data_val;
 		return count;
 	}
 

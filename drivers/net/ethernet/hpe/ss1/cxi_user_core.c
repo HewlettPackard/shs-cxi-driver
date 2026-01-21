@@ -546,6 +546,33 @@ static int cxi_user_svc_get_vni_range(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_svc_set_netns(struct user_client *client,
+				  const void *cmd_in,
+				  void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_set_netns_cmd *cmd = cmd_in;
+
+	return cxi_svc_set_netns(client->ucxi->dev, cmd->svc_id, cmd->netns);
+}
+
+static int cxi_user_svc_get_netns(struct user_client *client,
+				  const void *cmd_in,
+				  void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_svc_get_netns_cmd *cmd = cmd_in;
+	unsigned int netns = 0;
+	int rc;
+
+	rc = cxi_svc_get_netns(client->ucxi->dev, cmd->svc_id, &netns);
+	if (rc)
+		return rc;
+
+	if (copy_to_user(cmd->resp, &netns, sizeof(netns)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int cxi_user_trig_cp_alloc(struct user_client *client,
 				  const void *cmd_in,
 				  void *resp_out, size_t *resp_out_len)
@@ -2477,6 +2504,18 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "SVC_GET_VNI_RANGE",
 		.handler    = cxi_user_svc_get_vni_range,
 	},
+	[CXI_OP_SVC_SET_NETNS] = {
+		.req_size   = sizeof(struct cxi_svc_set_netns_cmd),
+		.name       = "SVC_SET_NETNS",
+		.handler    = cxi_user_svc_set_netns,
+		.admin_only = true,
+	},
+	[CXI_OP_SVC_GET_NETNS] = {
+		.req_size   = sizeof(struct cxi_svc_get_netns_cmd),
+		.name       = "SVC_GET_NETNS",
+		.handler    = cxi_user_svc_get_netns,
+	},
+
 };
 
 /* Read and process a command from userspace or from a Virtual

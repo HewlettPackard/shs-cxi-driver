@@ -104,6 +104,17 @@ do {						\
 		pr_debug(fmt, ##__VA_ARGS__);	\
 } while (0)
 
+/* Helper to get current task network namespace inode id safely. */
+#define CURRENT_NETNS_ID() ({					\
+	unsigned int __netns_id = 0;				\
+	struct task_struct *__ct = current;			\
+	rcu_read_lock();					\
+	if (__ct->nsproxy && __ct->nsproxy->net_ns)		\
+		__netns_id = __ct->nsproxy->net_ns->ns.inum;	\
+	rcu_read_unlock();					\
+	__netns_id;						\
+})
+
 #if defined(RHEL8_7)
 static inline u64 ALLOC_IOVA_FAST(struct iova_domain *iovad, unsigned long len,
 				  unsigned long pfn)

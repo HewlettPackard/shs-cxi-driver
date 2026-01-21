@@ -144,6 +144,7 @@ enum cxi_ac_type {
 	CXI_AC_UID  = (__force cxi_ac_typeset_t)BIT(0),
 	CXI_AC_GID  = (__force cxi_ac_typeset_t)BIT(1),
 	CXI_AC_OPEN = (__force cxi_ac_typeset_t)BIT(2),
+	CXI_AC_NETNS = (__force cxi_ac_typeset_t)BIT(3),
 };
 
 /* Common parts of RX and TX Profiles */
@@ -154,6 +155,7 @@ enum cxi_ac_type {
 union cxi_ac_data {
 	uid_t     uid;
 	gid_t     gid;
+	unsigned int netns;
 };
 
 struct cxi_ac_entry_list {
@@ -164,6 +166,10 @@ struct cxi_ac_entry_list {
 	struct {
 		struct xarray       xarray;
 	} gid;
+	struct {
+		struct xarray       xarray;
+	} netns;
+
 	struct {
 		struct xarray       xarray;
 	} id;
@@ -244,10 +250,10 @@ struct cxi_tx_profile *cxi_dev_get_tx_profile(struct cxi_dev *dev,
 int cxi_tx_profile_set_tc(struct cxi_tx_profile *tx_profile, int tc, bool set);
 int cxi_rx_profile_add_ac_entry(struct cxi_rx_profile *rx_profile,
 				enum cxi_ac_type type, uid_t uid, gid_t gid,
-				unsigned int *ac_entry_id);
+				unsigned int netns, unsigned int *ac_entry_id);
 int cxi_tx_profile_add_ac_entry(struct cxi_tx_profile *tx_profile,
 				enum cxi_ac_type type, uid_t uid, gid_t gid,
-				unsigned int *ac_entry_id);
+				unsigned int netns, unsigned int *ac_entry_id);
 void cxi_tx_profile_remove_ac_entries(struct cxi_tx_profile *tx_profile);
 int cxi_dev_set_rx_profile_attr(struct cxi_dev *dev,
 				struct cxi_rx_profile *rx_profile,
@@ -276,6 +282,9 @@ int cxi_tx_profile_get_info(struct cxi_dev *dev,
 			    struct cxi_tx_profile *tx_profile,
 			    struct cxi_tx_attr *tx_attr,
 			    struct cxi_rxtx_profile_state *state);
+int cxi_svc_set_netns(struct cxi_dev *dev, unsigned int svc_id, unsigned int netns);
+int cxi_svc_get_netns(struct cxi_dev *dev, unsigned int svc_id,
+		      unsigned int *netns);
 
 /* Rgroup */
 struct cxi_rgroup;
@@ -331,6 +340,10 @@ int cxi_rgroup_add_ac_entry(struct cxi_rgroup *rgroup,
 			    enum cxi_ac_type type,
 			    const union cxi_ac_data *data,
 			    unsigned int *ac_entry_id);
+int cxi_rgroup_update_ac_entry(struct cxi_rgroup *rgroup,
+			       enum cxi_ac_type type,
+			       const union cxi_ac_data *data,
+			       unsigned int *ac_entry_id);
 
 struct cxi_ct *cxi_ct_alloc(struct cxi_lni *lni, struct c_ct_writeback *wb,
 			    bool is_user);
