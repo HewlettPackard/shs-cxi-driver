@@ -295,9 +295,25 @@ static void put_cq_id(struct cxi_cq_priv *cq)
 	kfree(cq);
 }
 
-static int get_dma_addr_if_contig(struct cass_dev *hw, void *addr, size_t len,
-				  enum dma_data_direction dir,
-				  struct page ***pages, dma_addr_t *dma_addr)
+/**
+ * get_dma_addr_if_contig() - Check for contiguous pages of user buffer,
+ *                            pin and return dma_addr.
+ *
+ * If pages are contiguous, pin the pages and return the dma_addr of the base.
+ * Otherwise, return negative errno.
+ *
+ * @hw: The cassini device
+ * @addr: address of page aligned buffer
+ * @len: page aligned length of buffer - must not be 0
+ * @dir: dma map direction
+ * @pages: ptr to list of pages returned
+ * @dma_addr: dma_addr of user buffer
+ *
+ * @return: 0 on success, negative error value
+ */
+int get_dma_addr_if_contig(struct cass_dev *hw, void *addr, size_t len,
+			   enum dma_data_direction dir, struct page ***pages,
+			   dma_addr_t *dma_addr)
 {
 	int i;
 	int rc;
@@ -352,14 +368,14 @@ free_pages:
 /**
  * cxi_cq_alloc_buf() - Allocate a new command queue
  *
- * The new CQ is attached to attached to the NI.
+ * The new CQ is attached to the LNI.
  * The CQ buffer may be supplied by the user. It must be physically
  * contiguous.
  *
  * @lni: LNI to associate with the command queue.
  * @evtq: Event Queue to associate with the command queue, for error
  *        reporting. May be NULL.
- * @opts: Options affecting the CQ.
+ * @opts_b: Options affecting the CQ.
  * @numa_node: NUMA node ID CQ memory should be allocated from.
  *
  * @return: the command queue or an error pointer

@@ -248,64 +248,6 @@ unlock_out:
 EXPORT_SYMBOL(cxi_eq_adjust_reserved_fc);
 
 /**
- * get_user_pages_contig() - Fault and pin contiguous user pages.
- *
- * If pages are contiguous, take a reference to each page and return zero.
- * Otherwise, return negative errno.
- *
- * @hw: The cassini device
- * @desc: EQ buffer descriptor
- */
-static int get_user_pages_contig(struct cass_dev *hw, struct eq_buf_desc *desc)
-{
-	size_t npg = desc->events_len >> PAGE_SHIFT;
-	struct page **pages;
-	dma_addr_t pa;
-	int rc;
-	int i;
-
-	pages = kmalloc_array(npg, sizeof(struct page *), GFP_KERNEL);
-	if (!pages)
-		return -ENOMEM;
-
-	rc = pin_user_pages_fast((unsigned long)desc->events, npg, 1, pages);
-	if (rc < 0)
-		goto free_pages;
-	else if (rc != npg)
-		goto put_pages;
-
-	/* Naively check that each page is in sequence. */
-	pa = page_to_phys(pages[0]);
-	for (i = 1; i < npg; i++) {
-		pa += PAGE_SIZE;
-		if (pa != page_to_phys(pages[i])) {
-			rc = -EINVAL;
-			goto put_pages;
-		}
-	}
-
-	desc->pages = pages;
-	desc->dma_addr = dma_map_page(&hw->cdev.pdev->dev,
-				      pages[0], 0, desc->events_len,
-				      DMA_FROM_DEVICE);
-	if (dma_mapping_error(&hw->cdev.pdev->dev, desc->dma_addr)) {
-		rc = -ENOMEM;
-		goto put_pages;
-	}
-
-	return 0;
-
-put_pages:
-	for (i = 0; i < rc; i++)
-		unpin_user_page(pages[i]);
-
-free_pages:
-	kfree(pages);
-
-	return rc;
-}
-
-/**
  * put_pages_contig() - Un-pin a sequence of physical pages.
  *
  * @hw: The cassini device
@@ -393,7 +335,10 @@ int cxi_eq_resize(struct cxi_eq *evtq, void *queue, size_t queue_len,
 
 	if (passthrough) {
 		if (eq->attr.flags & CXI_EQ_USER) {
-			rc = get_user_pages_contig(hw, &eq->resize);
+			rc = get_dma_addr_if_contig(hw, queue, queue_len,
+						    DMA_FROM_DEVICE,
+						    &eq->resize.pages,
+						    &eq->resize.dma_addr);
 		} else {
 			eq->resize.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
 							     queue, queue_len,
@@ -842,7 +787,11 @@ struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
 
 	if (passthrough) {
 		if (is_user) {
-			rc = get_user_pages_contig(hw, &eq->active);
+			rc = get_dma_addr_if_contig(hw, eq->active.events,
+						    eq->active.events_len,
+						    DMA_FROM_DEVICE,
+						    &eq->active.pages,
+						    &eq->active.dma_addr);
 		} else {
 			eq->active.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
 							     eq->active.events,

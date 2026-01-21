@@ -1380,6 +1380,10 @@ struct cxi_cp_priv *cass_cp_rgid_find(struct cass_dev *hw,
 				      enum cxi_traffic_class_type tc_type,
 				      enum cxi_trig_cp cp_type);
 
+int get_dma_addr_if_contig(struct cass_dev *hw, void *addr, size_t len,
+			   enum dma_data_direction dir, struct page ***pages,
+			   dma_addr_t *dma_addr);
+
 int cass_telem_init(struct cass_dev *hw);
 void cass_telem_fini(struct cass_dev *hw);
 
