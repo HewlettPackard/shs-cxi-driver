@@ -169,6 +169,7 @@ static int alloc_profiles(void)
 {
 	int rc;
 	int ac_entry_id;
+	unsigned int netns = CURRENT_NETNS_ID();
 	struct cxi_rx_attr rx_attr = {.vni_attr.match = VNI};
 	struct cxi_tx_attr tx_attr = {.vni_attr.match = VNI};
 
@@ -181,7 +182,7 @@ static int alloc_profiles(void)
 
 	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 netns, &ac_entry_id);
 	if (rc)
 		goto remove_rx_profile;
 
@@ -198,7 +199,7 @@ static int alloc_profiles(void)
 
 	rc = cxi_tx_profile_add_ac_entry(tx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 netns, &ac_entry_id);
 	if (rc)
 		goto remove_tx_profile;
 

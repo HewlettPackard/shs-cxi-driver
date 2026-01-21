@@ -119,6 +119,9 @@ enum cxi_command_opcode {
 
 		CXI_OP_TRIG_CP_ALLOC,
 
+		CXI_OP_SVC_SET_NETNS,
+		CXI_OP_SVC_GET_NETNS,
+
 		CXI_OP_MAX,
 };
 
@@ -905,7 +908,7 @@ enum cxi_svc_member_type {
 	CXI_SVC_MEMBER_IGNORE,
 	CXI_SVC_MEMBER_UID,
 	CXI_SVC_MEMBER_GID,
-
+	CXI_SVC_MEMBER_NET_NS,
 	CXI_SVC_MEMBER_MAX,
 };
 
@@ -1080,6 +1083,18 @@ struct cxi_svc_vni_range_cmd {
 	unsigned int svc_id;
 	unsigned int vni_min;
 	unsigned int vni_max;
+};
+
+struct cxi_svc_set_netns_cmd {
+	enum cxi_command_opcode op;
+	unsigned int svc_id;
+	unsigned int netns;
+};
+
+struct cxi_svc_get_netns_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int svc_id;
 };
 
 struct cxi_svc_get_vni_range_resp {

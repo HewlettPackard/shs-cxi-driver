@@ -372,11 +372,11 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 	unsigned long index = list->limits->min;
 	uid_t uid = __kuid_val(current_euid());
 	gid_t gid = __kgid_val(current_egid());
+	unsigned int netns = CURRENT_NETNS_ID();
 	unsigned int ac_entry_id;
 	int rc;
 
 	cxi_rxtx_profile_list_lock(list);
-
 	xa_for_each(&list->xarray, index, profile) {
 		if (!profile->state.enable)
 			continue;
@@ -388,7 +388,7 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 
 			rc = cxi_rxtx_profile_get_ac_entry_id_by_user(
 						&rx_profile->profile_common,
-						uid, gid, CXI_AC_ANY,
+						uid, gid, netns, CXI_AC_ANY,
 						&ac_entry_id);
 			if (!rc) {
 				refcount_inc(&profile->state.refcount);
@@ -424,6 +424,7 @@ struct cxi_rx_profile *cxi_dev_get_rx_profile(struct cxi_dev *dev,
 	unsigned int ac_entry_id;
 	struct cass_dev *hw = get_cass_dev(dev);
 	struct cxi_rx_profile *rx_profile;
+	unsigned int netns = CURRENT_NETNS_ID();
 	struct cxi_rx_attr rx_attr = {
 		.vni_attr = {
 			.match = vni,
@@ -432,7 +433,6 @@ struct cxi_rx_profile *cxi_dev_get_rx_profile(struct cxi_dev *dev,
 	};
 
 	mutex_lock(&hw->rx_profile_get_lock);
-
 	rx_profile = cxi_dev_find_rx_profile(dev, vni);
 	if (rx_profile)
 		goto done;
@@ -449,7 +449,7 @@ struct cxi_rx_profile *cxi_dev_get_rx_profile(struct cxi_dev *dev,
 
 	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 netns, &ac_entry_id);
 	if (rc) {
 		rx_profile = ERR_PTR(rc);
 		goto done;
@@ -720,6 +720,7 @@ EXPORT_SYMBOL(cxi_rx_profile_get_ac_entry_id_by_data);
  * @rx_profile: pointer to Profile
  * @uid: user id
  * @gid: group id
+ * @netns: The Network namespace id
  * @desired_types: list of enum cxi_ac_type values OR'd together
  * @ac_entry_id: location to store AC entry id on success
  *
@@ -733,11 +734,12 @@ EXPORT_SYMBOL(cxi_rx_profile_get_ac_entry_id_by_data);
 int cxi_rx_profile_get_ac_entry_id_by_user(struct cxi_rx_profile *rx_profile,
 					   uid_t uid,
 					   gid_t gid,
+					   unsigned int netns,
 					   cxi_ac_typeset_t desired_types,
 					   unsigned int *ac_entry_id)
 {
 	return cxi_rxtx_profile_get_ac_entry_id_by_user(&rx_profile->profile_common,
-							uid, gid, desired_types,
+							uid, gid, netns, desired_types,
 							ac_entry_id);
 }
 EXPORT_SYMBOL(cxi_rx_profile_get_ac_entry_id_by_user);
@@ -750,6 +752,7 @@ EXPORT_SYMBOL(cxi_rx_profile_get_ac_entry_id_by_user);
  * @type: type of AC Entry to add
  * @uid: UID for AC Entry
  * @gid: GID for AC Entry
+ * @netns: The Network Namespace id
  * @ac_entry_id: Location to store resulting id
  *
  * Return:
@@ -758,7 +761,7 @@ EXPORT_SYMBOL(cxi_rx_profile_get_ac_entry_id_by_user);
  */
 int cxi_rx_profile_add_ac_entry(struct cxi_rx_profile *rx_profile,
 				enum cxi_ac_type type, uid_t uid, gid_t gid,
-				unsigned int *ac_entry_id)
+				unsigned int netns, unsigned int *ac_entry_id)
 {
 	union cxi_ac_data data = {};
 
@@ -770,6 +773,9 @@ int cxi_rx_profile_add_ac_entry(struct cxi_rx_profile *rx_profile,
 		data.gid = gid;
 		break;
 	case CXI_AC_OPEN:
+		break;
+	case CXI_AC_NETNS:
+		data.netns = netns;
 		break;
 	default:
 		return -EDOM;

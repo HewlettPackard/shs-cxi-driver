@@ -61,6 +61,7 @@ int cxi_rxtx_profile_get_ac_entry_id_by_data(struct cxi_rxtx_profile *rxtx_profi
 int cxi_rxtx_profile_get_ac_entry_id_by_user(struct cxi_rxtx_profile *rxtx_profile,
 					     uid_t uid,
 					     gid_t gid,
+					     unsigned int netns,
 					     cxi_ac_typeset_t desired_types,
 					     unsigned int *ac_entry_id);
 

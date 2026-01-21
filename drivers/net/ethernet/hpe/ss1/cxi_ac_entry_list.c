@@ -9,7 +9,6 @@
 /* **************************************************************** */
 /* Access Control List operations                                   */
 /* **************************************************************** */
-
 struct cxi_ac_entry {
 	unsigned int       id;
 	enum cxi_ac_type   type;
@@ -19,6 +18,7 @@ struct cxi_ac_entry {
 static const struct xa_limit ac_entry_id_limits  = AC_ENTRY_ID_LIMITS;
 static const uid_t  invalid_uid = (uid_t) -1;
 static const gid_t  invalid_gid = (gid_t) -1;
+static const unsigned int invalid_netns = (unsigned int)-1;
 
 static bool validate_ac_data(cxi_ac_typeset_t ac_type,
 			     const union cxi_ac_data *data)
@@ -30,6 +30,8 @@ static bool validate_ac_data(cxi_ac_typeset_t ac_type,
 		return (data->gid != invalid_gid);
 	case CXI_AC_OPEN:
 		return true;
+	case CXI_AC_NETNS:
+		return (data->netns != invalid_netns);
 	default:
 		return false;
 	}
@@ -78,6 +80,10 @@ static int ac_entry_list_insert_entry(struct cxi_ac_entry_list *list,
 			list->open_entry = ac_entry;
 		xa_unlock(&list->id.xarray);
 		break;
+	case CXI_AC_NETNS:
+		ret = xa_insert(&list->netns.xarray, ac_entry->data.netns,
+				ac_entry, AC_ENTRY_GFP_OPTS);
+		break;
 	default:
 		ret = -EBADR;
 	}
@@ -116,6 +122,9 @@ static int ac_entry_list_delete_entry(struct cxi_ac_entry_list *list,
 		break;
 	case CXI_AC_OPEN:
 		list->open_entry = NULL;
+		break;
+	case CXI_AC_NETNS:
+		xa_erase(&list->netns.xarray, ac_entry->data.netns);
 		break;
 	default:
 		ret = -EIO;
@@ -165,6 +174,7 @@ void cxi_ac_entry_list_init(struct cxi_ac_entry_list *list)
 	xa_init_flags(&list->id.xarray, AC_ENTRY_ID_XARRAY_FLAGS);
 	xa_init_flags(&list->gid.xarray, AC_ENTRY_GID_XARRAY_FLAGS);
 	xa_init_flags(&list->uid.xarray, AC_ENTRY_UID_XARRAY_FLAGS);
+	xa_init_flags(&list->netns.xarray, AC_ENTRY_NETNS_XARRAY_FLAGS);
 }
 
 /**
@@ -195,6 +205,7 @@ void cxi_ac_entry_list_destroy(struct cxi_ac_entry_list *list)
 	xa_destroy(&list->id.xarray);
 	xa_destroy(&list->gid.xarray);
 	xa_destroy(&list->uid.xarray);
+	xa_destroy(&list->netns.xarray);
 }
 
 /**
@@ -321,7 +332,6 @@ cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
 				   unsigned int *id)
 {
 	struct cxi_ac_entry   *ac_entry = NULL;
-
 	if (!validate_ac_data(ac_type, ac_data))
 		return -EINVAL;
 
@@ -334,6 +344,13 @@ cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
 		break;
 	case CXI_AC_GID:
 		ac_entry = xa_load(&list->gid.xarray, ac_data->gid);
+		break;
+	case CXI_AC_NETNS:
+		/* Execute this block only when the user provided a netns AC type.
+		 * Maintains compatibility with older versions.
+		 */
+		if (!xa_empty(&list->netns.xarray))
+			ac_entry = xa_load(&list->netns.xarray, ac_data->netns);
 		break;
 	default:
 		break;
@@ -354,6 +371,7 @@ cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
  * @list: the ac_entry_list to search
  * @uid: user id
  * @gid: group id
+ * @netns: The Network Namespace id
  * @desired_types: one of more of the enum cxi_ac_type values (OR'd together)
  * @id: location to store the id
  *
@@ -365,6 +383,7 @@ cxi_ac_entry_list_retrieve_by_data(struct cxi_ac_entry_list *list,
 int cxi_ac_entry_list_retrieve_by_user(struct cxi_ac_entry_list *list,
 				       uid_t uid,
 				       gid_t gid,
+				       unsigned int netns,
 				       cxi_ac_typeset_t desired_types,
 				       unsigned int *id)
 {
@@ -383,6 +402,13 @@ int cxi_ac_entry_list_retrieve_by_user(struct cxi_ac_entry_list *list,
 	if (desired_types & CXI_AC_GID) {
 		data.gid = gid;
 		if (!cxi_ac_entry_list_retrieve_by_data(list, CXI_AC_GID,
+							&data, id))
+			return 0;
+	}
+
+	if (desired_types & CXI_AC_NETNS) {
+		data.netns = netns;
+		if (!cxi_ac_entry_list_retrieve_by_data(list, CXI_AC_NETNS,
 							&data, id))
 			return 0;
 	}
@@ -447,4 +473,26 @@ int cxi_ac_entry_list_get_ids(struct cxi_ac_entry_list *list,
 	*num_ids = data.num_ids;
 
 	return (data.num_ids <= max_ids) ? 0 : -ENOSPC;
+}
+
+/**
+ * cxi_ac_entry_list_retrieve_netns() - Get an AC Entry of type netns
+ *
+ * @list: list pointer
+ * @ac_data: The first netns value found in the list
+ *
+ * Return:
+ * * 0        - success
+ * * -EINVAL  - No netns entry found
+ */
+int cxi_ac_entry_list_retrieve_netns(struct cxi_ac_entry_list *list,  union cxi_ac_data *ac_data)
+{
+	struct cxi_ac_entry *entry;
+	unsigned long index;
+
+	xa_for_each(&list->netns.xarray, index, entry) {
+		ac_data->netns = index;
+		return 0;
+	}
+	return -EINVAL;
 }

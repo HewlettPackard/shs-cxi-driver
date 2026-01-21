@@ -35,6 +35,7 @@ static int add_device(struct cxi_dev *dev)
 	int min_rgid_count;
 	int max_rgid;
 	struct cxi_ct *ct;
+	unsigned int netns = CURRENT_NETNS_ID();
 	struct c_ct_writeback *wb;
 	int timeout_count;
 	u64 inc_success_value = 5;
@@ -200,7 +201,7 @@ static int add_device(struct cxi_dev *dev)
 
 	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 netns, &ac_entry_id);
 
 	/* Allocate 256 different VNI */
 	pr_info("Create %d different domains\n", C_RMU_CFG_VNI_LIST_ENTRIES);

@@ -187,7 +187,7 @@ static int alloc_profiles(void)
 
 	rc = cxi_rx_profile_add_ac_entry(rx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 0, &ac_entry_id);
 	if (rc)
 		goto remove_rx_profile;
 
@@ -204,7 +204,7 @@ static int alloc_profiles(void)
 
 	rc = cxi_tx_profile_add_ac_entry(tx_profile, CXI_AC_UID,
 					 __kuid_val(current_euid()), 0,
-					 &ac_entry_id);
+					 0, &ac_entry_id);
 	if (rc)
 		goto remove_tx_profile;
 
