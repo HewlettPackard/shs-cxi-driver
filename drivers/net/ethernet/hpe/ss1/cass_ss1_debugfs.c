@@ -8,7 +8,7 @@
 #include "cass_core.h"
 #include "cass_ss1_debugfs.h"
 
-#define DEBUGFS_BUFSIZE        1000
+#define DEBUGFS_BUFSIZE        800
 
 /* Dump UC logging to debugfs */
 static int uc_log(struct seq_file *s, void *unused)
