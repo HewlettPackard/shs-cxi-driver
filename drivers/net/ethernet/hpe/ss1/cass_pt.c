@@ -404,8 +404,9 @@ struct cxi_pte *cxi_pte_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 		/* TODO: Don't allocate PTE 0 until we can determine whether
 		 * an MST entry is valid. See tag TAG_NO_PTE_0 in this file.
 		 */
-		pt_n = ida_simple_get(&hw->pte_table, 1,
-				      C_LPE_CFG_PTL_TABLE_ENTRIES, GFP_KERNEL);
+		pt_n = ida_alloc_range(&hw->pte_table, 1,
+				       C_LPE_CFG_PTL_TABLE_ENTRIES - 1,
+				       GFP_KERNEL);
 		if (pt_n < 0) {
 			rc = pt_n;
 			goto dec_rsrc_use;
@@ -617,7 +618,7 @@ void finalize_pt_cleanups(struct cxi_lni_priv *lni, bool force)
 		refcount_dec(&lni->refcount);
 		atomic_dec(&hw->stats.pt);
 		cxi_rgroup_free_resource(lni->rgroup, CXI_RESOURCE_PTLTE);
-		ida_simple_remove(&hw->pte_table, pt->pte.id);
+		ida_free(&hw->pte_table, pt->pte.id);
 		kfree(pt);
 	}
 }
@@ -690,18 +691,18 @@ int cxi_pte_map(struct cxi_pte *pt, struct cxi_domain *domain,
 	}
 
 	/* Acquire an unused RMU_CFG_PORTAL_LIST slot */
-	pti_n = ida_simple_get(&hw->pt_index_table, 0,
-			       C_RMU_CFG_PORTAL_LIST_ENTRIES,
-			       GFP_KERNEL);
+	pti_n = ida_alloc_range(&hw->pt_index_table, 0,
+				C_RMU_CFG_PORTAL_LIST_ENTRIES - 1,
+				GFP_KERNEL);
 	if (pti_n < 0)
 		return pti_n;
 
 	if (is_multicast) {
 		/* Prevent re-issue of this mcast_id/index_ext pair */
-		mcast_n = ida_simple_get(&hw->multicast_table,
-					 pid_offset,
-					 pid_offset+1,
-					 GFP_KERNEL);
+		mcast_n = ida_alloc_range(&hw->multicast_table,
+					  pid_offset,
+					  pid_offset,
+					  GFP_KERNEL);
 		if (mcast_n < 0) {
 			ret = mcast_n;
 			goto rls_pti_n;
@@ -727,7 +728,7 @@ int cxi_pte_map(struct cxi_pte *pt, struct cxi_domain *domain,
 
 	return 0;
 rls_pti_n:
-	ida_simple_remove(&hw->pt_index_table, pti_n);
+	ida_free(&hw->pt_index_table, pti_n);
 	return ret;
 }
 EXPORT_SYMBOL(cxi_pte_map);
@@ -752,12 +753,12 @@ int cxi_pte_unmap(struct cxi_pte *pt, struct cxi_domain *domain, int pt_index)
 
 	/* If this was a multicast, release the ID and free the memory */
 	if (pt_priv->mcast_n != -1) {
-		ida_simple_remove(&hw->multicast_table, pt_priv->mcast_n);
+		ida_free(&hw->multicast_table, pt_priv->mcast_n);
 		pt_priv->mcast_n = -1;
 	}
 
 	/* Release the pte index value */
-	ida_simple_remove(&hw->pt_index_table, pt_index);
+	ida_free(&hw->pt_index_table, pt_index);
 
 	refcount_dec(&pt_priv->refcount);
 	refcount_dec(&domain_priv->refcount);

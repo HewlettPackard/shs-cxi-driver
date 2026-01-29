@@ -108,9 +108,10 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		int le_pool_id;
 		int pe = resource->type - CXI_RESOURCE_PE0_LE;
 
-		le_pool_id = ida_simple_get(&hw->le_pool_ids[pe],
-					    DEFAULT_LE_POOL_ID,
-					    CASS_NUM_LE_POOLS, GFP_NOWAIT);
+		le_pool_id = ida_alloc_range(&hw->le_pool_ids[pe],
+					     DEFAULT_LE_POOL_ID,
+					     CASS_NUM_LE_POOLS - 1,
+					     GFP_NOWAIT);
 		if (le_pool_id < 0) {
 			pr_debug("%s pool unavailable.\n",
 				 cxi_resource_type_to_str(resource->type));
@@ -122,10 +123,10 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 	} else if (resource->type == CXI_RESOURCE_TLE) {
 		int tle_pool_id;
 
-		tle_pool_id = ida_simple_get(&hw->tle_pool_ids,
-					     DEFAULT_TLE_POOL_ID,
-					     C_CQ_CFG_TLE_POOL_ENTRIES,
-					     GFP_NOWAIT);
+		tle_pool_id = ida_alloc_range(&hw->tle_pool_ids,
+					      DEFAULT_TLE_POOL_ID,
+					      C_CQ_CFG_TLE_POOL_ENTRIES - 1,
+					      GFP_NOWAIT);
 		if (tle_pool_id < 0) {
 			pr_debug("%s pool unavailable.\n",
 				 cxi_resource_type_to_str(resource->type));
@@ -197,8 +198,7 @@ int cass_rgroup_remove_resource(struct cxi_rgroup *rgroup,
 
 		cass_cfg_le_pools(hw, rgroup->pools.le_pool_id[pe], pe, &les,
 				  true);
-		ida_simple_remove(&hw->le_pool_ids[pe],
-				  rgroup->pools.le_pool_id[pe]);
+		ida_free(&hw->le_pool_ids[pe], rgroup->pools.le_pool_id[pe]);
 		rgroup->pools.le_pool_id[pe] = -1;
 	} else if (resource->type == CXI_RESOURCE_TLE) {
 		struct cxi_limits tles = {
@@ -207,7 +207,7 @@ int cass_rgroup_remove_resource(struct cxi_rgroup *rgroup,
 		};
 
 		cass_cfg_tle_pool(hw, rgroup->pools.tle_pool_id, &tles, true);
-		ida_simple_remove(&hw->tle_pool_ids, rgroup->pools.tle_pool_id);
+		ida_free(&hw->tle_pool_ids, rgroup->pools.tle_pool_id);
 		rgroup->pools.tle_pool_id = -1;
 	}
 

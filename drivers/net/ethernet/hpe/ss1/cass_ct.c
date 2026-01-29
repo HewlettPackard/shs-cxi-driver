@@ -189,7 +189,7 @@ struct cxi_ct *cxi_ct_alloc(struct cxi_lni *lni, struct c_ct_writeback *wb,
 	}
 
 	/* Allocate and configure the counting event. */
-	rc = ida_simple_get(&hw->ct_table, 1, C_NUM_CTS, GFP_KERNEL);
+	rc = ida_alloc_range(&hw->ct_table, 1, C_NUM_CTS - 1, GFP_KERNEL);
 	if (rc < 0)
 		goto free_md_priv;
 	ctn = rc;
@@ -229,7 +229,7 @@ ct_unmap:
 	if (!is_user)
 		iounmap(ct_priv->ct_mmio);
 ct_release:
-	ida_simple_remove(&hw->ct_table, ctn);
+	ida_free(&hw->ct_table, ctn);
 free_md_priv:
 	kfree(md_priv);
 	if (wb)
@@ -392,7 +392,7 @@ void finalize_ct_cleanups(struct cxi_lni_priv *lni)
 		refcount_dec(&lni->refcount);
 		atomic_dec(&hw->stats.ct);
 		cxi_rgroup_free_resource(lni->rgroup, CXI_RESOURCE_CT);
-		ida_simple_remove(&hw->ct_table, ct->ct.ctn);
+		ida_free(&hw->ct_table, ct->ct.ctn);
 		kfree(ct);
 	}
 }
