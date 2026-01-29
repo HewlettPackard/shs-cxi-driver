@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cassini ethernet driver
- * Copyright 2018,2022,2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2018,2022,2024,2026 Hewlett Packard Enterprise Development LP
  */
 
 #include <linux/netdevice.h>
@@ -35,7 +35,8 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"auto-lane-degrade",
 	"ignore-media-error",
 	"use-supported-ss200-cable",
-	"los-lol-hide"
+	"los-lol-hide",
+	"r1-link-partner"
 };
 
 /* ethtool ops */
@@ -684,6 +685,13 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
                         dev->priv_flags &= ~CXI_ETH_PF_LOS_LOL_HIDE;
                         cxi_link_los_lol_hide(dev->cxi_dev, false);
                 }
+        }
+
+       if (changes & CXI_ETH_PF_R1_LINK_PARTNER) {
+                if (flags & CXI_ETH_PF_R1_LINK_PARTNER)
+                        dev->priv_flags |= CXI_ETH_PF_R1_LINK_PARTNER;
+                else
+                        dev->priv_flags &= ~CXI_ETH_PF_R1_LINK_PARTNER;
         }
 
 	return 0;

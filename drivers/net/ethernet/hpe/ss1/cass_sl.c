@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2022,2023,2024,2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2022,2023,2024,2025,2026 Hewlett Packard Enterprise Development LP */
 
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -118,10 +118,29 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	if (cass_dev->sl.link_policy.fec_mon_period_ms > 0)
 		link_info->flags |= CXI_ETH_PF_FEC_MONITOR;
 
-	cxidev_dbg(&cass_dev->cdev, "sl mode get - AN = %d, speed = %d, llr = %ld, LB = %ld\n",
-		   link_info->autoneg, link_info->speed,
-		   link_info->flags & CXI_ETH_PF_LLR,
-		   link_info->flags & LOOPBACK_MODE);
+	/* FIXME: need LOS and LOL */
+
+	/* R1 link partner */
+	if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_R1)
+		link_info->flags |= CXI_ETH_PF_R1_LINK_PARTNER;
+	else
+		link_info->flags &= ~CXI_ETH_PF_R1_LINK_PARTNER;
+
+	/* type */
+	if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_BACKPLANE)
+		link_info->port_type = PORT_DA;
+	else if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_OPTICAL)
+		link_info->port_type = PORT_FIBRE;
+	else if (cass_dev->sl.media_attr.type & SL_MEDIA_TYPE_ELECTRICAL)
+		link_info->port_type = PORT_TP;
+	else
+		link_info->port_type = PORT_OTHER;
+
+	cxidev_dbg(&cass_dev->cdev,
+		   "sl mode get (type = %u, AN = %d, speed = %d, llr = %ld, LB = %ld, R1 = %u)\n",
+		   link_info->port_type, link_info->autoneg, link_info->speed,
+		   link_info->flags & CXI_ETH_PF_LLR, link_info->flags & LOOPBACK_MODE,
+		   !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
 }
 
 static void cass_sl_mode_set_autoneg_enable(struct cass_dev *cass_dev)
@@ -292,6 +311,25 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		if (link_config->options & SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE)
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set - los_los_hide to on\n");
+		is_mode_changed = true;
+		break;
+	}
+
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (r1_link_partner = %u)\n",
+		   !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
+	switch (link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER) {
+	case 0:
+		if (!(lgrp_config->options & SL_LGRP_CONFIG_OPT_R1))
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set r1_link_partner to no\n");
+		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_R1;
+		is_mode_changed = true;
+		break;
+	case CXI_ETH_PF_R1_LINK_PARTNER:
+		if (lgrp_config->options & SL_LGRP_CONFIG_OPT_R1)
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set r1_link_partner to yes\n");
+		lgrp_config->options |= SL_LGRP_CONFIG_OPT_R1;
 		is_mode_changed = true;
 		break;
 	}
@@ -844,6 +882,7 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.lgrp_config.furcation = SL_MEDIA_FURCATION_X1;
 	cass_dev->sl.lgrp_config.fec_mode  = SL_LGRP_FEC_MODE_OFF;
 	cass_dev->sl.lgrp_config.fec_map   = SL_LGRP_CONFIG_FEC_RS;
+	cass_dev->sl.lgrp_config.options   = 0;
 	cass_dev->sl.static_tech_map       = SL_LGRP_CONFIG_TECH_CK_400G;
 	cass_dev->sl.autoneg_tech_map      = SL_LGRP_CONFIG_TECH_CK_400G |
 					     SL_LGRP_CONFIG_TECH_BS_200G |
@@ -1062,10 +1101,10 @@ static void cass_sl_port_group_cfg_set(struct cass_dev *cass_dev)
 	/* EDGE1 */
 	config.pg_cfg = 0;
 
-	if (cass_dev->sl.lgrp_config.tech_map & SL_LGRP_CONFIG_TECH_CK_400G)
-		config.link_function = C2_LF_C2_R2;
-	else
+	if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_R1)
 		config.link_function = C2_LF_C2_R1;
+	else
+		config.link_function = C2_LF_C2_R2;
 
 	cass_write(cass_dev, SS2_PORT_PML_CFG_PORT_GROUP, &config, sizeof(config));
 }
