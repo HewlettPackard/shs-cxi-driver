@@ -31,9 +31,9 @@ static int cxi_eth_set_list(struct cxi_dev *cdev,
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	int set_list_idx;
 
-	set_list_idx = ida_alloc_range(&hw->set_list_table, 0,
-				       C_RMU_CFG_PTLTE_SET_LIST_ENTRIES - 1,
-				       GFP_KERNEL);
+	set_list_idx = ida_simple_get(&hw->set_list_table, 0,
+				      C_RMU_CFG_PTLTE_SET_LIST_ENTRIES,
+				      GFP_KERNEL);
 	if (set_list_idx < 0)
 		return -EINVAL;
 
@@ -162,7 +162,7 @@ void cxi_eth_set_list_invalidate_all(struct cxi_dev *cdev,
 			 C_RMU_CFG_PTLTE_SET_LIST_ENTRIES) {
 		cass_invalidate_set_list(hw, set_list_idx);
 
-		ida_free(&hw->set_list_table, set_list_idx);
+		ida_simple_remove(&hw->set_list_table, set_list_idx);
 	}
 
 	bitmap_zero(res->sl, C_RMU_CFG_PTLTE_SET_LIST_ENTRIES);

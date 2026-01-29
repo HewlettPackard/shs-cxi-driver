@@ -58,7 +58,7 @@ static void cass_cp_free(struct cass_cp *cp)
 	if (!cp->tx_profile->config.exclusive_cp)
 		idr_remove(&cp->tx_profile->config.cass_cp_table, cp->list_id);
 
-	ida_free(&hw->cp_table, cp->id);
+	ida_simple_remove(&hw->cp_table, cp->id);
 
 	kfree(cp);
 }
@@ -103,8 +103,8 @@ static struct cass_cp *cass_cp_alloc(struct cxi_tx_profile *tx_profile,
 	if (!cp)
 		return ERR_PTR(-ENOMEM);
 
-	rc = ida_alloc_range(&hw->cp_table, 1, C_CQ_CFG_CP_TABLE_ENTRIES - 1,
-			     GFP_KERNEL);
+	rc = ida_simple_get(&hw->cp_table, 1, C_CQ_CFG_CP_TABLE_ENTRIES,
+			    GFP_KERNEL);
 	if (rc < 0) {
 		cxidev_dbg(&hw->cdev,
 			   "%s hardware communication profiles exhausted\n",
@@ -156,7 +156,7 @@ static struct cass_cp *cass_cp_alloc(struct cxi_tx_profile *tx_profile,
 	return cp;
 
 error_remove_ida:
-	ida_free(&hw->cp_table, cp_id);
+	ida_simple_remove(&hw->cp_table, cp_id);
 error_free_cp:
 	kfree(cp);
 

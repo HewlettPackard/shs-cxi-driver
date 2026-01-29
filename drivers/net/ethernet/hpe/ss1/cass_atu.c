@@ -324,7 +324,7 @@ static void cass_cac_free(struct cass_dev *hw, struct cass_ac *cac)
 
 	kfree(cac);
 	hw->cac_table[acid] = NULL;
-	ida_free(&hw->atu_table, acid);
+	ida_simple_remove(&hw->atu_table, acid);
 }
 
 static void cass_ac_init(struct cass_ac *cac, const struct ac_map_opts *m_opts)
@@ -401,7 +401,7 @@ static struct cass_ac *cass_ac_alloc(struct cxi_lni_priv *lni_priv,
 	/* AC_NONE (0) is invalid, ATU_PHYS_AC is reserved for physical
 	 * mappings
 	 */
-	ret = ida_alloc_range(&hw->atu_table, 1, ATU_PHYS_AC - 1, GFP_KERNEL);
+	ret = ida_simple_get(&hw->atu_table, 1, ATU_PHYS_AC, GFP_KERNEL);
 	if (ret < 0)
 		goto cac_free;
 
@@ -453,7 +453,7 @@ static struct cass_ac *cass_ac_alloc(struct cxi_lni_priv *lni_priv,
 lac_put:
 	cass_lac_put(hw, lni_priv->lni.rgid, cac->ac.lac);
 ac_put:
-	ida_free(&hw->atu_table, cac->ac.acid);
+	ida_simple_remove(&hw->atu_table, cac->ac.acid);
 cac_free:
 	kfree(cac);
 dec_rsrc_use:
@@ -1182,9 +1182,9 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 	md_priv->device = &hw->cdev.pdev->dev;
 
 	/* Get an MD ID, above CXI_MD_NONE */
-	ret = ida_alloc_range(&hw->md_index_table, 1, ~0, GFP_KERNEL);
+	ret = ida_simple_get(&hw->md_index_table, 1, 0, GFP_KERNEL);
 	if (ret < 0) {
-		cxidev_err(cdev, "ida_alloc_range failed %d\n", ret);
+		cxidev_err(cdev, "ida_simple_get failed %d\n", ret);
 		goto md_free;
 	}
 	md->id = ret;
@@ -1209,7 +1209,7 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 
 mirror_range_error:
 	cass_md_iova_free(md_priv);
-	ida_free(&hw->md_index_table, md->id);
+	ida_simple_remove(&hw->md_index_table, md->id);
 md_free:
 	kfree(md_priv);
 
@@ -1267,9 +1267,9 @@ struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni, struct sg_table *sgt,
 	md_priv->device = &hw->cdev.pdev->dev;
 
 	/* Get an MD ID, above CXI_MD_NONE */
-	ret = ida_alloc_range(&hw->md_index_table, 1, ~0, GFP_KERNEL);
+	ret = ida_simple_get(&hw->md_index_table, 1, 0, GFP_KERNEL);
 	if (ret < 0) {
-		cxidev_err(cdev, "ida_alloc_range failed %d\n", ret);
+		cxidev_err(cdev, "ida_simple_get failed %d\n", ret);
 		goto md_free;
 	}
 	md->id = ret;
@@ -1300,7 +1300,7 @@ struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni, struct sg_table *sgt,
 
 mirror_range_error:
 	cass_md_iova_free(md_priv);
-	ida_free(&hw->md_index_table, md->id);
+	ida_simple_remove(&hw->md_index_table, md->id);
 md_free:
 	kfree(md_priv);
 
@@ -1484,9 +1484,9 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 	md_priv->cac = cac;
 
 	/* Get an MD ID, above CXI_MD_NONE */
-	ret = ida_alloc_range(&hw->md_index_table, 1, ~0, GFP_KERNEL);
+	ret = ida_simple_get(&hw->md_index_table, 1, 0, GFP_KERNEL);
 	if (ret < 0) {
-		cxidev_err(cdev, "ida_alloc_range failed %d\n", ret);
+		cxidev_err(cdev, "ida_simple_get failed %d\n", ret);
 		goto iova_free;
 	}
 
@@ -1512,7 +1512,7 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 	return md;
 
 mirror_range_error:
-	ida_free(&hw->md_index_table, md->id);
+	ida_simple_remove(&hw->md_index_table, md->id);
 iova_free:
 	cass_md_iova_free(md_priv);
 put_device_pages:
@@ -1555,7 +1555,7 @@ int cxi_unmap(struct cxi_md *md)
 
 	cass_remove_md(md_priv);
 	cass_md_iova_free(md_priv);
-	ida_free(&hw->md_index_table, md->id);
+	ida_simple_remove(&hw->md_index_table, md->id);
 
 	cxidev_WARN_ONCE(dev, !refcount_dec_and_test(&md_priv->refcount),
 			 "Resource leaks - MD refcount not zero: %d\n",

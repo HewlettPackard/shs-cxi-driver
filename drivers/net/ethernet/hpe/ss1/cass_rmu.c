@@ -166,9 +166,9 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 	}
 
 	/* Get a domain ID */
-	rc = ida_alloc_range(&hw->domain_table, 1, ~0, GFP_KERNEL);
+	rc = ida_simple_get(&hw->domain_table, 1, 0, GFP_KERNEL);
 	if (rc < 0) {
-		cxidev_err(cdev, "ida_alloc_range failed %d\n", rc);
+		cxidev_err(cdev, "ida_simple_get failed %d\n", rc);
 		goto free_domain;
 	}
 	domain_priv->domain.id = rc;
@@ -197,7 +197,7 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 	return &domain_priv->domain;
 
 free_dom_id:
-	ida_free(&hw->domain_table, domain_priv->domain.id);
+	ida_simple_remove(&hw->domain_table, domain_priv->domain.id);
 free_domain:
 	kfree(domain_priv);
 free_pid:
@@ -237,7 +237,7 @@ void cxi_domain_free(struct cxi_domain *domain)
 					domain->pid, 1, false);
 	cxi_rx_profile_dec_refcount(cdev, domain_priv->rx_profile);
 
-	ida_free(&hw->domain_table, domain_priv->domain.id);
+	ida_simple_remove(&hw->domain_table, domain_priv->domain.id);
 	kfree(domain_priv);
 
 	refcount_dec(&lni_priv->refcount);
