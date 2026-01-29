@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2018-2020,2022,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018-2020,2022,2024,2026 Hewlett Packard Enterprise Development LP */
 
 /* ethtool private flags for the Cassini Ethernet driver */
 #define CXI_ETH_PF_INTERNAL_LOOPBACK         BIT(0)  /* internal loopback, tx to rx */
@@ -18,7 +18,8 @@
 #define CXI_ETH_PF_IGNORE_MEDIA_ERROR        BIT(13) /* ignore media error */
 #define CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE BIT(14) /* allow link up with supported ss200 cable */
 #define CXI_ETH_PF_LOS_LOL_HIDE              BIT(15) /* hide LOS/LOL down and link up fail cause */
+#define CXI_ETH_PF_R1_LINK_PARTNER           BIT(16) /* R1 link partner */
 
-#define PRIV_FLAGS_COUNT 16
+#define PRIV_FLAGS_COUNT 17
 
 #define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)
