@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2023,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2023,2024,2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef _CXI_LINK_H
 #define _CXI_LINK_H
@@ -33,7 +33,6 @@ void cxi_link_use_unsupported_cable(struct cxi_dev *cxi_dev, bool use);
 void cxi_link_use_supported_ss200_cable(struct cxi_dev *cxi_dev, bool use);
 void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore);
 void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable);
-void cxi_link_fec_monitor(struct cxi_dev *cxi_dev, bool on);
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set);
 void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable);
 

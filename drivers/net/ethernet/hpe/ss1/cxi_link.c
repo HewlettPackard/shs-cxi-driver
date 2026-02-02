@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cassini LINK
- * Copyright 2022,2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2022,2024,2026 Hewlett Packard Enterprise Development LP
  */
 
 #include <linux/kernel.h>
@@ -144,16 +144,6 @@ void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable)
                hw->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_ALD_ENABLE;
 }
 EXPORT_SYMBOL(cxi_link_auto_lane_degrade);
-
-void cxi_link_fec_monitor(struct cxi_dev *cxi_dev, bool on)
-{
-	struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
-
-	cxidev_dbg(&hw->cdev, "fec_monitor\n");
-
-	hw->sl.link_policy.fec_mon_period_ms = on ? -1 : 0;
-}
-EXPORT_SYMBOL(cxi_link_fec_monitor);
 
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set)
 {

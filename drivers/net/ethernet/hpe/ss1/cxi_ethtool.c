@@ -496,8 +496,8 @@ static int cxi_get_link_ksettings(struct net_device *ndev,
 	s->base.duplex = DUPLEX_FULL;
 	s->base.phy_address = 0; /* N/A */
 	s->base.autoneg = link_info.autoneg;
-	s->base.eth_tp_mdix = ETH_TP_MDI_INVALID;
-	s->base.eth_tp_mdix_ctrl = ETH_TP_MDI_INVALID;
+	s->base.eth_tp_mdix = ETH_TP_MDI;
+	s->base.eth_tp_mdix_ctrl = ETH_TP_MDI;
 
 	ethtool_link_ksettings_add_link_mode(s, supported, Autoneg);
 	ethtool_link_ksettings_add_link_mode(s, supported, FIBRE);
@@ -542,6 +542,10 @@ cxi_set_link_ksettings(struct net_device *ndev,
 
 	if (s->base.duplex != DUPLEX_UNKNOWN &&
 	    s->base.duplex != DUPLEX_FULL)
+		return -ENOTSUPP;
+
+	if (s->base.eth_tp_mdix != ETH_TP_MDI ||
+	    s->base.eth_tp_mdix_ctrl != ETH_TP_MDI)
 		return -ENOTSUPP;
 
 	if (dev->is_c2 && s->base.autoneg == AUTONEG_ENABLE &&
@@ -589,13 +593,10 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	}
 
 	if (changes & CXI_ETH_PF_FEC_MONITOR) {
-		if (flags & CXI_ETH_PF_FEC_MONITOR) {
+		if (flags & CXI_ETH_PF_FEC_MONITOR)
 			dev->priv_flags |= CXI_ETH_PF_FEC_MONITOR;
-			cxi_link_fec_monitor(dev->cxi_dev, true);
-		} else {
+		else
 			dev->priv_flags &= ~CXI_ETH_PF_FEC_MONITOR;
-			cxi_link_fec_monitor(dev->cxi_dev, false);
-		}
 	}
 
 	link_info.flags = flags;
