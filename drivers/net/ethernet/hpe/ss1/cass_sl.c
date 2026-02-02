@@ -115,7 +115,7 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 		link_info->flags &= ~CXI_ETH_PF_LINKTRAIN;
 
 	/* FEC Monitor */
-	if (cass_dev->sl.link_policy.fec_mon_period_ms > 0)
+	if (cass_dev->sl.link_policy.fec_mon_period_ms != 0)
 		link_info->flags |= CXI_ETH_PF_FEC_MONITOR;
 
 	/* FIXME: need LOS and LOL */
@@ -137,10 +137,10 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 		link_info->port_type = PORT_OTHER;
 
 	cxidev_dbg(&cass_dev->cdev,
-		   "sl mode get (type = %u, AN = %d, speed = %d, llr = %ld, LB = %ld, R1 = %u)\n",
+		   "sl mode get (type = %u, AN = %u, speed = %u, llr = %lu, fec = %u, LB = %lu, R1 = %u)\n",
 		   link_info->port_type, link_info->autoneg, link_info->speed,
-		   link_info->flags & CXI_ETH_PF_LLR, link_info->flags & LOOPBACK_MODE,
-		   !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
+		   link_info->flags & CXI_ETH_PF_LLR, !!(link_info->flags & CXI_ETH_PF_FEC_MONITOR),
+		   link_info->flags & LOOPBACK_MODE, !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
 }
 
 static void cass_sl_mode_set_autoneg_enable(struct cass_dev *cass_dev)
@@ -158,6 +158,7 @@ static void cass_sl_mode_set_autoneg_disable(struct cass_dev *cass_dev)
 void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *link_info)
 {
 	struct sl_link_config *link_config;
+	struct sl_link_policy *link_policy;
 	struct sl_lgrp_config *lgrp_config;
 	u32                    autoneg_mode;
 	u32                    tech_mode;
@@ -166,6 +167,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	cxidev_dbg(&cass_dev->cdev, "sl mode set\n");
 
 	link_config = &cass_dev->sl.link_config;
+	link_policy = &cass_dev->sl.link_policy;
 	lgrp_config = &cass_dev->sl.lgrp_config;
 	is_mode_changed = false;
 
@@ -173,7 +175,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	cxidev_dbg(&cass_dev->cdev, "sl mode set (speed = %d)\n", link_info->speed);
 	tech_mode = cass_sl_tech_get(link_info->speed);
 	if (tech_mode && cass_dev->sl.static_tech_map != tech_mode) {
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - tech_mode to 0x%X\n", tech_mode);
+		cxidev_dbg(&cass_dev->cdev, "sl mode set tech_mode to 0x%X\n", tech_mode);
 	        cass_dev->sl.static_tech_map = tech_mode;
 		if (!(cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_AUTONEG_ENABLE))
 	        	cass_dev->sl.lgrp_config.tech_map = cass_dev->sl.static_tech_map;
@@ -187,27 +189,27 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	case AUTONEG_DISABLE:
 		if (autoneg_mode == 0)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - AN to off\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set autoneg to off\n");
 		cass_sl_mode_set_autoneg_disable(cass_dev);
 		is_mode_changed = true;
 		break;
 	case AUTONEG_ENABLE:
 		if (autoneg_mode != 0)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - AN to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set autoneg to on\n");
 		cass_sl_mode_set_autoneg_enable(cass_dev);
 		is_mode_changed = true;
 		break;
 	}
 
 	/* llr */
-	cxidev_dbg(&cass_dev->cdev, "sl mode set (llr_mode = %d)\n",
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (llr = %d)\n",
 		   !!(link_info->flags & CXI_ETH_PF_LLR));
 	switch (link_info->flags & CXI_ETH_PF_LLR) {
 	case 0:
 		if (!cass_dev->sl.enable_llr)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - LLR to off\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set LLR to off\n");
 		cass_dev->sl.enable_llr = false;
 		cass_dev->sl.link_config.hpe_map &= ~SL_LINK_CONFIG_HPE_LLR;
 		is_mode_changed = true;
@@ -215,7 +217,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	case CXI_ETH_PF_LLR:
 		if (cass_dev->sl.enable_llr)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - LLR to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set LLR to on\n");
 		cass_dev->sl.enable_llr = true;
 		cass_dev->sl.link_config.hpe_map |= SL_LINK_CONFIG_HPE_LLR;
 		is_mode_changed = true;
@@ -224,19 +226,19 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 
 	/* link training */
 	cxidev_dbg(&cass_dev->cdev, "sl mode set (linktrain = 0x%lX)\n",
-		link_info->flags & CXI_ETH_PF_LINKTRAIN);
+		   link_info->flags & CXI_ETH_PF_LINKTRAIN);
 	switch (link_info->flags & CXI_ETH_PF_LINKTRAIN) {
 	case 0:
 		if (!(link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN))
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - linktrain to off\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set linktrain to off\n");
 		link_config->hpe_map &= ~SL_LINK_CONFIG_HPE_LINKTRAIN;
 		is_mode_changed = true;
 		break;
 	case CXI_ETH_PF_LINKTRAIN:
 		if (link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - linktrain to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set linktrain to on\n");
 		link_config->hpe_map |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 		is_mode_changed = true;
 		break;
@@ -250,7 +252,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		if (!(lgrp_config->options & SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE) &&
 		    !(link_config->options & SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE))
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - loopback to off\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set loopback to off\n");
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
 		link_config->options &= ~SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
 		if (cass_dev->sl.old_an_mode == AUTONEG_ENABLE)
@@ -266,7 +268,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	case CXI_ETH_PF_INTERNAL_LOOPBACK:
 		if (lgrp_config->options & SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - internal loopback to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set serdes loopback to on\n");
 		lgrp_config->options |= SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
 		cass_sl_mode_set_autoneg_disable(cass_dev);
 		link_config->options &= ~SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
@@ -278,7 +280,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	case CXI_ETH_PF_EXTERNAL_LOOPBACK:
 		if (link_config->options & SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - external loopback to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set remote loopback to on\n");
 		link_config->options |= SL_LINK_CONFIG_OPT_REMOTE_LOOPBACK_ENABLE;
 		cass_sl_mode_set_autoneg_disable(cass_dev);
 		link_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
@@ -289,28 +291,38 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		break;
 	}
 
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (fec_monitor = %u)\n",
+		   !!(link_info->flags & CXI_ETH_PF_FEC_MONITOR));
 	switch (link_info->flags & CXI_ETH_PF_FEC_MONITOR) {
 	case 0:
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - fec_monitor to off\n");
+		if (link_policy->fec_mon_period_ms == 0)
+			break;
+		link_policy->fec_mon_period_ms = 0;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set fec_monitor to off\n");
 		is_mode_changed = true;
 		break;
 	case CXI_ETH_PF_FEC_MONITOR:
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - fec_monitor to on\n");
+		if (link_policy->fec_mon_period_ms != 0)
+			break;
+		link_policy->fec_mon_period_ms = -1;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set fec_monitor to on\n");
 		is_mode_changed = true;
 		break;
 	}
 
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (los_lol_hide = %u)\n",
+		   !!(link_info->flags & CXI_ETH_PF_LOS_LOL_HIDE));
 	switch (link_info->flags & CXI_ETH_PF_LOS_LOL_HIDE) {
 	case 0:
 		if (!(link_config->options & SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE))
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - los_los_hide to off\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set los_lol_hide to off\n");
 		is_mode_changed = true;
 		break;
 	case CXI_ETH_PF_LOS_LOL_HIDE:
 		if (link_config->options & SL_LINK_CONFIG_OPT_LOS_LOL_UP_FAIL_HIDE)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set - los_los_hide to on\n");
+		cxidev_dbg(&cass_dev->cdev, "sl mode set los_lol_hide to on\n");
 		is_mode_changed = true;
 		break;
 	}
@@ -335,6 +347,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 	}
 
 	/* if anything changed bounce the link */
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (is_mode_changed = %d)\n", is_mode_changed);
 	if (is_mode_changed)
 		cass_phy_bounce(cass_dev);
 }
