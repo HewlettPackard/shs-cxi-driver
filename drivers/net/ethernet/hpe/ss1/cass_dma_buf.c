@@ -3,8 +3,12 @@
 
 #include "cass_core.h"
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+MODULE_IMPORT_NS("DMA_BUF");
+#else
 #ifdef MODULE_IMPORT_NS
 MODULE_IMPORT_NS(DMA_BUF);
+#endif
 #endif
 
 /* This macro is needed for dma-buf.h but is defined is such a way that it is
