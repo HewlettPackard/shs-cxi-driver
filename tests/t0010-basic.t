@@ -14,7 +14,7 @@ test_expect_success "One device is present" "
 "
 
 test_expect_success "Inserting base link driver" "
-	insmod ../../../../slingshot_base_link/cxi-sbl.ko &&
+	insmod ../../../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko &&
 	[ $(lsmod | awk '{ print $1 }' | grep -c cxi_sbl) -eq 0 ]
 "
 

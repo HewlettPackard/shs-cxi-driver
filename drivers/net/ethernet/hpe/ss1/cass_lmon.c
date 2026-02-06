@@ -8,9 +8,9 @@
 #include <linux/hpe/cxi/cxi.h>
 #include <linux/kthread.h>
 #include <sbl/sbl_mb.h>
-#include <linux/sbl.h>
-#include <uapi/sbl.h>
-#include <uapi/sbl_serdes.h>
+#include <linux/hpe/sbl/sbl.h>
+#include <uapi/ethernet/sbl-abi.h>
+#include <uapi/ethernet/sbl_serdes.h>
 
 #include "cass_core.h"
 #include "cassini-telemetry-items.h"

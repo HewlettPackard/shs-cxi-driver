@@ -15,7 +15,7 @@ NID_DEV=/sys/class/cxi_user/cxi0/device/properties/nid
 # Insert drivers to get to the point where the cxi_user device is present
 test_expect_success "Inserting drivers" "
 	modprobe ptp &&
-	insmod ../../../../slingshot_base_link/cxi-sbl.ko &&
+	insmod ../../../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko &&
 	insmod ../../../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/cxi-eth.ko &&

@@ -10,7 +10,7 @@
 
 #include "cass_core.h"
 #include "cass_sbl.h"
-#include <linux/sbl.h>
+#include <linux/hpe/sbl/sbl.h>
 
 /**
  * cass_phy_is_started() - Convenience function to check whether PHY is started

@@ -4,7 +4,7 @@
 /* cxi-ss1 debug fs*/
 #include <linux/etherdevice.h>
 #include <linux/seq_file.h>
-#include <linux/sbl.h>
+#include <linux/hpe/sbl/sbl.h>
 #include "cass_core.h"
 #include "cass_ss1_debugfs.h"
 

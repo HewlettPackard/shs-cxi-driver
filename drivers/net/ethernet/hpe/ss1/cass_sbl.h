@@ -5,7 +5,7 @@
 #define _CXI_SBL_H
 
 #include <linux/phy/phy.h>
-#include "uapi/sbl.h"
+#include "uapi/ethernet/sbl-abi.h"
 
 #define PCA_SHASTA_BRAZOS_PASS_1_PN        "102325100"
 #define PCA_SHASTA_BRAZOS_PASS_2_PN        "102325101"

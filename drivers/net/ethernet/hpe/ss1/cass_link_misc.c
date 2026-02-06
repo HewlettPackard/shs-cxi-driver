@@ -7,7 +7,7 @@
 #include <linux/device.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
-#include <linux/sbl.h>
+#include <linux/hpe/sbl/sbl.h>
 
 #include "cass_core.h"
 #include "cass_cable.h"

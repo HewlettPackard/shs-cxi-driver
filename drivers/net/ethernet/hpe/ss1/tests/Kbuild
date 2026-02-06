@@ -24,4 +24,5 @@ ccflags-y += -I$(src)/.. -I$(src)/../../../../../../include \
 	     -I$(src)/../../../../../../../firmware_cassini/lib/casuc \
 	     -I$(src)/../../../../../../../firmware_cassini/lib/craypldm \
 	     -I$(src)/../../../../../../../slingshot_base_link \
+	     -I$(src)/../../../../../../../slingshot_base_link/staging_dir/usr/include \
 	     -I$(src)/../../../../../../../sl-driver/staging_dir/usr/include

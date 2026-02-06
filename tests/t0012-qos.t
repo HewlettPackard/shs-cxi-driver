@@ -9,7 +9,7 @@ test_description="QoS Tests"
 . ./sharness.sh
 
 test_expect_success "Load SBL and SL" "
-	insmod ../../../../slingshot_base_link/cxi-sbl.ko &&
+	insmod ../../../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko &&
 	insmod ../../../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "

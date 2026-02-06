@@ -30,7 +30,7 @@ function create_vfs {
 }
 
 test_expect_success "Inserting driver" "
-	insmod ../../../../slingshot_base_link/cxi-sbl.ko &&
+	insmod ../../../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko &&
 	insmod ../../../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/cxi-user.ko &&
@@ -44,7 +44,7 @@ else
 fi
 
 # Netsim device supports 32 VFs, real hardware supports 64.
-if dmesg | grep netsim > /dev/null; then
+if [[ $(cat $PFDEV/properties/platform) -eq 1 ]]; then
 	TOTALVFS=32
 else
 	TOTALVFS=64

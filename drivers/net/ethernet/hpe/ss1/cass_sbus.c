@@ -8,7 +8,7 @@
 
 #include "cass_core.h"
 
-#include <linux/sbl.h>
+#include <linux/hpe/sbl/sbl.h>
 
 /**
  * cxi_sbus_op_reset() - Perform an SBus op reset

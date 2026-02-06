@@ -5,7 +5,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/device.h>
-#include <linux/sbl.h>
+#include <linux/hpe/sbl/sbl.h>
 
 #include "cass_core.h"
 

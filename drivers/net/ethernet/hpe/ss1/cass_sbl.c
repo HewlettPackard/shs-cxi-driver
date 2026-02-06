@@ -7,10 +7,10 @@
 #include <linux/iopoll.h>
 #include <linux/hpe/cxi/cxi.h>
 #include <sbl/sbl_mb.h>
-#include <linux/sbl.h>
-#include <uapi/sbl.h>
-#include <uapi/sbl_serdes.h>
-#include <uapi/sbl_cassini.h>
+#include <linux/hpe/sbl/sbl.h>
+#include <uapi/ethernet/sbl-abi.h>
+#include <uapi/ethernet/sbl_serdes.h>
+#include <uapi/ethernet/sbl_cassini.h>
 
 #include "cass_core.h"
 #include "cass_cable.h"
@@ -815,8 +815,9 @@ int cass_sbl_init(struct cass_dev *hw)
 	ops.sbl_pml_disable_intr_handler = cass_sbl_pml_disable_intr_handler;
 	ops.sbl_async_alert              = cass_sbl_async_alert;
 
-	sbl_iattr.magic = SBL_INIT_ATTR_MAGIC;
+	sbl_iattr.magic  = SBL_INIT_ATTR_MAGIC;
 	sbl_iattr.uc_nic = hw->uc_nic;
+	sbl_iattr.is_hw  = HW_PLATFORM_ASIC(hw);
 
 	switch (hw->uc_platform) {
 	case CUC_BOARD_TYPE_SAWTOOTH:
