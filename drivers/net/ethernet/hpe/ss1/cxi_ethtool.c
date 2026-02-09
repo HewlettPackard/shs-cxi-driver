@@ -520,11 +520,13 @@ static int cxi_get_link_ksettings(struct net_device *ndev,
 		ethtool_link_ksettings_add_link_mode(s, supported, 100000baseCR2_Full);
 		ethtool_link_ksettings_add_link_mode(s, supported, 200000baseCR4_Full);
 		ethtool_link_ksettings_add_link_mode(s, supported, 400000baseCR4_Full);
+		ethtool_link_ksettings_add_link_mode(s, supported, FEC_RS);
 		if (s->base.autoneg == AUTONEG_ENABLE) {
 			ethtool_link_ksettings_add_link_mode(s, advertising, Autoneg);
 			ethtool_link_ksettings_add_link_mode(s, advertising, 100000baseCR2_Full);
 			ethtool_link_ksettings_add_link_mode(s, advertising, 200000baseCR4_Full);
 			ethtool_link_ksettings_add_link_mode(s, advertising, 400000baseCR4_Full);
+			ethtool_link_ksettings_add_link_mode(s, advertising, FEC_RS);
 		}
 	}
 
@@ -776,6 +778,25 @@ static int cxi_set_pauseparam(struct net_device *ndev,
 	return 0;
 }
 
+static int cxi_get_fecparam(struct net_device *ndev,
+			    struct ethtool_fecparam *fec)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cxi_link_info link_info;
+
+	cxi_link_mode_get(dev->cxi_dev, &link_info);
+
+	fec->active_fec = link_info.fec_type;
+
+	return 0;
+}
+
+static int cxi_set_fecparam(struct net_device *ndev,
+			    struct ethtool_fecparam *fec)
+{
+	return -ENOTSUPP;
+}
+
 #ifdef HAVE_KERNEL_RINGPARAM
 static void cxi_get_ringparam(struct net_device *ndev,
 			      struct ethtool_ringparam *ring,
@@ -892,6 +913,8 @@ const struct ethtool_ops cxi_eth_ethtool_ops = {
 	.set_phys_id        = cxi_set_phys_id,
 	.get_pauseparam     = cxi_get_pauseparam,
 	.set_pauseparam     = cxi_set_pauseparam,
+	.get_fecparam       = cxi_get_fecparam,
+	.set_fecparam       = cxi_set_fecparam,
 	.get_ringparam      = cxi_get_ringparam,
 	.set_ringparam      = cxi_set_ringparam,
 };

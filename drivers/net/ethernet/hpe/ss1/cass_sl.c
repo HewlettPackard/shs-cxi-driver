@@ -136,6 +136,14 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	else
 		link_info->port_type = PORT_OTHER;
 
+	/* fec type */
+	if (cass_dev->sl.link_up_fec_type == SL_LGRP_CONFIG_FEC_RS)
+		link_info->fec_type = ETHTOOL_FEC_RS;
+	else if (cass_dev->sl.link_up_fec_type == SL_LGRP_CONFIG_FEC_RS_LL)
+		link_info->fec_type = ETHTOOL_FEC_LLRS;
+	else
+		link_info->fec_type = ETHTOOL_FEC_OFF;
+
 	cxidev_dbg(&cass_dev->cdev,
 		   "sl mode get (type = %u, AN = %u, speed = %u, llr = %lu, fec = %u, LB = %lu, R1 = %u)\n",
 		   link_info->port_type, link_info->autoneg, link_info->speed,
@@ -835,6 +843,7 @@ static void cass_sl_callback(void *tag, struct sl_lgrp_notif_msg *msg)
 	case SL_LGRP_NOTIF_LINK_UP:
 		cass_dev->sl.link_state = SL_LINK_STATE_UP;
 		cass_dev->sl.link_up_mode = msg->info.link_up.mode;
+		cass_dev->sl.link_up_fec_type = msg->info.link_up.fec_type;
 		complete(&(cass_dev->sl.step_complete));
 		break;
 	case SL_LGRP_NOTIF_LINK_UP_FAIL:
@@ -901,6 +910,7 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 					     SL_LGRP_CONFIG_TECH_BS_200G |
 					     SL_LGRP_CONFIG_TECH_BJ_100G;
 	cass_dev->sl.link_up_mode          = 0;
+	cass_dev->sl.link_up_fec_type      = 0;
 	cass_sl_mode_set_autoneg_enable(cass_dev);
 	
 
@@ -1151,9 +1161,10 @@ int cass_sl_link_up(struct cass_dev *cass_dev)
 	/* initial delay between attempts */
 	msleep(1000);
 
-	cass_dev->sl.link_state   = SL_LINK_STATE_DOWN;
-	cass_dev->sl.llr_state    = SL_LLR_STATE_OFF;
-	cass_dev->sl.link_up_mode = 0;
+	cass_dev->sl.link_state       = SL_LINK_STATE_DOWN;
+	cass_dev->sl.llr_state        = SL_LLR_STATE_OFF;
+	cass_dev->sl.link_up_mode     = 0;
+	cass_dev->sl.link_up_fec_type = 0;
 
 	if (!cass_dev->sl.is_fw_loaded) {
 		rtn = sl_ldev_serdes_init(cass_dev->sl.ldev);
