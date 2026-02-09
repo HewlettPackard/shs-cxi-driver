@@ -14,6 +14,7 @@ struct cass_dev;
  * @speed: ethtool speed setting (SPEED_xxx)
  * @autoneg: ethtool autonegotiation setting (AUTONEG_ENABLE / AUTONEG_DISABLE)
  * @port_type: ethtool; port type (PORT_FIBRE, PORT_DA, ...)
+ * @fec_type: ethtool; fec (ETHTOOL_FEC_OFF, ETHTOOL_FEC_RS, ...)
  *
  * These attributes must be configured for a link.
  * Different setting will be required for fabric or Ethernet links
@@ -23,6 +24,7 @@ struct cxi_link_info {
 	int speed;		/* SPEED_xxx */
 	u32 autoneg;		/* AUTONEG_ENABLE / AUTONEG_DISABLE */
 	u32 port_type;		/* PORT_FIBRE, PORT_DA, ... */
+	u32 fec_type;           /* ETHTOOL_FEC_OFF, ETHTOOL_FEC_RS, ... */
 };
 
 void cxi_link_mode_get(struct cxi_dev *cxi_dev, struct cxi_link_info *link_info);

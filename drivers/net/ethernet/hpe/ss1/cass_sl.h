@@ -31,6 +31,7 @@ struct cass_sl_dev {
 	u32                          static_tech_map;
 	u32                          autoneg_tech_map;
 	u32                          link_up_mode;
+	u32                          link_up_fec_type;
 
 	struct sl_link              *link;
 	struct sl_link_config        link_config;
