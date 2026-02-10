@@ -652,7 +652,11 @@ static void process_err_irq(struct cass_dev *hw, int irq)
 			for_each_set_bit(bitn, err_flag[i].mask, info->bitlen)
 				process_err_flg(hw, irq, i == 1, info, bitn);
 
-			/* Clear the error bits */
+			/* Clear the error bits after processing the flagged
+			 * error(s), otherwise the associated error CSRs might
+			 * be reset for the next error, but before the driver
+			 * has time to read them.
+			 */
 			cass_write(hw, info->clr, &err_flag[i],
 				   info->bitlen / BITS_PER_BYTE);
 		}

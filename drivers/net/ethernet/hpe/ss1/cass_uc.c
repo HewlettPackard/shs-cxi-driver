@@ -20,6 +20,7 @@
 #include <linux/firmware.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
+#include <linux/iopoll.h>
 
 #include "cass_core.h"
 #include "cass_cable.h"
@@ -30,6 +31,28 @@
  */
 #define HOST_TO_UC_FIRST 992
 #define UC_TO_HOST_FIRST 1008
+
+/* When the driver sends several commands in a row, it is possible it
+ * processes a response and starts a new request before the error code
+ * has cleared the uc_attention bit. When that happens, the response
+ * from the uC won't raise a new uc_interrupt and the response will
+ * not be seen, leading to a timeout. Make sure the uC will actually
+ * be able to raise an interrupt before sending the next command.
+ */
+static int wait_for_uc(struct cass_dev *hw)
+{
+	union c_pi_err_flg err_flg;
+	void __iomem *csr;
+	int ret;
+
+	csr = cass_csr(hw, C_PI_ERR_FLG);
+	ret = readq_poll_timeout(csr, err_flg.qw, (err_flg.uc_attention & 1) == 0,
+				 1, 5 * MSEC_PER_SEC);
+
+	cxidev_WARN_ONCE(&hw->cdev, ret, "Timeout waiting for uc_attention to be ack'ed");
+
+	return ret;
+}
 
 /* Common command initialization */
 void uc_prepare_comm(struct cass_dev *hw)
@@ -54,6 +77,10 @@ int uc_wait_for_response(struct cass_dev *hw)
 		.intr = 1,
 	};
 	int rc;
+
+	rc = wait_for_uc(hw);
+	if (rc)
+		return rc;
 
 	hw->uc_req.type = CUC_TYPE_REQ;
 
