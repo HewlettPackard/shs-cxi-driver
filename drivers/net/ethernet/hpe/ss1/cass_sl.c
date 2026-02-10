@@ -600,6 +600,12 @@ static int cass_sl_dt_info_get(void *dt_accessor, u8 ldev_num, u8 lgrp_num,
 		info->lane_info[0].rx_invert = 0;
 		break;
 	case CUC_BOARD_TYPE_SOUHEGAN:
+		cxidev_dbg(&cass_dev->cdev,
+			   "sl dt info get SOUHEGAN (nic = %d)\n", cass_dev->uc_nic);
+		/* Lane         3210              3210
+		   ---------------------------------------------
+		   -tx-lane-map 2310 -rx-lane-map 1023 -a :5.*
+		   -tx-lane-map 0132 -rx-lane-map 2013 -a 1:5.*  */
 		switch (cass_dev->uc_nic) {
 		case 0:
 			/* TX: [3, 2, 1, 0] = {2, 3, 1, 0} */
@@ -612,11 +618,11 @@ static int cass_sl_dt_info_get(void *dt_accessor, u8 ldev_num, u8 lgrp_num,
 			info->lane_info[1].tx_invert = 0;
 			info->lane_info[0].tx_source = 0;
 			info->lane_info[0].tx_invert = 0;
-			/* RX: [3, 2, 1, 0] = {0, 1, 2, 3} */
+			/* RX: [3, 2, 1, 0] = {1, 0, 2, 3} */
 			/* CSR:     logical = serdes       */
-			info->lane_info[3].rx_source = 0;
+			info->lane_info[3].rx_source = 1;
 			info->lane_info[3].rx_invert = 0;
-			info->lane_info[2].rx_source = 1;
+			info->lane_info[2].rx_source = 0;
 			info->lane_info[2].rx_invert = 0;
 			info->lane_info[1].rx_source = 2;
 			info->lane_info[1].rx_invert = 0;
@@ -624,25 +630,25 @@ static int cass_sl_dt_info_get(void *dt_accessor, u8 ldev_num, u8 lgrp_num,
 			info->lane_info[0].rx_invert = 0;
 			break;
 		case 1:
-			/* TX: [3, 2, 1, 0] = {0, 1, 2, 3} */
+			/* TX: [3, 2, 1, 0] = {0, 1, 3, 2} */
 			/* CSR:      serdes = logical      */
 			info->lane_info[3].tx_source = 0;
 			info->lane_info[3].tx_invert = 0;
 			info->lane_info[2].tx_source = 1;
 			info->lane_info[2].tx_invert = 0;
-			info->lane_info[1].tx_source = 2;
+			info->lane_info[1].tx_source = 3;
 			info->lane_info[1].tx_invert = 0;
-			info->lane_info[0].tx_source = 3;
+			info->lane_info[0].tx_source = 2;
 			info->lane_info[0].tx_invert = 0;
-			/* RX: [3, 2, 1, 0] = {3, 2, 1, 0} */
+			/* RX: [3, 2, 1, 0] = {2, 0, 1, 3} */
 			/* CSR:     logical = serdes       */
-			info->lane_info[3].rx_source = 3;
+			info->lane_info[3].rx_source = 2;
 			info->lane_info[3].rx_invert = 0;
-			info->lane_info[2].rx_source = 2;
+			info->lane_info[2].rx_source = 0;
 			info->lane_info[2].rx_invert = 0;
 			info->lane_info[1].rx_source = 1;
 			info->lane_info[1].rx_invert = 0;
-			info->lane_info[0].rx_source = 0;
+			info->lane_info[0].rx_source = 3;
 			info->lane_info[0].rx_invert = 0;
 			break;
 		}
