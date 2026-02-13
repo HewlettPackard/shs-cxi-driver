@@ -2252,6 +2252,7 @@ void cxi_eth_set_rx_mode(struct net_device *ndev)
 	if (ndev->flags & IFF_PROMISC) {
 		/* Listen on everything. */
 		cxi_eth_set_promiscuous(dev->cxi_dev, &dev->res);
+		cxi_eth_set_indir_table(dev->cxi_dev, &dev->res);
 		return;
 	}
 
