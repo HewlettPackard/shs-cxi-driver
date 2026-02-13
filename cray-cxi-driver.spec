@@ -38,7 +38,6 @@ Prefix:         /usr
 
 BuildRequires:  cray-cassini-headers-user kernel-devel
 BuildRequires:  cray-slingshot-base-link-devel
-BuildRequires:  cassini2-firmware-devel
 BuildRequires:  sl-driver-devel
 
 %if %{with nvidiagpu}
@@ -110,7 +109,6 @@ Summary:    DKMS package for Cassini driver
 BuildArch:  noarch
 Requires:   dkms
 Requires:   cray-cassini-headers-user
-Requires:   cassini2-firmware-devel
 Requires:   sl-driver-dkms
 Requires:   sl-driver-devel
 Requires:   cray-slingshot-base-link-dkms
