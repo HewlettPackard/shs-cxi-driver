@@ -43,12 +43,7 @@ else
 	echo "Driver built without SR-IOV support, skipping SR-IOV tests"
 fi
 
-# Netsim device supports 32 VFs, real hardware supports 64.
-if [[ $(cat $PFDEV/properties/platform) -eq 1 ]]; then
-	TOTALVFS=32
-else
-	TOTALVFS=64
-fi
+TOTALVFS=64
 
 test_expect_success SRIOV "Number of total VFs" "
 	[[ $(cat $PFDEV/sriov_totalvfs) -eq $TOTALVFS ]]
