@@ -33,6 +33,22 @@
 #define CASS_SL_DEFAULT_BER_MANT_CCW 2
 #define CASS_SL_DEFAULT_BER_EXP_CCW  -5
 
+#define SL_DFLT_PML_REC_TIMEOUT_MS                   60    /* 60ms */
+#define SL_DFLT_PML_REC_RATE_LIMIT_MAX_TIME_MS       60    /* 60ms */
+#define SL_DFLT_PML_REC_RATE_LIMIT_WINDOW_SIZE_MS  1000    /* 1000ms */
+
+static unsigned int cass_sl_pml_rec_timeout_ms = SL_DFLT_PML_REC_TIMEOUT_MS;
+module_param(cass_sl_pml_rec_timeout_ms, uint, 0644);
+MODULE_PARM_DESC(cass_sl_pml_rec_timeout_ms, "PML recovery timeout in ms");
+
+static unsigned int cass_sl_pml_rec_rate_limit_max_time_ms = SL_DFLT_PML_REC_RATE_LIMIT_MAX_TIME_MS;
+module_param(cass_sl_pml_rec_rate_limit_max_time_ms, uint, 0644);
+MODULE_PARM_DESC(cass_sl_pml_rec_rate_limit_max_time_ms, "PML recovery max time in ms per window");
+
+static unsigned int cass_sl_pml_rec_rate_limit_win_size_ms = SL_DFLT_PML_REC_RATE_LIMIT_WINDOW_SIZE_MS;
+module_param(cass_sl_pml_rec_rate_limit_win_size_ms, uint, 0644);
+MODULE_PARM_DESC(cass_sl_pml_rec_rate_limit_win_size_ms, "PML recovery rate limiter window in ms");
+
 static struct kobj_type cass_sl_port_sysfs = {
 	.sysfs_ops = &kobj_sysfs_ops,
 };
@@ -373,7 +389,12 @@ void cass_sl_flags_set(struct cass_dev *cass_dev, u32 clr_flags, u32 set_flags)
 
 void cass_sl_pml_recovery_set(struct cass_dev *cass_dev, bool set)
 {
-	cxidev_dbg(&cass_dev->cdev, "%s NOT IMPLEMENTED!\n", __func__);
+	cxidev_dbg(&cass_dev->cdev, "pml recovery set\n");
+
+	if (set)
+		cass_dev->sl.link_config.options |= SL_LINK_CONFIG_OPT_PML_REC_ENABLE;
+	else
+		cass_dev->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_PML_REC_ENABLE;
 }
 
 struct cass_sl_intr_entry {
@@ -920,17 +941,20 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_sl_mode_set_autoneg_enable(cass_dev);
 	
 
-	cass_dev->sl.link_config.magic                 = SL_LINK_CONFIG_MAGIC;
-	cass_dev->sl.link_config.ver                   = SL_LINK_CONFIG_VER;
-	cass_dev->sl.link_config.link_up_timeout_ms    = CASS_SL_LINK_UP_TIMEOUT_MS;
-	cass_dev->sl.link_config.link_up_tries_max     = 1;
-	cass_dev->sl.link_config.fec_up_settle_wait_ms = -1;
-	cass_dev->sl.link_config.fec_up_check_wait_ms  = -1;
-	cass_dev->sl.link_config.fec_up_ucw_limit      = -1;
-	cass_dev->sl.link_config.fec_up_ccw_limit      = -1;
-	cass_dev->sl.link_config.pause_map             = 0;
-	cass_dev->sl.link_config.hpe_map               = SL_LINK_CONFIG_HPE_C2;
-	cass_dev->sl.link_config.hpe_map              |= SL_LINK_CONFIG_HPE_LINKTRAIN;
+	cass_dev->sl.link_config.magic                      = SL_LINK_CONFIG_MAGIC;
+	cass_dev->sl.link_config.ver                        = SL_LINK_CONFIG_VER;
+	cass_dev->sl.link_config.link_up_timeout_ms         = CASS_SL_LINK_UP_TIMEOUT_MS;
+	cass_dev->sl.link_config.link_up_tries_max          = 1;
+	cass_dev->sl.link_config.fec_up_settle_wait_ms      = -1;
+	cass_dev->sl.link_config.fec_up_check_wait_ms       = -1;
+	cass_dev->sl.link_config.fec_up_ucw_limit           = -1;
+	cass_dev->sl.link_config.fec_up_ccw_limit           = -1;
+	cass_dev->sl.link_config.pml_rec_timeout_ms         = cass_sl_pml_rec_timeout_ms;
+	cass_dev->sl.link_config.pml_rec_rl_max_duration_ms = cass_sl_pml_rec_rate_limit_max_time_ms;
+	cass_dev->sl.link_config.pml_rec_rl_window_size_ms  = cass_sl_pml_rec_rate_limit_win_size_ms;
+	cass_dev->sl.link_config.pause_map                  = 0;
+	cass_dev->sl.link_config.hpe_map                    = SL_LINK_CONFIG_HPE_C2;
+	cass_dev->sl.link_config.hpe_map                   |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 	if (cass_dev->sl.enable_llr)
 		cass_dev->sl.link_config.hpe_map      |= SL_LINK_CONFIG_HPE_LLR;
 
