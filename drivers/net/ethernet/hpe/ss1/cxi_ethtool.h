@@ -9,7 +9,7 @@
 #define CXI_ETH_PF_IFG_HPC                   BIT(4)
 #define CXI_ETH_PF_ROCE_OPT                  BIT(5)  /* RoCE Cassini Optimizations */
 #define CXI_ETH_PF_IGNORE_ALIGN              BIT(6)  /* ignore align interrupt */
-#define CXI_ETH_PF_DISABLE_PML_RECOVERY      BIT(7)  /* disable pml recovery */
+#define CXI_ETH_PF_PML_REC                   BIT(7)  /* control pml recovery */
 #define CXI_ETH_PF_LINKTRAIN                 BIT(8)  /* link training */
 #define CXI_ETH_PF_REMOTE_FAULT_RECOVERY     BIT(9)  /* enable pml recovery for remote faults */
 #define CXI_ETH_PF_USE_UNSUPPORTED_CABLE     BIT(10) /* allow link up with unsupported cable */

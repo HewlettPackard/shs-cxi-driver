@@ -191,7 +191,7 @@ void cass_sbl_mode_set(struct cass_dev *hw, const struct cxi_link_info *link_inf
 	else
 		attrs.bl.ifg_config = SBL_IFG_CONFIG_IEEE_200G;
 
-	if (link_info->flags & CXI_ETH_PF_DISABLE_PML_RECOVERY)
+	if (link_info->flags & CXI_ETH_PF_PML_REC)
 		attrs.bl.options |= SBL_DISABLE_PML_RECOVERY;
 	else
 		attrs.bl.options &= ~SBL_DISABLE_PML_RECOVERY;
@@ -274,7 +274,7 @@ void cass_sbl_mode_get(struct cass_dev *hw, struct cxi_link_info *link_info)
 		link_info->flags |= CXI_ETH_PF_IFG_HPC;
 
 	if (attrs->bl.options & SBL_DISABLE_PML_RECOVERY)
-		link_info->flags |= CXI_ETH_PF_DISABLE_PML_RECOVERY;
+		link_info->flags |= CXI_ETH_PF_PML_REC;
 
 	if (attrs->mattr.media != SBL_LINK_MEDIA_OPTICAL) {
 		if (attrs->bl.pec.an_mode == SBL_AN_MODE_OFF)

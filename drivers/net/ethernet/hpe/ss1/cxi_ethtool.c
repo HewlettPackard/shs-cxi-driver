@@ -27,7 +27,7 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"ifg-hpc",
 	"roce-opt",
 	"ignore-align",
-	"disable-pml-recovery",
+	"pml-recovery",
 	"link-train",
 	"remote-fault-recovery",
 	"use-unsupported-cable",
@@ -72,10 +72,17 @@ static int cxi_get_sset_count(struct net_device *ndev, int sset)
 static void cxi_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 {
 	char *p = data;
+	struct cxi_eth *dev = netdev_priv(ndev);
+	char *dst;
 
 	switch (stringset) {
 	case ETH_SS_PRIV_FLAGS:
 		memcpy(p, priv_flags_str, PRIV_FLAGS_COUNT * ETH_GSTRING_LEN);
+		if (cassini_version(&dev->cxi_dev->prop, CASSINI_1)) {
+			dst = p + 7 * ETH_GSTRING_LEN;
+			memset(dst, 0, ETH_GSTRING_LEN);
+			strscpy(dst, "disable-pml-recovery", ETH_GSTRING_LEN);
+		}
 		break;
 	case ETH_SS_STATS:
 		memcpy(p, cxi_get_ethtool_stats_name, CXI_GLOBAL_STATS_LEN *
@@ -621,12 +628,12 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 					   CXI_ETH_PF_IGNORE_ALIGN, 0);
 	}
 
-	if (changes & CXI_ETH_PF_DISABLE_PML_RECOVERY) {
-		if (flags & CXI_ETH_PF_DISABLE_PML_RECOVERY) {
-			dev->priv_flags |= CXI_ETH_PF_DISABLE_PML_RECOVERY;
+	if (changes & CXI_ETH_PF_PML_REC) {
+		if (flags & CXI_ETH_PF_PML_REC) {
+			dev->priv_flags |= CXI_ETH_PF_PML_REC;
 			cxi_pml_recovery_set(dev->cxi_dev, true);
 		} else {
-			dev->priv_flags &= ~CXI_ETH_PF_DISABLE_PML_RECOVERY;
+			dev->priv_flags &= ~CXI_ETH_PF_PML_REC;
 			cxi_pml_recovery_set(dev->cxi_dev, false);
 		}
 	}
