@@ -379,6 +379,7 @@ struct cxi_cq_priv {
 	struct dentry *lni_dir;
 
 	u32 flags;
+	struct cxi_md_priv *md_priv;
 
 	/* EQ for error reporting. May be NULL. */
 	struct cxi_eq_priv *eq;

@@ -365,6 +365,98 @@ free_pages:
 	return rc;
 }
 
+static struct cxi_md_priv *get_device_addr(struct cxi_lni_priv *lni_priv,
+					   uintptr_t va, size_t len,
+					   int dmabuf_fd,
+					   unsigned long dmabuf_offset,
+					   dma_addr_t *dma_addr)
+{
+	int i;
+	int rc;
+	struct scatterlist *sg;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	struct cxi_md_priv *md_priv;
+	struct ac_map_opts m_opts = {
+		.huge_shift = PMD_SHIFT,
+		.page_shift = PAGE_SHIFT
+	};
+	u32 flags = CXI_MAP_DEVICE;
+	dma_addr_t next_addr = 0;
+
+	if (!len) {
+		pr_debug("Length is 0\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	md_priv = kzalloc(sizeof(*md_priv), GFP_KERNEL);
+	if (!md_priv)
+		return ERR_PTR(-ENOMEM);
+
+	refcount_set(&md_priv->refcount, 1);
+	md_priv->lni_priv = lni_priv;
+	md_priv->device = &hw->cdev.pdev->dev;
+	md_priv->dmabuf_fd = dmabuf_fd;
+	md_priv->dmabuf_offset = dmabuf_offset;
+	md_priv->dmabuf_length = len;
+	m_opts.flags = flags;
+	m_opts.md_priv = md_priv;
+
+	rc = cass_is_device_memory(hw, &m_opts, va, len);
+	if (rc)
+		goto md_free;
+
+	cass_align_start_len(&m_opts, va, len, m_opts.page_shift);
+
+	rc = cass_device_get_pages(&m_opts);
+	if (rc) {
+		cxidev_dbg(&hw->cdev,
+			   "cass_device_get_pages failed rc:%d\n", rc);
+		goto md_free;
+	}
+
+	/* AMD p2p pages are not guaranteed to be contiguous. */
+	for_each_sgtable_dma_sg(md_priv->sgt, sg, i) {
+		long len = sg_dma_len(sg);
+		dma_addr_t dma_addr = sg_dma_address(sg);
+
+		if (dma_addr != PAGE_ALIGN(dma_addr)) {
+			cxidev_dbg(&hw->cdev,
+				   "Buffer supplied is required to be page aligned\n");
+			rc = -EINVAL;
+			goto put_pages;
+		}
+
+		if (!next_addr) {
+			next_addr = dma_addr + len;
+			continue;
+		}
+
+		if (dma_addr != next_addr) {
+			cxidev_dbg(&hw->cdev,
+				   "Buffer supplied is required to be contiguous\n");
+			rc = -EINVAL;
+			goto put_pages;
+		}
+
+		next_addr = dma_addr + len;
+	}
+
+	md_priv->olen = m_opts.va_len;
+	md_priv->flags = m_opts.flags;
+	*dma_addr = sg_dma_address(md_priv->sgt->sgl);
+
+	return md_priv;
+
+put_pages:
+	cass_device_put_pages(md_priv);
+
+md_free:
+	kfree(md_priv);
+
+	return ERR_PTR(rc);
+}
+
 /**
  * cxi_cq_alloc_buf() - Allocate a new command queue
  *
@@ -464,13 +556,27 @@ struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
 			goto put_id;
 		}
 
-		rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
-					    DMA_BIDIRECTIONAL, &cq->pages,
-					    &cq->cmds_dma_addr);
-		if (rc)
-			goto put_id;
+		if (opts_b->is_host_mem) {
+			rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
+						    DMA_BIDIRECTIONAL,
+						    &cq->pages,
+						    &cq->cmds_dma_addr);
+			if (rc)
+				goto put_id;
+		} else {
+			cq->md_priv = get_device_addr(lni_priv,
+						      (uintptr_t)opts_b->buf,
+						      cmds_len,
+						      opts_b->dmabuf_fd,
+						      opts_b->dmabuf_offset,
+						      &cq->cmds_dma_addr);
+			if (IS_ERR(cq->md_priv)) {
+				rc = PTR_ERR(cq->md_priv);
+				goto put_id;
+			}
+		}
 
-		cq->cmds = page_address(cq->pages[0]);
+		cq->cmds = NULL;
 	} else {
 		/* CQ needs contiguous memory region. */
 		cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
@@ -544,6 +650,11 @@ cq_unmap:
 cq_release:
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
+
+	if (cq->md_priv) {
+		cass_device_put_pages(cq->md_priv);
+		kfree(cq->md_priv);
+	}
 
 	if (cq->pages) {
 		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
@@ -689,8 +800,15 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 	if (cq->cmds_pages) {
 		__free_pages(cq->cmds_pages, cq->cmds_order);
 	} else {
-		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
-		kfree(cq->pages);
+		if (cq->md_priv) {
+			cass_device_put_pages(cq->md_priv);
+			kfree(cq->md_priv);
+		}
+
+		if (cq->pages) {
+			unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
+			kfree(cq->pages);
+		}
 	}
 
 	if (eq)

@@ -431,11 +431,20 @@ struct cxi_cq_alloc_opts {
 	unsigned int lpe_cdt_thresh_id;
 };
 
+#define INVALID_DMABUF_FD (-1)
 struct cxi_cq_alloc_opts_buf {
 	struct cxi_cq_alloc_opts opts;
 
 	/* Pointer to an optional user buffer. */
 	void __user *buf;
+
+	/* If set, buf is allocated in host mem. Otherwise, device mem. */
+	bool is_host_mem;
+
+	/* dmabuf file descriptor. INVALID_DMABUF_FD if not dmabuf. */
+	int dmabuf_fd;
+
+	unsigned long dmabuf_offset;
 };
 
 struct cxi_cq_alloc_cmd {
