@@ -1377,7 +1377,7 @@ void uncor_cb(struct cass_dev *hw, unsigned int irq, bool is_ext,
 
 	snprintf(reason, sizeof(reason),
 		 "Unrecoverable error: %s with bitn: %d",
-		 hw->err_handlers[irq][is_ext]->csr_name_lo, bitn);
+		 (*hw->err_handlers)[irq][is_ext ? 1 : 0].csr_name_lo, bitn);
 
 	cass_disable_device(hw->cdev.pdev, reason);
 }
