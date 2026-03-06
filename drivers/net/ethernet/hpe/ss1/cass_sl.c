@@ -941,22 +941,22 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_sl_mode_set_autoneg_enable(cass_dev);
 	
 
-	cass_dev->sl.link_config.magic                      = SL_LINK_CONFIG_MAGIC;
-	cass_dev->sl.link_config.ver                        = SL_LINK_CONFIG_VER;
-	cass_dev->sl.link_config.link_up_timeout_ms         = CASS_SL_LINK_UP_TIMEOUT_MS;
-	cass_dev->sl.link_config.link_up_tries_max          = 1;
-	cass_dev->sl.link_config.fec_up_settle_wait_ms      = -1;
-	cass_dev->sl.link_config.fec_up_check_wait_ms       = -1;
-	cass_dev->sl.link_config.fec_up_ucw_limit           = -1;
-	cass_dev->sl.link_config.fec_up_ccw_limit           = -1;
-	cass_dev->sl.link_config.pml_rec_timeout_ms         = cass_sl_pml_rec_timeout_ms;
-	cass_dev->sl.link_config.pml_rec_rl_max_duration_ms = cass_sl_pml_rec_rate_limit_max_time_ms;
-	cass_dev->sl.link_config.pml_rec_rl_window_size_ms  = cass_sl_pml_rec_rate_limit_win_size_ms;
-	cass_dev->sl.link_config.pause_map                  = 0;
-	cass_dev->sl.link_config.hpe_map                    = SL_LINK_CONFIG_HPE_C2;
-	cass_dev->sl.link_config.hpe_map                   |= SL_LINK_CONFIG_HPE_LINKTRAIN;
+	cass_dev->sl.link_config.magic                             = SL_LINK_CONFIG_MAGIC;
+	cass_dev->sl.link_config.ver                               = SL_LINK_CONFIG_VER;
+	cass_dev->sl.link_config.link_up_timeout_ms                = CASS_SL_LINK_UP_TIMEOUT_MS;
+	cass_dev->sl.link_config.link_up_tries_max                 = 1;
+	cass_dev->sl.link_config.fec_up_settle_wait_ms             = -1;
+	cass_dev->sl.link_config.fec_up_check_wait_ms              = -1;
+	cass_dev->sl.link_config.fec_up_ucw_limit                  = -1;
+	cass_dev->sl.link_config.fec_up_ccw_limit                  = -1;
+	cass_dev->sl.link_config.pml_rec_timeout_ms                = cass_sl_pml_rec_timeout_ms;
+	cass_dev->sl.link_config.pml_rec_rate_limit_max_time_ms    = cass_sl_pml_rec_rate_limit_max_time_ms;
+	cass_dev->sl.link_config.pml_rec_rate_limit_window_size_ms = cass_sl_pml_rec_rate_limit_win_size_ms;
+	cass_dev->sl.link_config.pause_map                         = 0;
+	cass_dev->sl.link_config.hpe_map                           = SL_LINK_CONFIG_HPE_C2;
+	cass_dev->sl.link_config.hpe_map                          |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 	if (cass_dev->sl.enable_llr)
-		cass_dev->sl.link_config.hpe_map      |= SL_LINK_CONFIG_HPE_LLR;
+		cass_dev->sl.link_config.hpe_map                  |= SL_LINK_CONFIG_HPE_LLR;
 
 	cass_dev->sl.link_policy.magic                   = SL_LINK_POLICY_MAGIC;
 	cass_dev->sl.link_policy.ver                     = SL_LINK_POLICY_VER;
