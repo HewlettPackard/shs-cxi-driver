@@ -15,7 +15,6 @@ fi
 
 # Load all the drivers
 modprobe ptp
-modprobe amd_iommu_v2 || modprobe iommu_v2
 modprobe ib_uverbs
 modprobe ip6_udp_tunnel
 modprobe udp_tunnel

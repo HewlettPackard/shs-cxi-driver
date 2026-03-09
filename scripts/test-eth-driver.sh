@@ -14,7 +14,6 @@ fi
 
 # Load all the drivers
 modprobe ptp
-modprobe amd_iommu_v2 || modprobe iommu_v2
 insmod ../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko
 insmod ../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0

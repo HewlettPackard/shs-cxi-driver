@@ -23,4 +23,3 @@ SHARNESS_TEST_DIRECTORY=$(pwd)/tmptests
 modprobe configfs
 mount -t configfs none /sys/kernel/config
 modprobe ptp
-modprobe iommu_v2 >/dev/null 2>/dev/null || modprobe amd_iommu_v2 >/dev/null 2>/dev/null
