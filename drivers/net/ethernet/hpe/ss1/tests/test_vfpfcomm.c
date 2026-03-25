@@ -15,6 +15,7 @@
 #include <linux/workqueue.h>
 #include <uapi/ethernet/cxi-abi.h>
 #include <linux/hpe/cxi/cxi.h>
+#include <linux/vmalloc.h>
 
 #include <cxi_prov_hw.h>
 
@@ -41,7 +42,7 @@ struct tdev {
 /* Read a message from a VF. This would be in cxi-user. */
 static int msg_relay(void *data, unsigned int vf_num,
 		     const void *req, size_t req_len, uid_t uid, gid_t gid,
-		     void *rsp, size_t *rsp_len)
+		     void **rsp, size_t rsp_buf_size, size_t *rsp_len)
 {
 	pr_info("Got message from VF %d, len %zu\n", vf_num, req_len);
 
@@ -55,9 +56,12 @@ static int msg_relay(void *data, unsigned int vf_num,
 	else
 		pr_info("Request is valid\n");
 
-	/* Prepare the reply */
+	/* Prepare the reply. Reply will get freed by the VF message handler. */
 	*rsp_len = strlen(reply_msg) + 1;
-	strcpy(rsp, reply_msg);
+	*rsp = kvzalloc(*rsp_len, GFP_KERNEL);
+	if (!*rsp)
+		return -ENOMEM;
+	strcpy(*rsp, reply_msg);
 
 	return 0;
 }
@@ -104,7 +108,7 @@ static int add_device(struct cxi_dev *cdev)
 	if (cdev->is_physfn) {
 		rc = cxi_register_msg_relay(cdev, msg_relay, tdev);
 		if (rc) {
-			dev_err(&cdev->pdev->dev, "BAD: msg_relay registration failed\n");
+			dev_err(&cdev->pdev->dev, "BAD: msg_relay registration failed: %d\n", rc);
 			kfree(tdev);
 			return rc;
 		}

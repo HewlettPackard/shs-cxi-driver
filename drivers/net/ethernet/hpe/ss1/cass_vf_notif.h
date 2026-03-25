@@ -25,10 +25,10 @@ struct cass_vf_notif_info {
 	unsigned int req_size;
 	const char *name;
 	int (*handler)(struct cass_dev *hw, const void *cmd_in,
-		       void *resp, size_t *resp_len);
+		       void **resp, size_t *resp_len);
 };
 
 int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,
-		      void *rsp, size_t *rsp_len);
+		      void **rsp, size_t *rsp_len);
 
 #endif	/* _CASS_VF_NOTIF_H_ */

@@ -4,6 +4,11 @@
 #ifndef _CASS_VF_H
 #define _CASS_VF_H
 
+/* Maximum allowable message payload size in bytes, to prevent unbounded
+ * allocation by a misbehaving client.
+ */
+#define MAX_VFMSG_SIZE (1024 * 1024)
+
 /* VF private structures */
 struct cxi_lni_priv_vf {
 	/* Matching fields in cxi_lni_priv */

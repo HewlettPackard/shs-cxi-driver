@@ -382,8 +382,6 @@ struct sts_idle {
 	bool ib_wait;
 };
 
-#define MAX_VFMSG_SIZE (22432 + sizeof(struct vf_pf_msg_hdr))
-
 /* A VF to PF message header */
 struct vf_pf_msg_hdr {
 	unsigned int len;	/* whole message length */
@@ -536,10 +534,6 @@ struct cass_vf {
 	/* Per VF mutex to maintain notification message/response sequencing */
 	struct mutex notif_lock;
 
-	/* Per-VF message buffers */
-	char request[MAX_VFMSG_SIZE];
-	char reply[MAX_VFMSG_SIZE];
-
 	struct task_struct *kvm_task;
 };
 
@@ -615,8 +609,6 @@ struct cass_dev {
 	struct socket *vf_notif_sock;
 	struct task_struct *vf_listener;
 	struct task_struct *vf_notif_handler;
-	u8 vf_notif_buf[MAX_VFMSG_SIZE];
-	u8 vf_notif_rsp_buf[MAX_VFMSG_SIZE];
 	struct cass_vf vfs[C_NUM_VFS];
 	cxi_msg_relay_t msg_relay;
 	void *msg_relay_data;

@@ -202,7 +202,8 @@ struct cmd_info {
 	unsigned int req_size_vf;  /* VF command size, 0 if same as req_size */
 	const char *name;
 	int (*handler)(struct user_client *client, const void *cmd_in,
-		       void *resp, size_t *resp_len);
+		       size_t cmd_len, void **resp, size_t resp_buf_size,
+		       size_t *resp_len);
 	bool admin_only;
 };
 

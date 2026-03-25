@@ -4,6 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/vmalloc.h>
 
 #include "cass_core.h"
 #include "cxi_core.h"
@@ -11,10 +12,16 @@
 
 #if !defined(CXI_DISABLE_SRIOV)
 
+/* *resp points to a buffer of *resp_len bytes. If this is not large enough for the response,
+ * the handler should kvzalloc a new buffer, set *resp to point to it, and set *resp_len to the
+ * size of the new buffer. The caller is responsible for freeing this buffer with kvfree.
+ */
+
 static int cass_vf_notif_ping_handler(struct cass_dev *hw,
-				      const void *cmd_in, void *resp,
+				      const void *cmd_in, void **resp,
 				      size_t *resp_len)
 {
+	*resp_len = 0;
 	return 0;
 }
 
@@ -26,7 +33,7 @@ static const struct cass_vf_notif_info vf_notif_info[] = {
 };
 
 int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,
-		      void *rsp, size_t *rsp_len)
+		      void **rsp, size_t *rsp_len)
 {
 	const struct cass_vf_notif_common *common_req = req;
 	enum cass_vf_notif_ops op;

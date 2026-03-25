@@ -25,6 +25,7 @@
 #include <linux/vfio.h>
 #include <linux/vm_sockets.h>
 #include <net/sock.h>
+#include <linux/vmalloc.h>
 
 #include "cass_core.h"
 #include "cass_vf_notif.h"
@@ -84,6 +85,11 @@ EXPORT_SYMBOL(cass_vf_get_token);
 
 #else /* CXI_DISABLE_SRIOV */
 
+/* Size of pre-allocated VF message buffers; messages larger than this will have
+ * buffers dynamically allocated on the heap.
+ */
+#define SMALL_VFMSG_SIZE 256
+
 /* TODO: make port configurable? (0x17db is arbitrary, taken from C1 PCI vendor ID) */
 #define CXI_SRIOV_VSOCK_PORT 0x17db
 #define CXI_SRIOV_VSOCK_NOTIF_PORT (CXI_SRIOV_VSOCK_PORT + 1)
@@ -134,23 +140,58 @@ static int write_message_to_vsock(struct socket *sock, const void *msg,
 	return kernel_sendmsg(sock, &msghdr, vec, 2, sizeof(hdr) + msg_len);
 }
 
+static int read_vsock_header(struct socket *sock, struct vf_pf_msg_hdr *hdr)
+{
+	struct msghdr msghdr = {};
+	struct kvec hdrvec = {
+		.iov_base = hdr,
+		.iov_len = sizeof(*hdr),
+	};
+	int rc;
+
+	rc = kernel_recvmsg(sock, &msghdr, &hdrvec, 1, sizeof(*hdr), 0);
+	if (rc > 0 && rc < sizeof(*hdr)) {
+		pr_err("Not enough data received for header (%u < %lu)",
+		       rc, sizeof(*hdr));
+		return -EINVAL;
+	}
+	return rc;
+}
+
+static int read_vsock_payload(struct socket *sock, struct vf_pf_msg_hdr *hdr,
+			      void *msg, size_t *msg_len)
+{
+	struct msghdr msghdr = {};
+	struct kvec msgvec = {
+		.iov_base = msg,
+		.iov_len = *msg_len,
+	};
+	int rc;
+
+	if (hdr->len > *msg_len)
+		return -ENOSPC;
+
+	rc = kernel_recvmsg(sock, &msghdr, &msgvec, 1, hdr->len, 0);
+	if (rc >= 0 && rc < hdr->len) {
+		pr_err("Not enough data received for message body (%u < %u)",
+		       rc, hdr->len);
+		return -EINVAL;
+	}
+	return rc;
+}
+
+/* Read a message from a vsock connection into a preallocated buffer. If buffer
+ * is too small, return -ENOSPC and set *msg_len to the required size.
+ */
 static int read_message_from_vsock(struct socket *sock, void *msg,
 				   size_t *msg_len, int *msg_rc,
 				   uid_t *uid, gid_t *gid, int *seq)
 {
 	struct vf_pf_msg_hdr hdr;
-	struct msghdr msghdr = {};
-	struct kvec hdrvec = {
-		.iov_base = &hdr,
-		.iov_len = sizeof(hdr),
-	};
-	struct kvec msgvec = {
-		.iov_base = msg,
-	};
 	int rc;
 
-	rc = kernel_recvmsg(sock, &msghdr, &hdrvec, 1, sizeof(hdr), 0);
-	if (rc < 0)
+	rc = read_vsock_header(sock, &hdr);
+	if (rc <= 0)
 		return rc;
 	else if (rc == 0) {
 		/* Connection closed by the other end */
@@ -162,20 +203,45 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
 		return -EINVAL;
 	}
 
-	if (hdr.len > MAX_VFMSG_SIZE) {
-		pr_err("Bad message size (%u > %zu)", hdr.len, MAX_VFMSG_SIZE);
-		return -EINVAL;
-	}
-
-	if ((!msg_len && hdr.len > 0) || (msg_len && *msg_len < hdr.len)) {
-		pr_err("Message buffer too small (%u > %zu)", hdr.len, msg_len ? *msg_len : 0);
-		return -EINVAL;
-	}
-
+	if (msg_rc)
+		*msg_rc = hdr.rc;
+	if (uid)
+		*uid = hdr.uid;
+	if (gid)
+		*gid = hdr.gid;
+	if (seq)
+		*seq = hdr.seq;
 	if (msg_len) {
+		rc = read_vsock_payload(sock, &hdr, msg, msg_len);
 		*msg_len = hdr.len;
-		msgvec.iov_len = hdr.len;
 	}
+
+	return rc;
+}
+
+/* Like read_message_from_vsock(), but allows arbitrarily large messages. If the
+ * incoming message is larger *msg_len, a new buffer of the required size will
+ * be allocated with kvmalloc and returned in *msg_out. The caller is
+ * responsible for checking if a buffer was allocated, and freeing this buffer
+ * with kvfree() when done. In either case, *msg_len will be set to the actual
+ * size of the message payload.
+ *
+ * Returns a positive value on success, 0 if the connection was closed, or a
+ * negative error code.
+ */
+static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
+					 size_t *msg_len, int *msg_rc,
+					 uid_t *uid, gid_t *gid, int *seq)
+{
+	struct vf_pf_msg_hdr hdr;
+	size_t len;
+	void *buf;
+	int rc;
+
+	rc = read_vsock_header(sock, &hdr);
+	if (rc <= 0)
+		return rc;
+
 	if (msg_rc)
 		*msg_rc = hdr.rc;
 	if (uid)
@@ -185,15 +251,37 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
 	if (seq)
 		*seq = hdr.seq;
 
-	if (msg_len && msg) {
-		rc = kernel_recvmsg(sock, &msghdr, &msgvec, 1, hdr.len, 0);
-		if (rc >= 0 && rc < hdr.len) {
-			pr_err("Not enough data received for response (%u < %u)",
-			       rc, hdr.len);
+	rc = 0;
+	if (hdr.len > 0) {
+		len = hdr.len;
+		if (len > MAX_VFMSG_SIZE) {
+			pr_err("Message length %lu exceeds maximum allowed (%u)",
+			       len, MAX_VFMSG_SIZE);
 			return -EINVAL;
 		}
+
+		if (!*msg_out || *msg_len < len) {
+			buf = kvmalloc(len, GFP_KERNEL);
+			if (!buf)
+				return -ENOMEM;
+		} else {
+			buf = *msg_out;
+		}
+
+		rc = read_vsock_payload(sock, &hdr, buf, &len);
+		if (rc < 0) {
+			if (*msg_out != buf)
+				kvfree(buf);
+			return rc;
+		}
+	} else {
+		len = 0;
+		buf = NULL;
 	}
 
+	*msg_out = buf;
+	if (msg_len)
+		*msg_len = len;
 	return rc;
 }
 
@@ -254,10 +342,19 @@ static int pf_vf_msghandler(void *data)
 	struct cass_dev *hw = vf->hw;
 	struct task_struct *kvm_task;
 	int rc, msg_rc;
+	u8 *const request_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
+	u8 *const reply_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
+	void *request = request_buf;
+	void *reply = reply_buf;
 	size_t request_len, reply_len;
 	uid_t uid;
 	gid_t gid;
 	int seq;
+
+	if (!request_buf || !reply_buf) {
+		rc = -ENOMEM;
+		goto err;
+	}
 
 	vf->req_sock->sk->sk_rcvtimeo = CXI_SRIOV_PF_TIMEOUT;
 
@@ -271,9 +368,16 @@ static int pf_vf_msghandler(void *data)
 	vf->kvm_task = kvm_task;
 
 	while (!kthread_should_stop()) {
-		request_len = MAX_VFMSG_SIZE;
-		rc = read_message_from_vsock(vf->req_sock, vf->request,
-					     &request_len, NULL, &uid, &gid, &seq);
+		memset(request_buf, 0, SMALL_VFMSG_SIZE);
+		request = request_buf;
+		request_len = SMALL_VFMSG_SIZE;
+		memset(reply_buf, 0, SMALL_VFMSG_SIZE);
+		reply = reply_buf;
+		reply_len = 0;
+
+		rc = read_message_from_vsock_large(vf->req_sock, &request,
+						   &request_len, NULL,
+						   &uid, &gid, &seq);
 		if (rc == -EAGAIN) {
 			continue;
 		} else if (rc == -EINTR) {
@@ -306,27 +410,27 @@ static int pf_vf_msghandler(void *data)
 			rcu_read_unlock();
 		}
 
+		reply_len = SMALL_VFMSG_SIZE;
 		mutex_lock(&hw->msg_relay_lock);
-		if (hw->msg_relay) {
-			reply_len = MAX_VFMSG_SIZE;
+		if (hw->msg_relay)
 			msg_rc = hw->msg_relay(hw->msg_relay_data, vf->vf_idx,
-					       vf->request, request_len, uid, gid,
-					       vf->reply, &reply_len);
-		} else {
-			reply_len = 0;
+					       request, request_len, uid, gid,
+					       &reply, reply_len, &reply_len);
+		else
 			msg_rc = -ENODEV;
-		}
 		mutex_unlock(&hw->msg_relay_lock);
-
-		if (reply_len > MAX_VFMSG_SIZE) {
+		if (msg_rc < 0)
 			reply_len = 0;
-			msg_rc = -E2BIG;
-		}
+		if (request != request_buf)
+			kvfree(request);
 
 		cxidev_dbg(&hw->cdev, "vf %d: responding with %ld bytes, rc=%d",
 			   vf->vf_idx, reply_len, msg_rc);
-		rc = write_message_to_vsock(vf->req_sock, vf->reply, reply_len,
+		rc = write_message_to_vsock(vf->req_sock, reply, reply_len,
 					    msg_rc, seq);
+		if (reply != reply_buf)
+			kvfree(reply);
+
 		if (rc < 0) {
 			cxidev_err(&hw->cdev, "vf %d: error sending response: %d",
 				   vf->vf_idx, rc);
@@ -338,7 +442,7 @@ static int pf_vf_msghandler(void *data)
 	mutex_lock(&hw->msg_relay_lock);
 	if (hw->msg_relay)
 		hw->msg_relay(hw->msg_relay_data, vf->vf_idx, NULL, 0, 0, 0, NULL,
-			      &reply_len);
+			      0, &reply_len);
 	mutex_unlock(&hw->msg_relay_lock);
 
 	if (rc > 0)
@@ -363,6 +467,9 @@ err:
 
 	cass_ac_phys_free(hw, vf->phys_ac);
 	vf->phys_ac = 0;
+
+	kfree(request_buf);
+	kfree(reply_buf);
 
 	while (!kthread_should_stop())
 		schedule_timeout_interruptible(CXI_SRIOV_PF_TIMEOUT);
@@ -904,15 +1011,32 @@ static irqreturn_t pf_to_vf_int_cb(int irq, void *context)
 static int vf_notif_handler(void *data)
 {
 	struct cass_dev *hw = (struct cass_dev *)data;
-	int rc;
+	int rc = 0;
+
+	u8 *const msg_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
+	u8 *const rsp_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
+	void *msg = NULL;
+	void *rsp = NULL;
 	size_t msg_len, rsp_len;
+
+	if (!msg_buf || !rsp_buf) {
+		rc = -ENOMEM;
+		goto err;
+	}
 
 	cxidev_dbg(&hw->cdev, "started notification handler");
 
 	while (!kthread_should_stop()) {
-		msg_len = MAX_VFMSG_SIZE;
-		rc = read_message_from_vsock(hw->vf_notif_sock, hw->vf_notif_buf,
-					     &msg_len, NULL, NULL, NULL, NULL);
+		memset(msg_buf, 0, SMALL_VFMSG_SIZE);
+		msg = msg_buf;
+		msg_len = SMALL_VFMSG_SIZE;
+		memset(rsp_buf, 0, SMALL_VFMSG_SIZE);
+		rsp = rsp_buf;
+		rsp_len = SMALL_VFMSG_SIZE;
+
+		rc = read_message_from_vsock_large(hw->vf_notif_sock, &msg,
+						   &msg_len, NULL,
+						   NULL, NULL, NULL);
 		if (rc == -EAGAIN) {
 			continue;
 		} else if (rc == -EINTR) {
@@ -928,20 +1052,35 @@ static int vf_notif_handler(void *data)
 
 		cxidev_dbg(&hw->cdev, "received %ld byte notification from PF", msg_len);
 
-		rsp_len = 0;
-		rc = dispatch_vf_notif(hw, hw->vf_notif_buf, msg_len,
-				       hw->vf_notif_rsp_buf, &rsp_len);
-		rc = write_message_to_vsock(hw->vf_notif_sock, hw->vf_notif_rsp_buf,
-					    rsp_len, rc, 0);
+		rc = dispatch_vf_notif(hw, msg, msg_len, &rsp, &rsp_len);
+		if (msg != msg_buf)
+			kvfree(msg);
+		if (rc < 0) {
+			cxidev_err(&hw->cdev, "error handling notification from PF: %d", rc);
+			break;
+		}
+
+		rc = write_message_to_vsock(hw->vf_notif_sock, rsp, rsp_len, rc, 0);
+		if (rsp != rsp_buf)
+			kvfree(rsp);
+
 		if (rc < 0) {
 			cxidev_err(&hw->cdev, "failed to send notification response: %d", rc);
+			break;
+		} else if (rc < rsp_len) {
+			cxidev_err(&hw->cdev, "partial write of notification response: %d < %zu",
+				   rc, rsp_len);
+			rc = -EIO;
 			break;
 		}
 	}
 
 	cxidev_dbg(&hw->cdev, "notification handler exiting");
 
-	return 0;
+err:
+	kfree(msg_buf);
+	kfree(rsp_buf);
+	return rc;
 }
 
 /* VF side of VF-PF handshake: respond to commands from PF.
@@ -1177,9 +1316,6 @@ static int cxi_vsock_send(struct cxi_dev *cdev, struct socket *sock, const void 
 	int rc;
 	int msg_rc;
 	int rsp_seq;
-
-	if (req_len > MAX_VFMSG_SIZE)
-		return -EINVAL;
 
 	if (!sock)
 		return -ENOTCONN;
