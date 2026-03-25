@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-/* Copyright 2021,2024,2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2021, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef __UAPI_CXI_ABI_H
 #define __UAPI_CXI_ABI_H
@@ -123,6 +123,8 @@ enum cxi_command_opcode {
 		CXI_OP_SVC_GET_NETNS,
 		CXI_OP_CQ_ALLOC_BUF,
 
+		CXI_OP_VF_GET_TOKEN,
+
 		CXI_OP_MAX,
 };
 
@@ -133,8 +135,8 @@ struct cxi_common_cmd {
 
 struct cxi_lni_alloc_cmd {
 	enum cxi_command_opcode op;
-	unsigned int svc_id;
 	void __user  *resp;
+	unsigned int svc_id;
 };
 
 struct cxi_lni_alloc_resp {
@@ -1275,9 +1277,9 @@ struct cxi_get_dev_properties_cmd {
 
 struct cxi_eq_adjust_reserved_fc_cmd {
 	enum cxi_command_opcode op;
+	void __user *resp;
 	unsigned int eq_hndl;
 	int value;
-	void __user *resp;
 };
 
 struct cxi_eq_adjust_reserved_fc_resp {
@@ -1325,6 +1327,15 @@ struct cxi_dev_info_get_cmd {
 
 struct cxi_dev_info_get_resp {
 	struct cxi_dev_info_use devinfo;
+};
+
+struct cxi_vf_get_token_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_vf_get_token_resp {
+	unsigned int token;
 };
 
 #define CXIERR_GENL_FAMILY_NAME "cxierr"

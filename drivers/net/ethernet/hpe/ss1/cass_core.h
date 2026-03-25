@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2020-2024,2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020-2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef _CASS_CORE_H
 #define _CASS_CORE_H
@@ -32,11 +32,14 @@
 #include "cass_rx_tx_profile.h"
 #include "cass_rgroup.h"
 #include "cxi_config.h"
+#include "cass_vf.h"
 
-#define PCI_VENDOR_ID_CRAY      0x17db
-#define PCI_DEVICE_ID_CASSINI_1 0x0501
-#define PCI_VENDOR_ID_HPE       0x1590
-#define PCI_DEVICE_ID_CASSINI_2 0x0371
+#define PCI_VENDOR_ID_CRAY         0x17db
+#define PCI_DEVICE_ID_CASSINI_1    0x0501
+#define PCI_VENDOR_ID_HPE          0x1590
+#define PCI_DEVICE_ID_CASSINI_2_PF 0x0371
+#define PCI_DEVICE_ID_CASSINI_2_VF 0x0372
+
 
 #define CXI_MODULE_NAME "cxi_ss1"
 
@@ -174,6 +177,11 @@ static inline void mmap_read_unlock(struct mm_struct *mm)
 /* AER is automatically enabled by the PCI core. */
 static inline int pci_enable_pcie_error_reporting(void *p) { return 0; }
 static inline void pci_disable_pcie_error_reporting(void *p) {}
+#endif
+
+/* SR-IOV requires VFIO with KVM support enabled and kernel >= 5.19 */
+#if !defined(CONFIG_KVM_VFIO) || LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0)
+#define CXI_DISABLE_SRIOV
 #endif
 
 #define ATU_FAULT_RETRY_MAX 16
@@ -374,12 +382,15 @@ struct sts_idle {
 	bool ib_wait;
 };
 
-#define MAX_VFMSG_SIZE 122
+#define MAX_VFMSG_SIZE (22432 + sizeof(struct vf_pf_msg_hdr))
 
 /* A VF to PF message header */
 struct vf_pf_msg_hdr {
 	unsigned int len;	/* whole message length */
 	int rc;			/* return code */
+	uid_t uid;
+	gid_t gid;
+	int seq;
 };
 
 /* Traffic Class descriptions. */
@@ -509,15 +520,27 @@ struct dmac_desc_set {
 
 struct cass_vf {
 	struct task_struct *task;
-	struct socket *sock;
+	struct socket *req_sock;
+	struct socket *notif_sock;
 
 	/* Index and back-pointer to hardware struct for use by VF handler thread */
 	struct cass_dev *hw;
 	int vf_idx;
 
+	/* ID of physical-address context for use when configuring CQ, EQ, etc. */
+	unsigned int phys_ac;
+
+	unsigned int token;
+	int notif_seq;
+
+	/* Per VF mutex to maintain notification message/response sequencing */
+	struct mutex notif_lock;
+
 	/* Per-VF message buffers */
 	char request[MAX_VFMSG_SIZE];
 	char reply[MAX_VFMSG_SIZE];
+
+	struct task_struct *kvm_task;
 };
 
 /* Private hardware data for Cassini. This is not seen by clients. */
@@ -553,12 +576,19 @@ struct cass_dev {
 	/* Virtual function communication socket for SR-IOV. Used by PF to
 	 * listen for incoming VF connections, used by VF to initiate connection
 	 */
-	struct socket *vf_sock;
+	struct socket *vf_req_sock;
+	struct socket *vf_notif_sock;
 	struct task_struct *vf_listener;
+	struct task_struct *vf_notif_handler;
+	u8 vf_notif_buf[MAX_VFMSG_SIZE];
+	u8 vf_notif_rsp_buf[MAX_VFMSG_SIZE];
 	struct cass_vf vfs[C_NUM_VFS];
 	cxi_msg_relay_t msg_relay;
 	void *msg_relay_data;
 	struct mutex msg_relay_lock;
+	unsigned int vf_cmd_seq;
+	/* Mutex to maintain command message/response sequencing */
+	struct mutex vf_cmd_lock;
 
 	/* PCIe info */
 	bool esm_active;
@@ -1209,6 +1239,9 @@ int cass_atu_init(struct cass_dev *hw);
 void cass_atu_fini(struct cass_dev *hw);
 void cass_acs_disable(struct cxi_lni_priv *lni_priv);
 void cass_acs_free(struct cxi_lni_priv *lni_priv);
+int cass_ac_phys_alloc(struct cass_dev *hw, bool vf_en, int vf_num);
+void cass_ac_phys_free(struct cass_dev *hw, int acid);
+
 void cass_cq_init(struct cass_dev *hw);
 void cass_ee_init(struct cass_dev *hw);
 int cass_svc_init(struct cass_dev *hw);

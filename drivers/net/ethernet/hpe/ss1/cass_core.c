@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2020-2024,2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020-2026 Hewlett Packard Enterprise Development LP */
 
 /* Cassini device handler */
 
@@ -484,6 +484,10 @@ void cxi_set_nid(struct cxi_dev *cdev, u32 nid)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 
+	/* The NID cannot be set from a VF */
+	if (!cdev->is_physfn)
+		return;
+
 	program_nid(hw, nid);
 	hw->cdev.prop.nid_configured = true;
 }
@@ -493,6 +497,10 @@ void cxi_set_nid_from_mac(struct cxi_dev *cdev, const u8 *addr)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	u32 nid;
+
+	/* The NID cannot be set from a VF */
+	if (!cdev->is_physfn)
+		return;
 
 	/* If the NID has already been explicitly configured, do not override it. */
 	if (hw->cdev.prop.nid_configured)
@@ -775,7 +783,8 @@ static int is_supported(struct cass_dev *hw)
 		else
 			goto unsupported;
 	} else if (hw->rev.vendor_id == PCI_VENDOR_ID_HPE &&
-		   hw->rev.device_id == PCI_DEVICE_ID_CASSINI_2) {
+		   (hw->rev.device_id == PCI_DEVICE_ID_CASSINI_2_PF ||
+		    hw->rev.device_id == PCI_DEVICE_ID_CASSINI_2_VF)) {
 		if (hw->rev.rev == 1)
 			hw->cdev.prop.cassini_version = CASSINI_2_0;
 		else
@@ -915,11 +924,25 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * real hardware without SR-IOV support, a passthrough PF attached to a VM,
 	 * or a VF attached to a VM, will all have is_physfn = is_virtfn = 0.
 	 *
-	 * Many devices have distinct PCI IDs for VF and PF, but since Cassini 1 and
-	 * 2 do not, we identify them using the size of BAR 0: 512M for VF, 2G for
-	 * PF.
+	 * C2 (and most other PCI devices) have distinct device IDs for PF and VF.
+	 * However, C1 uses the same ID for both, so we identify PF vs. VF by the
+	 * size of BAR 0.
 	 */
-	is_physfn = pci_resource_len(pdev, MMIO_BAR) >= MMIO_BAR_LEN_PF;
+
+	switch (id->device) {
+	case PCI_DEVICE_ID_CASSINI_1:
+		is_physfn = pci_resource_len(pdev, MMIO_BAR) >= MMIO_BAR_LEN_PF;
+		break;
+	case PCI_DEVICE_ID_CASSINI_2_PF:
+		is_physfn = true;
+		break;
+	case PCI_DEVICE_ID_CASSINI_2_VF:
+		is_physfn = false;
+		break;
+	default:
+		cxidev_err(&hw->cdev, "Unknown device ID: %04x", id->device);
+		return -EOPNOTSUPP;
+	}
 	hw->cdev.is_physfn = is_physfn;
 
 	hw->pci_disabled = false;
@@ -981,8 +1004,8 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	/* Map the base registers */
+	hw->regs_base = pci_resource_start(pdev, MMIO_BAR);
 	if (is_physfn) {
-		hw->regs_base = pci_resource_start(pdev, MMIO_BAR);
 		hw->regs = ioremap(hw->regs_base + C_MEMORG_CSR,
 				   C_MEMORG_CSR_SIZE);
 		if (!hw->regs) {
@@ -996,10 +1019,13 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			goto unmap_regions;
 
 		/* Check for input and hardware version consistency */
-		if ((system_type_identifier == CASSINI_1_ONLY && !cass_version(hw, CASSINI_1)) ||
-		    (system_type_identifier == CASSINI_2_ONLY && !cass_version(hw, CASSINI_2))) {
-			cxidev_err(&hw->cdev, "NIC Version and system_type_identifier (%u) are inconsistent\n",
-					   system_type_identifier);
+		if ((system_type_identifier == CASSINI_1_ONLY &&
+		     !cass_version(hw, CASSINI_1)) ||
+		    (system_type_identifier == CASSINI_2_ONLY &&
+		     !cass_version(hw, CASSINI_2))) {
+			cxidev_err(&hw->cdev,
+				   "NIC Version and system_type_identifier (%u) are inconsistent\n",
+				   system_type_identifier);
 			goto unmap_regions;
 		}
 
@@ -1384,7 +1410,8 @@ void uncor_cb(struct cass_dev *hw, unsigned int irq, bool is_ext,
 
 static struct pci_device_id cass_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_CRAY, PCI_DEVICE_ID_CASSINI_1) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_HPE, PCI_DEVICE_ID_CASSINI_2) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HPE, PCI_DEVICE_ID_CASSINI_2_PF) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HPE, PCI_DEVICE_ID_CASSINI_2_VF) },
 	{ 0, },
 };
 

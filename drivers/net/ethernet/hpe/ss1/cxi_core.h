@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2022-2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2022-2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef _CXI_CORE_H
 #define _CXI_CORE_H
@@ -186,11 +186,10 @@ struct cxi_svc_priv {
 /* Logical Network Interface */
 struct cxi_lni_priv {
 	struct cxi_dev *dev;
-	struct list_head list;
-
 	/* User LNI object. */
 	struct cxi_lni lni;
 
+	struct list_head list;
 	/* Users of this LNI. */
 	refcount_t refcount;
 
@@ -227,6 +226,17 @@ struct cxi_lni_priv {
 	struct list_head ct_cleanups_list;
 
 	u32 pid;
+
+	/* Physical AC associated with the LNI. Should be ATU_PHYS_AC for LNIs
+	 * belonging to the PF, or the VF's physical AC for VFs.
+	 */
+	unsigned int phys_ac;
+
+	/* If this LNI belongs to a VF, then vf_en will be true and the VF number
+	 * will be in vf_num.
+	 */
+	bool is_vf;
+	u8 vf_num;
 };
 
 struct cass_vni;
@@ -270,13 +280,17 @@ struct cxi_domain_priv {
 };
 
 struct cxi_md_priv {
-	struct list_head md_entry; /* entry in a CAC md_list */
 	struct cxi_lni_priv *lni_priv;
-	struct cass_ac *cac;
+	struct device *device;
+	struct cxi_md md;
 	struct page **pages;
 	struct sg_table *sgt;
+	u32 flags;
+
+	struct list_head md_entry; /* entry in a CAC md_list */
+	struct cass_ac *cac;
+
 	struct sg_table *dmabuf_sgt;
-	struct device *device;
 
 	/* DMA buffer file descriptor. This is passed in by user-space. */
 	int dmabuf_fd;
@@ -293,10 +307,9 @@ struct cxi_md_priv {
 	/* Users of this MD */
 	refcount_t refcount;
 
-	struct cxi_md md;
 	/* Original length of the MD */
 	size_t olen;
-	u32 flags;
+
 	/* Need to lock when initially mirroring page tables */
 	bool need_lock;
 	/* SG table is owned by an external user (e.g. kfabric) */
@@ -308,8 +321,9 @@ struct cxi_md_priv {
 };
 
 struct cxi_cp_priv {
-	struct cass_cp *cass_cp;
+	struct cxi_dev *dev;
 	struct cxi_cp cp;
+	struct cass_cp *cass_cp;
 	refcount_t refcount;
 	unsigned int rgid;
 	unsigned int lni_id;
@@ -374,15 +388,7 @@ struct cxi_eq_priv {
 
 struct cxi_cq_priv {
 	struct cxi_lni_priv *lni_priv;
-	struct list_head list;
-	struct dentry *debug_dir;
-	struct dentry *lni_dir;
-
-	u32 flags;
-	struct cxi_md_priv *md_priv;
-
-	/* EQ for error reporting. May be NULL. */
-	struct cxi_eq_priv *eq;
+	struct cxi_cq cass_cq;
 
 	/* DMA mapped CQ */
 	size_t cmds_len;
@@ -395,8 +401,15 @@ struct cxi_cq_priv {
 	/* Doorbell MMIO address */
 	void __iomem *cq_mmio;
 
-	/* HW CQ structure */
-	struct cxi_cq cass_cq;
+	u32 flags;
+
+	struct list_head list;
+	struct dentry *debug_dir;
+	struct dentry *lni_dir;
+
+	/* EQ for error reporting. May be NULL. */
+	struct cxi_eq_priv *eq;
+	struct cxi_md_priv *md_priv;
 };
 
 struct cxi_pte_priv {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2019 Cray Inc. All rights reserved */
+/* Copyright 2019, 2024-2026 Cray Inc. All rights reserved */
 
 /* Test the PF/VF communication. The requirement for this test is that
  * the VF is also accessible in the host. ie. the VF is not given to a
@@ -40,7 +40,7 @@ struct tdev {
 
 /* Read a message from a VF. This would be in cxi-user. */
 static int msg_relay(void *data, unsigned int vf_num,
-		     const void *req, size_t req_len,
+		     const void *req, size_t req_len, uid_t uid, gid_t gid,
 		     void *rsp, size_t *rsp_len)
 {
 	pr_info("Got message from VF %d, len %zu\n", vf_num, req_len);

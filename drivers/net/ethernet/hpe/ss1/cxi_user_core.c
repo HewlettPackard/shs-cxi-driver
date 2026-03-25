@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Userspace communication. */
 
@@ -17,6 +17,7 @@
 #include "cxi_user.h"
 #include "cxi_prov_hw.h"
 #include "cxi_core.h"
+#include "cass_vf.h"
 
 static int free_cq_obj(int id, void *obj_, void *data);
 static int free_md_obj(int id, void *obj_, void *data);
@@ -2296,6 +2297,22 @@ static int cxi_user_dev_info_get(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_vf_get_token(struct user_client *client,
+				 const void *cmd_in,
+				 void *resp_out, size_t *resp_out_len)
+{
+	struct cxi_vf_get_token_resp resp = {};
+	int rc;
+
+	rc = cass_vf_get_token(client->ucxi->dev, client->vf_num, &resp.token);
+	if (rc)
+		return rc;
+
+	return copy_response(client, &resp, sizeof(resp), resp_out,
+			   resp_out_len);
+}
+
+
 static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_LNI_ALLOC] = {
 		.req_size   = sizeof(struct cxi_lni_alloc_cmd),
@@ -2539,6 +2556,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "CQ_ALLOC_BUF",
 		.handler    = cxi_user_cq_alloc_buf,
 	},
+	[CXI_OP_VF_GET_TOKEN] = {
+		.req_size   = sizeof(struct cxi_vf_get_token_cmd),
+		.name       = "VF_GET_TOKEN",
+		.handler    = cxi_user_vf_get_token, },
+
 };
 
 /* Read and process a command from userspace or from a Virtual
@@ -2553,7 +2575,9 @@ static int dispatch(struct user_client *client,
 	struct cxi_dev *cdev;
 	int rc;
 	int idx;
-	u8 tmp_req[MAX_REQ_SIZE];
+	u8 tmp_req_stack[256];
+	u8 *tmp_req_heap = NULL;
+	u8 *tmp_req = tmp_req_stack;
 	const struct cxi_common_cmd *req;
 	const struct cmd_info *info;
 
@@ -2563,9 +2587,18 @@ static int dispatch(struct user_client *client,
 	if (client->is_vf) {
 		req = cmd_in;
 	} else {
+		if (unlikely(cmd_in_len > sizeof(tmp_req_stack))) {
+			tmp_req_heap = kmalloc(cmd_in_len, GFP_KERNEL);
+			if (!tmp_req_heap)
+				return -ENOMEM;
+			tmp_req = tmp_req_heap;
+		}
+
 		req = (const struct cxi_common_cmd *)tmp_req;
-		if (copy_from_user(tmp_req, cmd_in, cmd_in_len))
-			return -EFAULT;
+		if (copy_from_user(tmp_req, cmd_in, cmd_in_len)) {
+			rc = -EFAULT;
+			goto out_free;
+		}
 	}
 
 	if (req->op <= CXI_OP_INVALID || req->op >= CXI_OP_MAX)
@@ -2580,14 +2613,27 @@ static int dispatch(struct user_client *client,
 		dev_dbg(ucxi->udev, "Got command %s from user, len %zu\n",
 			info->name, cmd_in_len);
 
-	if (info->handler == NULL)
-		return -EOPNOTSUPP;
+	if (!info->handler) {
+		rc = -EOPNOTSUPP;
+		goto out_free;
+	}
 
-	if (cmd_in_len != info->req_size)
-		return -EINVAL;
+	if (client->is_vf && info->req_size_vf) {
+		if (cmd_in_len != info->req_size_vf) {
+			rc = -EINVAL;
+			goto out_free;
+		}
+	} else {
+		if (cmd_in_len != info->req_size) {
+			rc = -EINVAL;
+			goto out_free;
+		}
+	}
 
-	if (info->admin_only && !capable(CAP_SYS_ADMIN))
-		return -EPERM;
+	if (info->admin_only && (!capable(CAP_SYS_ADMIN) || !ucxi->dev->is_physfn)) {
+		rc = -EPERM;
+		goto out_free;
+	}
 
 	/* Process the command only if the device still
 	 * exist. Otherwise return an EIO error.
@@ -2607,6 +2653,8 @@ static int dispatch(struct user_client *client,
 
 	BUG_ON(rc > 0);
 
+out_free:
+	kfree(tmp_req_heap);
 	return rc;
 }
 
@@ -2615,6 +2663,8 @@ static ssize_t ucxi_write(struct file *filp, const char __user *buf,
 			  size_t count, loff_t *f_pos)
 {
 	struct user_client *client = filp->private_data;
+
+	client->uid = __kuid_val(current_euid());
 	int rc;
 
 	rc = dispatch(client, buf, count, NULL, NULL);
@@ -2764,8 +2814,10 @@ static int free_ct_obj(int id, void *obj_, void *data)
 	struct cxi_mmap_info *mminfo = ct->mminfo;
 	struct user_client *client = data;
 
-	mminfo_unmap(client, mminfo, 1);
-	kfree(mminfo);
+	if (mminfo) {
+		mminfo_unmap(client, mminfo, 1);
+		kfree(mminfo);
+	}
 
 	if (client->ucxi)
 		cxi_ct_free(ct->ct);
@@ -2793,8 +2845,11 @@ static int free_cq_obj(int id, void *obj_, void *data)
 	struct cxi_mmap_info *mminfo = cq->mminfo;
 	struct user_client *client = data;
 
-	mminfo_unmap(client, mminfo, 2);
-	kfree(mminfo);
+	if (mminfo) {
+		mminfo_unmap(client, mminfo, 2);
+		kfree(mminfo);
+	}
+
 	if (client->ucxi)
 		cxi_cq_free(cq->cq);
 	free_obj(cq);
@@ -2819,8 +2874,11 @@ static int free_eq_obj(int id, void *obj_, void *data)
 	struct cxi_mmap_info *mminfo = eq->mminfo;
 	struct user_client *client = data;
 
-	mminfo_unmap(client, mminfo, 1);
-	kfree(mminfo);
+	if (mminfo) {
+		mminfo_unmap(client, mminfo, 1);
+		kfree(mminfo);
+	}
+
 	if (client->ucxi)
 		cxi_eq_free(eq->eq);
 	free_obj(eq);
@@ -2952,18 +3010,29 @@ static int ucxi_release(struct inode *inode, struct file *filp)
 
 /* Read a message from a VF. */
 static int msg_relay(void *data, unsigned int vf_num,
-		     const void *req, size_t req_len,
+		     const void *req, size_t req_len, uid_t uid, gid_t gid,
 		     void *rsp, size_t *rsp_len)
 {
 	struct ucxi *ucxi = data;
 	struct user_client *client;
 	int rc;
 
+	/* req=NULL indicates free the client */
+	if (!req) {
+		pr_debug("Freeing resources for VF %d\n", vf_num);
+		client = ucxi->vf_clients[vf_num];
+		if (client) {
+			free_client(client);
+			ucxi->vf_clients[vf_num] = NULL;
+		}
+		return 0;
+	}
+
 	pr_debug("Got message %u from VF %d, len %zu\n",
-		((const struct cxi_common_cmd *) req)->op, vf_num, req_len);
+		 ((const struct cxi_common_cmd *)req)->op, vf_num, req_len);
 
 	client = ucxi->vf_clients[vf_num];
-	if (client == NULL) {
+	if (!client) {
 		client = alloc_client(ucxi);
 
 		if (IS_ERR(client))
@@ -2974,11 +3043,13 @@ static int msg_relay(void *data, unsigned int vf_num,
 		client->is_vf = true;
 		client->vf_num = vf_num;
 	}
+	client->uid = uid;
+	client->gid = gid;
 
 	*rsp_len = 0;
 	rc = dispatch(client, req, req_len, rsp, rsp_len);
 
-	return -rc;
+	return rc;
 }
 
 /* The /dev/cxiX file operations. */

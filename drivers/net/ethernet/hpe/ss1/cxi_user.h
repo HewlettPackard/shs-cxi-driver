@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2021,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2021, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef __CXI_USER_H
 #define __CXI_USER_H
@@ -71,6 +71,9 @@ struct user_client {
 	/* Whether this client represents a VF */
 	bool is_vf;
 	u8 vf_num;
+
+	uid_t uid;
+	gid_t gid;
 
 	/* sysfs objects */
 	struct kobject *kobj;
@@ -192,6 +195,7 @@ int ucxi_mmap(struct file *filp, struct vm_area_struct *vma);
 
 struct cmd_info {
 	unsigned int req_size;
+	unsigned int req_size_vf;  /* VF command size, 0 if same as req_size */
 	const char *name;
 	int (*handler)(struct user_client *client, const void *cmd_in,
 		       void *resp, size_t *resp_len);

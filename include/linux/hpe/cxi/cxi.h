@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2021,2022,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2021-2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Public definitions for the CXI subsystem */
 
@@ -470,13 +470,15 @@ void cxi_set_nid(struct cxi_dev *dev, u32 nid);
 void cxi_set_nid_from_mac(struct cxi_dev *cdev, const u8 *addr);
 
 typedef int (*cxi_msg_relay_t)(void *data, unsigned int vf_num,
-			       const void *req, size_t req_len,
+			       const void *req, size_t req_len, uid_t uid, gid_t gid,
 			       void *rsp, size_t *rsp_len);
 int cxi_register_msg_relay(struct cxi_dev *cdev, cxi_msg_relay_t msg_relay,
 			   void *msg_relay_data);
 int cxi_unregister_msg_relay(struct cxi_dev *cdev);
-int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req, size_t req_len,
-		       void *rsp, size_t *rsp_len);
+int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req,
+		       size_t req_len, void *rsp, size_t *rsp_len);
+int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
+		       size_t req_len, void *rsp, size_t *rsp_len);
 
 int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size);
 int cxi_eth_add_mac(struct cxi_dev *cdev, struct cxi_eth_res *res,
