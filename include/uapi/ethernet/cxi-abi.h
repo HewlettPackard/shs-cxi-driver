@@ -703,7 +703,6 @@ struct cxi_atu_map_cmd {
 	struct cxi_md_hints hints;
 };
 
-#define CXI_ATU_SGT_MAX_ENTRIES 1400
 
 struct cxi_sgt_entry {
 	__u64 dma_addr;
@@ -718,7 +717,7 @@ struct cxi_atu_map_sgt_cmd {
 	unsigned int lni;
 	__u32 flags;
 	__u32 nents;
-	struct cxi_sgt_entry sge[CXI_ATU_SGT_MAX_ENTRIES];
+	struct cxi_sgt_entry sge[];
 };
 
 struct cxi_atu_map_sgt_resp {
@@ -731,7 +730,7 @@ struct cxi_atu_update_sgt_cmd {
 
 	unsigned int id;
 	__u32 nents;
-	struct cxi_sgt_entry sge[CXI_ATU_SGT_MAX_ENTRIES];
+	struct cxi_sgt_entry sge[];
 };
 
 struct cxi_atu_clear_md_cmd {

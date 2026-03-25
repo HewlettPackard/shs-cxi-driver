@@ -1973,6 +1973,7 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 				size_t *resp_out_len)
 {
 	int rc;
+	size_t payload_len;
 	struct ucxi_obj *lni_obj;
 	struct ucxi_obj *md_obj;
 	const struct cxi_atu_map_sgt_cmd *cmd = cmd_in;
@@ -1985,7 +1986,17 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 	if (!client->is_vf)
 		return -EOPNOTSUPP;
 
-	if (!cmd->nents || cmd->nents > CXI_ATU_SGT_MAX_ENTRIES)
+	if (!cmd->nents)
+		return -EINVAL;
+
+	if (cmd_len < sizeof(*cmd))
+		return -EINVAL;
+
+	payload_len = cmd_len - sizeof(*cmd);
+	if (payload_len % sizeof(struct cxi_sgt_entry) != 0)
+		return -EINVAL;
+
+	if (cmd->nents != payload_len / sizeof(struct cxi_sgt_entry))
 		return -EINVAL;
 
 	/* Allocate Memory Descriptor Object */
@@ -2090,6 +2101,7 @@ static int cxi_user_atu_update_sgt(struct user_client *client,
 				   size_t *resp_out_len)
 {
 	int rc;
+	size_t payload_len;
 	struct ucxi_obj *md_obj;
 	const struct cxi_atu_update_sgt_cmd *cmd = cmd_in;
 	struct sg_table *sgt;
@@ -2099,7 +2111,17 @@ static int cxi_user_atu_update_sgt(struct user_client *client,
 	if (!client->is_vf)
 		return -EOPNOTSUPP;
 
-	if (!cmd->nents || cmd->nents > CXI_ATU_SGT_MAX_ENTRIES)
+	if (!cmd->nents)
+		return -EINVAL;
+
+	if (cmd_len < sizeof(*cmd))
+		return -EINVAL;
+
+	payload_len = cmd_len - sizeof(*cmd);
+	if (payload_len % sizeof(struct cxi_sgt_entry) != 0)
+		return -EINVAL;
+
+	if (cmd->nents != payload_len / sizeof(struct cxi_sgt_entry))
 		return -EINVAL;
 
 	read_lock(&client->res_lock);
@@ -3716,11 +3738,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "VF_GET_TOKEN",
 		.handler    = cxi_user_vf_get_token, },
 	[CXI_OP_ATU_MAP_SGT] = {
-		.req_size   = sizeof(struct cxi_atu_map_sgt_cmd),
+		.req_size   = 0, /* Variable length */
 		.name       = "ATU_MAP_SGT",
 		.handler    = cxi_user_atu_map_sgt, },
 	[CXI_OP_ATU_UPDATE_SGT] = {
-		.req_size   = sizeof(struct cxi_atu_update_sgt_cmd),
+		.req_size   = 0, /* Variable length */
 		.name       = "ATU_UPDATE_SGT",
 		.handler    = cxi_user_atu_update_sgt, },
 	[CXI_OP_ATU_CLEAR_MD] = {

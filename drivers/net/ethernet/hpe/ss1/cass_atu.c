@@ -1372,6 +1372,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	struct cxi_md_priv_vf *md_priv_vf;
 	struct cxi_atu_map_sgt_cmd *cmd;
 	struct cxi_atu_map_sgt_resp resp = {};
+	size_t cmd_len;
 	size_t resp_len = sizeof(resp);
 	struct scatterlist *sg;
 	int i;
@@ -1401,18 +1402,16 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	md_priv_vf->pages = NULL;
 	md_priv_vf->npages = 0;
 
-	/* Send sgt to the PF to run cxi_map_sgtable there */
-	if (sgt->nents > CXI_ATU_SGT_MAX_ENTRIES) {
-		rc = -E2BIG;
-		cxidev_err(&hw->cdev, "SGT has too many entries: %u\n", sgt->nents);
-		goto free_md_priv;
-	}
-
 	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
 		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid, sgt->nents, sgt_len,
 		 flags);
 
-	cmd = kvzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd_len = struct_size(cmd, sge, sgt->nents);
+	if (cmd_len > MAX_VFMSG_SIZE) {
+		rc = -E2BIG;
+		goto free_md_priv;
+	}
+	cmd = kvzalloc(cmd_len, GFP_KERNEL);
 	if (!cmd) {
 		rc = -ENOMEM;
 		goto free_md_priv;
@@ -1432,7 +1431,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 		sg = sg_next(sg);
 	}
 
-	rc = cxi_send_msg_to_pf(dev, cmd, sizeof(*cmd), &resp, &resp_len);
+	rc = cxi_send_msg_to_pf(dev, cmd, cmd_len, &resp, &resp_len);
 	kvfree(cmd);
 	if (rc)
 		goto free_md_priv;
@@ -1579,6 +1578,7 @@ static int cxi_update_sgtable_vf(struct cxi_md *md, struct sg_table *sgt)
 	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_atu_update_sgt_cmd *cmd;
+	size_t cmd_len;
 	struct scatterlist *sg;
 	size_t sgt_len;
 	size_t resp_len = 0;
@@ -1591,17 +1591,15 @@ static int cxi_update_sgtable_vf(struct cxi_md *md, struct sg_table *sgt)
 	if (!cass_sgtable_is_valid(hw, sgt, &sgt_len))
 		return -EINVAL;
 
-	if (sgt->nents > CXI_ATU_SGT_MAX_ENTRIES) {
-		cxidev_err(&hw->cdev, "SGT has too many entries: %u\n", sgt->nents);
-		return -E2BIG;
-	}
-
 	if (sgt_len > md_priv_vf->olen) {
 		pr_debug("Address range not bounded by MD\n");
 		return -EINVAL;
 	}
 
-	cmd = kvzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd_len = struct_size(cmd, sge, sgt->nents);
+	if (cmd_len > MAX_VFMSG_SIZE)
+		return -E2BIG;
+	cmd = kvzalloc(cmd_len, GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1617,7 +1615,7 @@ static int cxi_update_sgtable_vf(struct cxi_md *md, struct sg_table *sgt)
 		cmd->sge[i].offset = sg->offset;
 	}
 
-	rc = cxi_send_msg_to_pf(dev, cmd, sizeof(*cmd), NULL, &resp_len);
+	rc = cxi_send_msg_to_pf(dev, cmd, cmd_len, NULL, &resp_len);
 	kvfree(cmd);
 
 	return rc;
