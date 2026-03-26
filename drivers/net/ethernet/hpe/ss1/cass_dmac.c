@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2020-2021 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020-2021, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 #include <linux/iopoll.h>
 #include <linux/bitmap.h>
@@ -72,6 +72,9 @@ int cxi_dmac_desc_set_reset(struct cxi_dev *cdev, int set_id)
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	int retval;
 
+	if (!cdev->is_physfn)
+		return -EPERM;
+
 	mutex_lock(&hw->dmac.lock);
 
 	retval = cass_dmac_desc_set_id_verify(hw, set_id);
@@ -109,6 +112,9 @@ int cxi_dmac_desc_set_add(struct cxi_dev *cdev, int set_id, dma_addr_t dst,
 	union c_pi_cfg_dmac_desc desc = {};
 	u32 src_end;
 	const u32 u64count = len / sizeof(u64);
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	/*
 	 * dst address and src offset must be 64-bit aligned
@@ -313,6 +319,9 @@ int cxi_dmac_desc_set_reserve(struct cxi_dev *cdev, u16 num_descs,
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	int retval;
 
+	if (!cdev->is_physfn)
+		return -EPERM;
+
 	cxidev_dbg(cdev, "hw=%p num_descs=%u desc_idx=%u\n", hw, num_descs,
 		   desc_idx);
 
@@ -342,6 +351,9 @@ int cxi_dmac_desc_set_alloc(struct cxi_dev *cdev, u16 num_descs,
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	int retval;
 
+	if (!cdev->is_physfn)
+		return -EPERM;
+
 	cxidev_dbg(cdev, "hw=%p num_descs=%u\n", hw, num_descs);
 
 	retval = cass_dmac_desc_set_common_alloc(hw, num_descs,
@@ -368,6 +380,9 @@ int cxi_dmac_desc_set_free(struct cxi_dev *cdev, int set_id)
 	int retval = 0;
 	u16 count;
 	u16 index;
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	cxidev_dbg(cdev, "hw=%p set_id=%d\n", hw, set_id);
 
@@ -403,6 +418,9 @@ int cxi_dmac_xfer(struct cxi_dev *cdev, int set_id)
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	volatile struct c_pi_dmac_cdesc *cpl_desc = hw->dmac.cpl_desc;
 	int retval;
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	cxidev_dbg(&hw->cdev, "hw=%p set_id=%d\n", hw, set_id);
 

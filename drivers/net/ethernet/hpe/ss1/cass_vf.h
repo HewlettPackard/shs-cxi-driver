@@ -4,6 +4,29 @@
 #ifndef _CASS_VF_H
 #define _CASS_VF_H
 
+/* VF private structures */
+struct cxi_lni_priv_vf {
+	/* Matching fields in cxi_lni_priv */
+	struct cxi_dev *dev;
+	struct cxi_lni lni;
+	/* VF only fields */
+	int phys_lac; /* Physical LAC associated with this LNI */
+};
+
+struct cxi_domain_priv_vf {
+	/* Matching fields in cxi_domain_priv */
+	struct cxi_domain domain;
+	struct cxi_lni_priv *lni_priv;
+};
+
+struct cxi_cp_priv_vf {
+	/* Matching fields in cxi_cp_priv */
+	struct cxi_dev *dev;
+	struct cxi_cp cp;
+	/* VF only fields */
+	unsigned int cp_hndl;
+};
+
 int cass_vf_get_token(struct cxi_dev *cdev, int vf_idx, unsigned int *token);
 
 #endif /* CASS_VF_H */

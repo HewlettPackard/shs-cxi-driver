@@ -349,6 +349,9 @@ err:
 
 	vf->kvm_task = NULL;
 
+	cass_ac_phys_free(hw, vf->phys_ac);
+	vf->phys_ac = 0;
+
 	return rc;
 }
 
@@ -471,11 +474,21 @@ static void handle_vf_req_conn(struct cass_dev *hw,
 	vf->req_sock = incoming;
 	get_random_bytes(&vf->token, sizeof(vf->token));
 
+	rc = cass_ac_phys_alloc(hw, true, vf_idx);
+	if (rc <= 0) {
+		cxidev_err(&hw->cdev, "could not allocate ac for vf %d: %d",
+			   vf_idx, rc);
+		vf->req_sock = NULL;
+		goto close_sock;
+	}
+	vf->phys_ac = rc;
 	cxidev_dbg(&hw->cdev, "allocated acid %d for vf %d", vf->phys_ac, vf_idx);
 
 	vf->task = kthread_run(pf_vf_msghandler, vf, "cxi_vf_%d", vf_idx);
 	if (IS_ERR(vf->task)) {
 		cxidev_err(&hw->cdev, "failed to start handler for vf %d", vf_idx);
+		cass_ac_phys_free(hw, vf->phys_ac);
+		vf->phys_ac = 0;
 		vf->req_sock = NULL;
 		vf->task = NULL;
 		goto close_sock;

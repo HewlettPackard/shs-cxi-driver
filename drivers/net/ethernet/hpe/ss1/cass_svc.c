@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2020 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Service Management */
 
@@ -9,6 +9,7 @@
 #include "cxi_rxtx_profile.h"
 #include "cxi_rxtx_profile_list.h"
 #include "cass_ss1_debugfs.h"
+#include "cxi_vf_cmd.h"
 
 static bool disable_default_svc = true;
 module_param(disable_default_svc, bool, 0444);
@@ -772,6 +773,10 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		.lnis_per_rgid = default_lnis_per_rgid,
 	};
 
+	/* Service allocation is not allowed in VF */
+	if (!dev->is_physfn)
+		return -EPERM;
+
 	rc = validate_descriptor(hw, svc_desc);
 	if (rc)
 		return rc;
@@ -900,6 +905,10 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 
+	/* Service allocation is not allowed in VF */
+	if (!dev->is_physfn)
+		return -EPERM;
+
 	/* Don't destroy default svc */
 	if (svc_id == CXI_DEFAULT_SVC_ID)
 		return -EINVAL;
@@ -926,6 +935,35 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 }
 EXPORT_SYMBOL(cxi_svc_destroy);
 
+static int cxi_svc_rsrc_list_get_vf(struct cxi_dev *dev, int count,
+				    struct cxi_rsrc_use *rsrc_list)
+{
+	const struct cxi_svc_rsrc_list_get_cmd cmd = {
+		.op = CXI_OP_SVC_RSRC_LIST_GET,
+		.count = count,
+	};
+	struct cxi_svc_rsrc_list_get_resp_vf *resp;
+	size_t resp_len = sizeof(struct cxi_svc_rsrc_list_get_resp_vf) +
+			  count * sizeof(struct cxi_rsrc_use);
+	int rc;
+
+	resp = kzalloc(resp_len, GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), resp, &resp_len);
+	if (rc)
+		goto free_buf;
+
+	if (count >= resp->base.count)
+		memcpy(rsrc_list, resp->rsrc_list,
+		       resp->base.count * sizeof(struct cxi_rsrc_use));
+	rc = resp->base.count;
+free_buf:
+	kfree(resp);
+	return rc;
+}
+
 /*
  * cxi_svc_rsrc_list_get - Get per service information on resource usage.
  *
@@ -948,6 +986,9 @@ int cxi_svc_rsrc_list_get(struct cxi_dev *dev, int count,
 	unsigned int rgroup_count;
 	unsigned long index;
 	struct cxi_rgroup *rgroup;
+
+	if (!dev->is_physfn)
+		return cxi_svc_rsrc_list_get_vf(dev, count, rsrc_list);
 
 	mutex_lock(&hw->svc_lock);
 	cxi_dev_lock_rgroup_list(hw);
@@ -977,6 +1018,26 @@ int cxi_svc_rsrc_list_get(struct cxi_dev *dev, int count,
 }
 EXPORT_SYMBOL(cxi_svc_rsrc_list_get);
 
+static int cxi_svc_rsrc_get_vf(struct cxi_dev *dev, unsigned int svc_id,
+			       struct cxi_rsrc_use *rsrc_use)
+{
+	const struct cxi_svc_rsrc_get_cmd cmd = {
+		.op = CXI_OP_SVC_RSRC_GET,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_rsrc_get_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	*rsrc_use = resp.rsrcs;
+
+	return 0;
+}
+
 /*
  * cxi_svc_rsrc_get - Get rsrc_use from svc_id
  *
@@ -992,6 +1053,9 @@ int cxi_svc_rsrc_get(struct cxi_dev *dev, unsigned int svc_id,
 {
 	int rc;
 	struct cxi_rgroup *rgroup;
+
+	if (!dev->is_physfn)
+		return cxi_svc_rsrc_get_vf(dev, svc_id, rsrc_use);
 
 	rc = cxi_dev_find_rgroup_inc_refcount(dev, svc_id, &rgroup);
 	if (rc)
@@ -1065,6 +1129,36 @@ freemem:
 	kfree(ac_entry_ids);
 }
 
+static int cxi_svc_list_get_vf(struct cxi_dev *dev, int count,
+			       struct cxi_svc_desc *svc_list)
+{
+	const struct cxi_svc_list_get_cmd cmd = {
+		.op = CXI_OP_SVC_LIST_GET,
+		.count = count,
+	};
+	struct cxi_svc_list_get_resp_vf *resp;
+	size_t resp_len = sizeof(struct cxi_svc_list_get_resp_vf) +
+			  count * sizeof(struct cxi_svc_desc);
+	int rc;
+
+	resp = kzalloc(resp_len, GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), resp, &resp_len);
+	if (rc)
+		goto free_buf;
+
+	if (count >= resp->base.count)
+		memcpy(svc_list, resp->svc_list,
+		       resp->base.count * sizeof(struct cxi_svc_desc));
+
+	rc = resp->base.count;
+free_buf:
+	kfree(resp);
+	return rc;
+}
+
 /*
  * cxi_svc_list_get - Assemble list of active services descriptors
  *
@@ -1093,6 +1187,9 @@ int cxi_svc_list_get(struct cxi_dev *dev, int count,
 	unsigned long index;
 	struct cxi_rgroup *rgroup;
 	struct cxi_resource_entry *entry;
+
+	if (!dev->is_physfn)
+		return cxi_svc_list_get_vf(dev, count, svc_list);
 
 	mutex_lock(&hw->svc_lock);
 	cxi_dev_lock_rgroup_list(hw);
@@ -1147,6 +1244,35 @@ int cxi_svc_list_get(struct cxi_dev *dev, int count,
 }
 EXPORT_SYMBOL(cxi_svc_list_get);
 
+/* cxi_svc_get_vf - Get svc_desc from svc_id for a VF
+ *
+ * @dev: Cassini Device
+ * @svc_id: svc_id of the descriptor to find which is equivalent to the
+ *          rgroup ID.
+ * @svc_desc: destination to land service descriptor
+ *
+ * Return: 0 on success or a negative errno
+ */
+static int cxi_svc_get_vf(struct cxi_dev *dev, unsigned int svc_id,
+			  struct cxi_svc_desc *svc_desc)
+{
+	const struct cxi_svc_get_cmd cmd = {
+		.op = CXI_OP_SVC_GET,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_get_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	*svc_desc = resp.svc_desc;
+
+	return 0;
+}
+
 /*
  * cxi_svc_get - Get svc_desc from svc_id
  *
@@ -1162,6 +1288,9 @@ int cxi_svc_get(struct cxi_dev *dev, unsigned int svc_id,
 {
 	struct cxi_svc_priv *svc_priv;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+
+	if (!dev->is_physfn)
+		return cxi_svc_get_vf(dev, svc_id, svc_desc);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1209,6 +1338,9 @@ int cxi_svc_enable(struct cxi_dev *dev, unsigned int svc_id, bool enable)
 	struct cxi_svc_priv *svc_priv;
 	int rc = 0;
 
+	if (!dev->is_physfn)
+		return -EPERM;
+
 	mutex_lock(&hw->svc_lock);
 
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
@@ -1248,6 +1380,9 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 	int rc;
+
+	if (!dev->is_physfn)
+		return -EPERM;
 
 	rc = validate_descriptor(hw, svc_desc);
 	if (rc)
@@ -1314,6 +1449,9 @@ int cxi_svc_set_lpr(struct cxi_dev *dev, unsigned int svc_id,
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 
+	if (!dev->is_physfn)
+		return -EPERM;
+
 	if (lnis_per_rgid > C_NUM_LACS)
 		return -EINVAL;
 
@@ -1344,6 +1482,23 @@ int cxi_svc_set_lpr(struct cxi_dev *dev, unsigned int svc_id,
 }
 EXPORT_SYMBOL(cxi_svc_set_lpr);
 
+static int cxi_svc_get_lpr_vf(struct cxi_dev *dev, unsigned int svc_id)
+{
+	const struct cxi_svc_lpr_cmd cmd = {
+		.op = CXI_OP_SVC_GET_LPR,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_get_value_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.value;
+}
+
 /**
  * cxi_svc_get_lpr() - Get the LNIs per RGID of the indicated service
  *
@@ -1356,6 +1511,9 @@ int cxi_svc_get_lpr(struct cxi_dev *dev, unsigned int svc_id)
 {
 	struct cxi_rgroup *rgroup;
 	int ret;
+
+	if (!dev->is_physfn)
+		return cxi_svc_get_lpr_vf(dev, svc_id);
 
 	ret = cxi_dev_find_rgroup_inc_refcount(dev, svc_id, &rgroup);
 	if (ret)
@@ -1383,6 +1541,9 @@ int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 	int rc;
+
+	if (!dev->is_physfn)
+		return -EPERM;
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1420,6 +1581,23 @@ unlock:
 }
 EXPORT_SYMBOL(cxi_svc_set_exclusive_cp);
 
+static int cxi_svc_get_exclusive_cp_vf(struct cxi_dev *dev, unsigned int svc_id)
+{
+	const struct cxi_svc_get_exclusive_cp_cmd cmd = {
+		.op = CXI_OP_SVC_GET_EXCLUSIVE_CP,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_get_exclusive_cp_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.exclusive_cp ? 1 : 0;
+}
+
 /**
  * cxi_svc_get_exclusive_cp() - Get the exclusive_cp bit for a service
  *
@@ -1433,6 +1611,9 @@ int cxi_svc_get_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id)
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 	int rc;
+
+	if (!dev->is_physfn)
+		return cxi_svc_get_exclusive_cp_vf(dev, svc_id);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1488,6 +1669,9 @@ int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	};
 	unsigned int range;
 	int rc = 0;
+
+	if (!dev->is_physfn)
+		return -EPERM;
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1547,6 +1731,27 @@ unlock_return:
 }
 EXPORT_SYMBOL(cxi_svc_set_vni_range);
 
+static int cxi_svc_get_vni_range_vf(struct cxi_dev *dev, unsigned int svc_id,
+				    unsigned int *vni_min, unsigned int *vni_max)
+{
+	const struct cxi_svc_vni_range_cmd cmd = {
+		.op = CXI_OP_SVC_GET_VNI_RANGE,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_get_vni_range_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	*vni_min = resp.vni_min;
+	*vni_max = resp.vni_max;
+
+	return 0;
+}
+
 /**
  * cxi_svc_get_vni_range() - Get the VNI range associated with a service
  *
@@ -1565,6 +1770,9 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	struct cxi_tx_attr tx_attr;
 	int rc = 0;
 	struct cxi_rgroup *rgroup;
+
+	if (!dev->is_physfn)
+		return cxi_svc_get_vni_range_vf(dev, svc_id, vni_min, vni_max);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1637,6 +1845,9 @@ int cxi_svc_set_netns(struct cxi_dev *dev, unsigned int svc_id, unsigned int net
 	struct cxi_ac_entry_list list = {};
 	int rc;
 
+	if (!dev->is_physfn)
+		return -EPERM;
+
 	mutex_lock(&hw->svc_lock);
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
 	if (!svc_priv) {
@@ -1670,6 +1881,26 @@ unlock_return:
 }
 EXPORT_SYMBOL(cxi_svc_set_netns);
 
+static int cxi_svc_get_netns_vf(struct cxi_dev *dev, unsigned int svc_id,
+				unsigned int *netns)
+{
+	const struct cxi_svc_get_netns_cmd cmd = {
+		.op = CXI_OP_SVC_GET_NETNS,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_get_value_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	*netns = resp.value;
+
+	return 0;
+}
+
 /**
  * cxi_svc_get_netns() - Get the network namespace associated with a service
  *
@@ -1686,6 +1917,9 @@ int cxi_svc_get_netns(struct cxi_dev *dev, unsigned int svc_id,
 	struct cxi_svc_priv *svc_priv;
 	union cxi_ac_data ac_data = {};
 	int rc;
+
+	if (!dev->is_physfn)
+		return cxi_svc_get_netns_vf(dev, svc_id, netns);
 
 	mutex_lock(&hw->svc_lock);
 

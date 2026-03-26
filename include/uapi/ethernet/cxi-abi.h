@@ -123,8 +123,10 @@ enum cxi_command_opcode {
 		CXI_OP_SVC_GET_NETNS,
 		CXI_OP_CQ_ALLOC_BUF,
 
-		CXI_OP_VF_GET_TOKEN,
 
+		CXI_OP_VF_GET_TOKEN,
+		CXI_OP_PHYS_LAC_ALLOC,
+		CXI_OP_PHYS_LAC_FREE,
 		CXI_OP_MAX,
 };
 
@@ -1327,6 +1329,22 @@ struct cxi_dev_info_get_cmd {
 
 struct cxi_dev_info_get_resp {
 	struct cxi_dev_info_use devinfo;
+};
+
+struct cxi_phys_lac_alloc_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int lni;
+};
+
+struct cxi_phys_lac_alloc_resp {
+	unsigned int lac;
+};
+
+struct cxi_phys_lac_free_cmd {
+	enum cxi_command_opcode op;
+	unsigned int lni;
+	unsigned int lac;
 };
 
 struct cxi_vf_get_token_cmd {

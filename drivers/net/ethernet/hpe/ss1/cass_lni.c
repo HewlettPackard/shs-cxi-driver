@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Cassini NI management */
 
 #include <linux/types.h>
 
 #include "cass_core.h"
+#include "cxi_internal.h"
+#include "cxi_vf_cmd.h"
 #include "cass_ss1_debugfs.h"
 
 unsigned int cxi_lni_get_pe_num(struct cxi_lni_priv *lni)
@@ -25,12 +27,75 @@ unsigned int cxi_lni_get_pe_num(struct cxi_lni_priv *lni)
 }
 
 /**
- * cxi_lni_alloc() - Allocate a logical NI (LNI) on a device.
+ * cxi_lni_alloc_vf() - Allocate a logical NI (LNI) for VF
  *
  * @dev: CXI device
  * @svc_id: Service ID of service to be used. May be CXI_DEFAULT_SVC_ID.
+ *
+ * Return: Pointer to allocated LNI on success, ERR_PTR on failure.
  */
-struct cxi_lni *cxi_lni_alloc(struct cxi_dev *dev, unsigned int svc_id)
+static struct cxi_lni *cxi_lni_alloc_vf(struct cxi_dev *dev,
+					unsigned int svc_id)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_lni_priv_vf *lni_priv_vf;
+	const struct cxi_lni_alloc_cmd lni_alloc_cmd = {
+		.op = CXI_OP_LNI_ALLOC,
+		.svc_id = svc_id,
+	};
+	struct cxi_phys_lac_alloc_cmd lac_alloc_cmd = {
+		.op = CXI_OP_PHYS_LAC_ALLOC,
+		.resp = NULL,
+	};
+	struct cxi_lni_alloc_resp_vf lni_alloc_resp;
+	struct cxi_phys_lac_alloc_resp lac_alloc_resp;
+	size_t resp_len;
+	int rc;
+
+	lni_priv_vf = kzalloc(sizeof(*lni_priv_vf), GFP_KERNEL);
+	if (!lni_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	resp_len = sizeof(lni_alloc_resp);
+	rc = cxi_send_msg_to_pf(&hw->cdev, &lni_alloc_cmd, sizeof(lni_alloc_cmd),
+				&lni_alloc_resp, &resp_len);
+	if (rc)
+		goto error_out;
+
+	lni_priv_vf->dev = dev;
+	lni_priv_vf->lni.id = lni_alloc_resp.base.lni;
+	lni_priv_vf->lni.rgid = lni_alloc_resp.rgid;
+
+	/* Allocate Physical LAC for this LNI */
+	resp_len = sizeof(lac_alloc_resp);
+	lac_alloc_cmd.lni = lni_priv_vf->lni.id;
+	rc = cxi_send_msg_to_pf(&hw->cdev, &lac_alloc_cmd, sizeof(lac_alloc_cmd),
+				&lac_alloc_resp, &resp_len);
+	if (rc) {
+		lni_priv_vf->phys_lac = -1;
+		cxi_lni_free(&lni_priv_vf->lni);
+		return ERR_PTR(rc);
+	}
+	lni_priv_vf->phys_lac = lac_alloc_resp.lac;
+
+	return &lni_priv_vf->lni;
+
+error_out:
+	kfree(lni_priv_vf);
+
+	return ERR_PTR(rc);
+}
+
+/**
+ * cxi_lni_alloc_internal() - Allocate a logical NI (LNI) internal function
+ *
+ * @dev: CXI device
+ * @svc_id: Service ID of service to be used. May be CXI_DEFAULT_SVC_ID.
+ * @vf_en: true if this LNI is for a VF
+ * @vf_num: VF number (ignored unless vf_en is true)
+ */
+struct cxi_lni *cxi_lni_alloc_internal(struct cxi_dev *dev, unsigned int svc_id,
+				       bool vf_en, u8 vf_num)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_lni_priv *lni_priv;
@@ -74,6 +139,14 @@ struct cxi_lni *cxi_lni_alloc(struct cxi_dev *dev, unsigned int svc_id)
 		goto free_lni_id;
 	}
 
+	lni_priv->is_vf = vf_en;
+	if (vf_en) {
+		lni_priv->vf_num = vf_num;
+		lni_priv->phys_ac = hw->vfs[vf_num].phys_ac;
+	} else {
+		lni_priv->phys_ac = ATU_PHYS_AC;
+	}
+
 	lni_priv->rgroup = rgroup;
 	lni_priv->dev = dev;
 	lni_priv->lni.id = id;
@@ -115,6 +188,19 @@ put_rgid:
 dec_svc:
 	cxi_rgroup_dec_refcount(rgroup);
 	return err;
+}
+EXPORT_SYMBOL(cxi_lni_alloc_internal);
+
+/**
+ * cxi_lni_alloc() - Allocate a logical NI (LNI)
+ *
+ * @dev: CXI device
+ * @svc_id: Service ID of service to be used. May be CXI_DEFAULT_SVC_ID.
+ */
+struct cxi_lni *cxi_lni_alloc(struct cxi_dev *dev, unsigned int svc_id)
+{
+	return dev->is_physfn ? cxi_lni_alloc_internal(dev, svc_id, false, 0) :
+				cxi_lni_alloc_vf(dev, svc_id);
 }
 EXPORT_SYMBOL(cxi_lni_alloc);
 
@@ -197,6 +283,45 @@ void lni_cleanups_work(struct work_struct *work)
 }
 
 /**
+ * cxi_lni_free_vf() - Shutdown and release an LNI for a VF.
+ *
+ * @lni: LNI to release
+ */
+static int cxi_lni_free_vf(struct cxi_lni *lni)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	const struct cxi_lni_free_cmd lni_free_cmd = {
+		.op = CXI_OP_LNI_FREE,
+		.lni = lni_priv_vf->lni.id,
+	};
+	const struct cxi_phys_lac_free_cmd lac_free_cmd = {
+		.op = CXI_OP_PHYS_LAC_FREE,
+		.lni = lni_priv_vf->lni.id,
+		.lac = lni_priv_vf->phys_lac,
+	};
+	size_t resp_len;
+	int rc;
+
+	/* Free the physical LAC */
+	if (lni_priv_vf->phys_lac >= 0) {
+		resp_len = 0;
+		cxi_send_msg_to_pf(dev, &lac_free_cmd, sizeof(lac_free_cmd), NULL, &resp_len);
+	}
+
+	/* Free LNI */
+	resp_len = 0;
+	rc = cxi_send_msg_to_pf(dev, &lni_free_cmd, sizeof(lni_free_cmd), NULL, &resp_len);
+	if (rc)
+		return rc;
+
+	kfree(lni_priv_vf);
+
+	return 0;
+}
+
+/**
  * cxi_lni_free() - Shutdown and release an LNI.
  *
  * @lni: LNI to release
@@ -207,6 +332,9 @@ int cxi_lni_free(struct cxi_lni *lni)
 		container_of(lni, struct cxi_lni_priv, lni);
 	struct cxi_dev *dev = lni_priv->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+
+	if (!hw->cdev.is_physfn)
+		return cxi_lni_free_vf(lni);
 
 	spin_lock(&hw->lni_lock);
 	list_del(&lni_priv->list);

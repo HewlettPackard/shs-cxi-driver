@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2019 Hewlett Packard Enterprise Development LP */
+/* Copyright 2019, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /*
  * Address Translation Unit (ATU) management
@@ -545,6 +545,15 @@ done:
 	return rc;
 }
 
+static int cxi_inbound_wait_vf(struct cxi_dev *cdev)
+{
+	const struct cxi_inbound_wait_cmd cmd = {
+		.op = CXI_OP_INBOUND_WAIT,
+	};
+
+	return cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, 0);
+}
+
 extern bool ibw_epoch_cntr_is_0(struct cass_dev *hw, bool *epoch_ret);
 /*
  * cxi_inbound_wait - Flush internal cassini buffers
@@ -557,6 +566,9 @@ int cxi_inbound_wait(struct cxi_dev *cdev)
 	int ret;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	struct cass_atu_cq *cq = &hw->atu_cq;
+
+	if (!cdev->is_physfn)
+		return cxi_inbound_wait_vf(cdev);
 
 	mutex_lock(&cq->atu_ib_mutex);
 	ret = cass_inbound_wait(hw, true);

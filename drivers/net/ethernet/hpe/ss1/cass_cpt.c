@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Communication Profile Table (CPT) management */
 
@@ -235,6 +235,67 @@ static struct cass_cp *cass_cp_get(struct cxi_tx_profile *tx_profile,
 }
 
 /**
+ * cxi_trig_cp_alloc_vf() - Allocate a communication profile with type of
+ *                          LCID parameter for VF
+ *
+ * @lni: LNI the communication profile should be mapped into
+ * @vni_pcp: VNI of communication profile. If using an ethernet tc
+ * this argument is treated as PCP.
+ * @tc: Traffic class of the communication profile
+ * @tc_type: Traffic class type of the communication profile
+ * @cp_type: NON_TRIG_LCID and any LCID for ANY_LCID.
+ *
+ * Note: Allocating communication profiles with the same LNI, VNI, TC, and TC
+ * type will result in a redundant communication profile being mapped into the
+ * LNI.
+ *
+ * @return: Valid pointer on success. Else, negative errno value.
+ */
+static struct cxi_cp *cxi_trig_cp_alloc_vf(struct cxi_lni *lni, unsigned int vni_pcp,
+					   unsigned int tc,
+					   enum cxi_traffic_class_type tc_type,
+					   enum cxi_trig_cp cp_type)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cxi_cp_priv_vf *cp_priv_vf;
+	const struct cxi_trig_cp_alloc_cmd cmd = {
+		.op = CXI_OP_TRIG_CP_ALLOC,
+		.lni = lni_priv_vf->lni.id,
+		.vni = vni_pcp,
+		.tc = tc,
+		.tc_type = tc_type,
+		.cp_type = cp_type
+	};
+	struct cxi_cp_alloc_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	cp_priv_vf = kzalloc(sizeof(*cp_priv_vf), GFP_KERNEL);
+	if (!cp_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		goto error_out;
+
+	cp_priv_vf->dev = dev;
+	cp_priv_vf->cp_hndl = resp.cp_hndl;
+	cp_priv_vf->cp.vni_pcp = vni_pcp;
+	cp_priv_vf->cp.tc = tc;
+	cp_priv_vf->cp.tc_type = tc_type;
+	cp_priv_vf->cp.lcid = resp.lcid;
+
+	return &cp_priv_vf->cp;
+
+error_out:
+	kfree(cp_priv_vf);
+
+	return ERR_PTR(rc);
+}
+
+/**
  * cxi_trig_cp_alloc() - Allocate a communication profile with type of
  *                       LCID parameter
  *
@@ -244,7 +305,7 @@ static struct cass_cp *cass_cp_get(struct cxi_tx_profile *tx_profile,
  * @tc: Traffic class of the communication profile
  * @tc_type: Traffic class type of the communication profile
  * @cp_type: Return CP with LCID 0 for TRIG_LCID, a non-0 LCID for
- *.          NON_TRIG_LCID and any LCID for ANY_LCID.
+ *           NON_TRIG_LCID and any LCID for ANY_LCID.
  *
  * Note: Allocating communication profiles with the same LNI, VNI, TC, and TC
  * type will result in a redundant communication profile being mapped into the
@@ -266,6 +327,9 @@ struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	struct cxi_tx_profile *tx_profile = NULL;
 	int rc;
 	int lcid;
+
+	if (!dev->is_physfn)
+		return cxi_trig_cp_alloc_vf(lni, vni_pcp, tc, tc_type, cp_type);
 
 	if (tc < 0 || tc >= CXI_ETH_TC_MAX || tc_type < 0 ||
 	    tc_type >= CXI_TC_TYPE_MAX)
@@ -319,6 +383,7 @@ struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 		return ERR_PTR(-ENOMEM);
 	}
 
+	cp_priv->dev = dev;
 	cp_priv->rgid = lni_priv->lni.rgid;
 	cp_priv->lni_id = lni_priv->lni.id;
 	cp_priv->cp.vni_pcp = vni_pcp;
@@ -393,6 +458,30 @@ struct cxi_cp *cxi_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 EXPORT_SYMBOL(cxi_cp_alloc);
 
 /**
+ * cxi_cp_free_vf() - Free the communication profile for VF
+ *
+ * @cp: Communication profile to be freed
+ */
+static void cxi_cp_free_vf(struct cxi_cp *cp)
+{
+	struct cxi_cp_priv_vf *cp_priv_vf =
+		container_of(cp, struct cxi_cp_priv_vf, cp);
+	struct cxi_dev *dev = cp_priv_vf->dev;
+	const struct cxi_cp_free_cmd cmd = {
+		.op = CXI_OP_CP_FREE,
+		.cp_hndl = cp_priv_vf->cp_hndl,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return;
+
+	kfree(cp_priv_vf);
+}
+
+/**
  * cxi_cp_free() - Free the communication profile
  *
  * @cp: Communication profile to be freed
@@ -400,8 +489,16 @@ EXPORT_SYMBOL(cxi_cp_alloc);
 void cxi_cp_free(struct cxi_cp *cp)
 {
 	struct cxi_cp_priv *cp_priv = container_of(cp, struct cxi_cp_priv, cp);
-	struct cass_dev *hw = cp_priv->cass_cp->hw;
-	struct cxi_tx_profile *tx_profile = cp_priv->cass_cp->tx_profile;
+	struct cass_dev *hw;
+	struct cxi_tx_profile *tx_profile;
+
+	if (!cp_priv->dev->is_physfn) {
+		cxi_cp_free_vf(cp);
+		return;
+	}
+
+	hw = cp_priv->cass_cp->hw;
+	tx_profile = cp_priv->cass_cp->tx_profile;
 
 	cxi_tx_profile_dec_refcount(&hw->cdev, tx_profile, true);
 

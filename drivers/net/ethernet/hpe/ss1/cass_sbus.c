@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2020,2022 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020, 2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Cassini SBUS driver */
 
@@ -26,6 +26,9 @@ int cxi_sbus_op_reset(struct cxi_dev *cdev)
 	union c_mb_dbg_cfg_sbus_master cfg = {};
 	union c_mb_dbg_sts_sbus_master sts;
 	int rc;
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	rc = mutex_lock_interruptible(&hw->sbus_mutex);
 	if (rc) {
@@ -80,6 +83,9 @@ int cxi_sbus_op(struct cxi_dev *cdev, const struct cxi_sbus_op_params *params,
 	union c_mb_dbg_sts_sbus_master sts;
 	void __iomem *sts_csr = cass_csr(hw, C_MB_DBG_STS_SBUS_MASTER);
 	int rc;
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	if (!rsp_data || !result_code || !overrun)
 		return -EINVAL;
@@ -151,6 +157,9 @@ int cxi_serdes_op(struct cxi_dev *cdev, u64 serdes_sel, u64 op, u64 data,
 		  int timeout, unsigned int flags, u16 *result)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return -EPERM;
 
 	if (!cass_version(hw, CASSINI_1)) {
 		cxidev_err(cdev, "%s NOT IMPLEMENTED!\n", __func__);

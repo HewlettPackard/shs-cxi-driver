@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Address Translation Unit (ATU) management */
 
@@ -87,16 +87,17 @@ void cass_atu_fini(struct cass_dev *hw)
 
 /* Atomically write an Address Context */
 static void cass_write_ac(struct cass_dev *hw, union c_atu_cfg_ac_table *ac,
-			  unsigned int index, bool user)
+			  unsigned int index, bool user, bool is_physac,
+			  bool vf_en, int vf_num)
 {
 	union c_pi_cfg_acxt pi_cfg_acxt = {
 		.ac_en = ac->context_en,
 	};
-	struct cass_ac *cac = container_of(ac, struct cass_ac, cfg_ac);
+
+	pi_cfg_acxt.vf_en = vf_en;
+	pi_cfg_acxt.vf_num = vf_num;
 
 	if (ac->ta_mode != C_ATU_NTA_MODE) {
-		pi_cfg_acxt.vf_en = ac->ats_vf_en;
-		pi_cfg_acxt.vf_num = ac->ats_vf_num;
 		pi_cfg_acxt.pasid = ac->ats_pasid;
 		pi_cfg_acxt.pasid_en = ac->ats_pasid_en;
 		pi_cfg_acxt.pasid_er = ac->ats_pasid_er;
@@ -129,8 +130,11 @@ static void cass_write_ac(struct cass_dev *hw, union c_atu_cfg_ac_table *ac,
 	/* WORKAROUND: Cassini ERRATA-3277
 	 * When disabling an AC, invalidate before disabling the ACXT.
 	 */
-	if (cass_version(hw, CASSINI_1) && !ac->context_en)
+	if (!is_physac && cass_version(hw, CASSINI_1) && !ac->context_en) {
+		struct cass_ac *cac = container_of(ac, struct cass_ac, cfg_ac);
+
 		cass_invalidate_range(cac, 0, ATUCQ_INVALIDATE_ALL);
+	}
 
 	cass_config_pi_acxt(hw, index, &pi_cfg_acxt);
 }
@@ -206,8 +210,8 @@ int cass_atu_init(struct cass_dev *hw)
 	for (i = 0; i < FBINS; i++)
 		hw->pri_fault_time[i] = 0;
 
-
-	cass_write_ac(hw, &ac, ATU_PHYS_AC, false);
+	cass_write_ac(hw, &ac, ATU_PHYS_AC, false, false,
+		      ac.ats_vf_en, ac.ats_vf_num);
 	cass_write(hw, C_ATU_CFG_NTA, &cfg_nta, sizeof(union c_atu_cfg_nta));
 
 	hw->oxe_dummy_dma_addr = dma_map_single(&hw->cdev.pdev->dev,
@@ -362,6 +366,51 @@ static void cass_lac_free(struct cxi_lni_priv *lni_priv, int lac)
 }
 
 /**
+ * cass_ac_phys_alloc - Allocate a physical Address Context for a VF
+ *
+ * This per-VF AC is analogous to ATU_PHYS_AC and is used in its place when
+ * configuring resources such as CQs that belong to a VF.
+ *
+ * @hw: CXI device
+ * @vf_en: true if allocating an AC for a VF
+ * @vf_num: VF number to allocate AC for (ignored if vf_en is false)
+ */
+int cass_ac_phys_alloc(struct cass_dev *hw, bool vf_en, int vf_num)
+{
+	int acid;
+	union c_atu_cfg_ac_table ac = {
+		.context_en = 1,
+		.ta_mode = C_ATU_PASSTHROUGH_MODE,
+		.mem_size = ~0,
+		.ats_vf_en = vf_en,
+		.ats_vf_num = vf_en ? vf_num : 0,
+	};
+
+	acid = ida_simple_get(&hw->atu_table, 1, ATU_PHYS_AC, GFP_KERNEL);
+	if (acid < 0)
+		return acid;
+
+	cass_write_ac(hw, &ac, acid, false, true, vf_en, vf_num);
+
+	return acid;
+}
+
+/**
+ * cass_ac_phys_free - Free a physical Address Context allocated by
+ * cass_ac_phys_alloc()
+ *
+ * @hw: CXI device
+ * @acid: ID of address context
+ */
+void cass_ac_phys_free(struct cass_dev *hw, int acid)
+{
+	union c_atu_cfg_ac_table ac = {};
+
+	cass_write_ac(hw, &ac, acid, false, true, false, 0);
+	ida_simple_remove(&hw->atu_table, acid);
+}
+
+/**
  * cass_ac_alloc() - Allocate an Address Context
  *
  * Once the ACID is written to hardware, it cannot be freed until the LNI
@@ -435,7 +484,9 @@ static struct cass_ac *cass_ac_alloc(struct cxi_lni_priv *lni_priv,
 	hw->cac_table[cac->ac.acid] = cac;
 
 	cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid,
-		      m_opts->flags & CXI_MAP_USER_ADDR);
+		      m_opts->flags & CXI_MAP_USER_ADDR, false,
+		      cac->lni_priv->is_vf,
+		      cac->lni_priv->is_vf ? cac->lni_priv->vf_num : 0);
 	cass_set_acid(hw, lni_priv->lni.rgid, cac->ac.lac, cac->ac.acid);
 
 	INIT_LIST_HEAD(&cac->md_list);
@@ -485,7 +536,8 @@ static void cass_ac_free(struct cass_dev *hw, struct cass_ac *cac)
 	}
 
 	memset(&cac->cfg_ac, 0, sizeof(cac->cfg_ac));
-	cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid, false);
+	cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid, false, false,
+		      lni_priv->is_vf, lni_priv->is_vf ? lni_priv->vf_num : 0);
 
 	cass_unbind_ac(hw, cac);
 
@@ -511,7 +563,9 @@ void cass_acs_disable(struct cxi_lni_priv *lni_priv)
 
 	list_for_each_entry(cac, &lni_priv->ac_list, list) {
 		cac->cfg_ac.context_en = 0;
-		cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid, false);
+		cass_write_ac(hw, &cac->cfg_ac, cac->ac.acid, false, false,
+			      cac->lni_priv->is_vf,
+			      cac->lni_priv->is_vf ? cac->lni_priv->vf_num : 0);
 	}
 
 	mutex_unlock(&lni_priv->ac_list_mutex);
@@ -1019,23 +1073,41 @@ void cass_align_start_len(struct ac_map_opts *m_opts, uintptr_t va, size_t len,
 }
 
 /**
- * cxi_phys_lac_alloc() - Map an AC into a resource group for use in DMA
- *                        commands. Exported to allow clients to perform
- *                        DMA using physical addresses.
+ * cxi_phys_lac_alloc_vf() - Allocate a physical LAC for the given LNI for a VF.
+ *
+ * @lni: the Logical Network Interface
+ * @return: LAC or negative errno
+ */
+static int cxi_phys_lac_alloc_vf(struct cxi_lni *lni)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+
+	return lni_priv_vf->phys_lac;
+}
+
+/**
+ * cxi_phys_lac_alloc() - Allocate a physical LAC for the given LNI.
+ *                        Exported to allow clients to perform DMA using physical addresses.
+ *
  * @lni: the Logical Network Interface
  * @return: LAC or negative errno
  */
 int cxi_phys_lac_alloc(struct cxi_lni *lni)
 {
 	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(lni_priv->dev, struct cass_dev, cdev);
 	int lac;
+
+	if (!cdev->is_physfn)
+		return cxi_phys_lac_alloc_vf(lni);
 
 	lac = cass_lac_get(hw, lni_priv->lni.rgid);
 	if (lac < 0)
 		return lac;
 
-	cass_set_acid(hw, lni_priv->lni.rgid, lac, ATU_PHYS_AC);
+	/* Program the phys_ac that was already selected at the lni allocation */
+	cass_set_acid(hw, lni_priv->lni.rgid, lac, lni_priv->phys_ac);
 
 	return lac;
 }
@@ -1050,6 +1122,13 @@ EXPORT_SYMBOL(cxi_phys_lac_alloc);
 void cxi_phys_lac_free(struct cxi_lni *lni, int lac)
 {
 	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	struct cxi_dev *cdev = lni_priv->dev;
+
+	/* We do not free physical LACs for VFs. They will be freed when the
+	 * LNI is freed.
+	 */
+	if (!cdev->is_physfn)
+		return;
 
 	cass_lac_free(lni_priv, lac);
 }

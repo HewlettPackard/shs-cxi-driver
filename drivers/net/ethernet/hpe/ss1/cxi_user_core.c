@@ -17,6 +17,9 @@
 #include "cxi_user.h"
 #include "cxi_prov_hw.h"
 #include "cxi_core.h"
+
+#include "cxi_internal.h"
+#include "cxi_vf_cmd.h"
 #include "cass_vf.h"
 
 static int free_cq_obj(int id, void *obj_, void *data);
@@ -166,21 +169,27 @@ static int copy_response(struct user_client *client, const void *resp,
 
 /* Allocate an LNI. Return an index. */
 static int cxi_user_lni_alloc(struct user_client *client,
-			      const void *cmd_in,
-			      void *resp_out, size_t *resp_out_len)
+			      const void *cmd_in, void *resp_out,
+			      size_t *resp_out_len)
 {
 	struct cxi_lni *lni;
 	const struct cxi_lni_alloc_cmd *cmd = cmd_in;
-	struct cxi_lni_alloc_resp resp = {};
+	struct cxi_lni_alloc_resp_vf resp = {};
+	size_t resp_size = client->is_vf ? sizeof(resp) : sizeof(resp.base);
 	int rc;
 	struct ucxi_obj *obj;
 
-	lni = cxi_lni_alloc(client->ucxi->dev, cmd->svc_id);
+	if (!client->is_vf)
+		lni = cxi_lni_alloc(client->ucxi->dev, cmd->svc_id);
+	else
+		lni = cxi_lni_alloc_internal(client->ucxi->dev, cmd->svc_id, true,
+					     client->vf_num);
+
 	if (IS_ERR(lni))
 		return PTR_ERR(lni);
 
 	obj = alloc_obj(0);
-	if (obj == NULL) {
+	if (!obj) {
 		rc = -ENOMEM;
 		goto free_lni;
 	}
@@ -200,9 +209,12 @@ static int cxi_user_lni_alloc(struct user_client *client,
 	if (rc < 0)
 		goto free_obj;
 
-	resp.lni = rc;
+	resp.base.lni = rc;
 
-	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
+	if (client->is_vf)
+		resp.rgid = lni->rgid;
+
+	rc = copy_response(client, &resp, resp_size, resp_out, resp_out_len);
 	if (rc)
 		goto release_lni_idr;
 
@@ -210,7 +222,7 @@ static int cxi_user_lni_alloc(struct user_client *client,
 
 release_lni_idr:
 	write_lock(&client->res_lock);
-	idr_remove(&client->lni_idr, resp.lni);
+	idr_remove(&client->lni_idr, resp.base.lni);
 	write_unlock(&client->res_lock);
 free_obj:
 	free_obj(obj);
@@ -221,8 +233,8 @@ free_lni:
 }
 
 static int cxi_user_lni_free(struct user_client *client,
-			     const void *cmd_in,
-			     void *resp_out, size_t *resp_out_len)
+			     const void *cmd_in, void *resp_out,
+			     size_t *resp_out_len)
 {
 	const struct cxi_lni_free_cmd *cmd = cmd_in;
 	struct ucxi_obj *obj;
@@ -251,8 +263,8 @@ static int cxi_user_lni_free(struct user_client *client,
 }
 
 static int cxi_user_svc_get(struct user_client *client,
-			    const void *cmd_in,
-			    void *resp_out, size_t *resp_out_len)
+			    const void *cmd_in, void *resp_out,
+			    size_t *resp_out_len)
 {
 	const struct cxi_svc_get_cmd *cmd = cmd_in;
 	struct cxi_svc_get_resp resp = {};
@@ -262,23 +274,73 @@ static int cxi_user_svc_get(struct user_client *client,
 	if (rc)
 		return rc;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
+}
+
+static int cxi_user_svc_list_get_vf(struct user_client *client,
+				    const void *cmd_in, void *resp_out,
+				    size_t *resp_out_len)
+{
+	const struct cxi_svc_list_get_cmd *cmd = cmd_in;
+	struct cxi_svc_list_get_resp_vf *resp_vf;
+	size_t count;
+	size_t resp_len;
+	int rc;
+
+	rc = cxi_svc_list_get(client->ucxi->dev, 0, NULL);
+	if (rc < 0)
+		return rc;
+	count = rc;
+
+	resp_len = sizeof(*resp_vf) + (cmd->count * sizeof(struct cxi_svc_desc));
+
+	resp_vf = kmalloc(resp_len, GFP_KERNEL);
+	if (!resp_vf)
+		return -ENOMEM;
+
+	if (cmd->count > 0) {
+		rc = cxi_svc_list_get(client->ucxi->dev, cmd->count,
+				      resp_vf->svc_list);
+		if (rc < 0)
+			goto free_resp;
+
+		if (rc > count)
+			resp_vf->base.count = count;
+		else
+			resp_vf->base.count = rc;
+	} else {
+		resp_vf->base.count = count;
+	}
+
+	if (copy_response(client, resp_vf, resp_len, resp_out, resp_out_len)) {
+		rc = -EFAULT;
+		goto free_resp;
+	}
+
+	rc = 0;
+free_resp:
+	kfree(resp_vf);
+	return rc;
 }
 
 /* Passes size of service list back to user. Copies list of services into user
  * memory if user has allocated enough space.
  */
 static int cxi_user_svc_list_get(struct user_client *client,
-				 const void *cmd_in,
-				 void *resp_out, size_t *resp_out_len)
+				 const void *cmd_in, void *resp_out,
+				 size_t *resp_out_len)
 {
 	const struct cxi_svc_list_get_cmd *cmd = cmd_in;
 	struct cxi_svc_list_get_resp resp = {};
 	struct cxi_svc_desc *svc_list;
 	int rc;
+
+	if (client->is_vf)
+		return cxi_user_svc_list_get_vf(client, cmd_in, resp_out,
+					       resp_out_len);
 
 	/* Call first to check svc count in kernel. */
 	rc = cxi_svc_list_get(client->ucxi->dev, 0, NULL);
@@ -325,8 +387,8 @@ err:
 }
 
 static int cxi_user_svc_rsrc_get(struct user_client *client,
-				 const void *cmd_in,
-				 void *resp_out, size_t *resp_out_len)
+				 const void *cmd_in, void *resp_out,
+				 size_t *resp_out_len)
 {
 	const struct cxi_svc_rsrc_get_cmd *cmd = cmd_in;
 	struct cxi_svc_rsrc_get_resp resp = {};
@@ -336,23 +398,73 @@ static int cxi_user_svc_rsrc_get(struct user_client *client,
 	if (rc)
 		return rc;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
+}
+
+static int cxi_user_svc_rsrc_list_get_vf(struct user_client *client,
+					 const void *cmd_in, void *resp_out,
+					 size_t *resp_out_len)
+{
+	const struct cxi_svc_rsrc_list_get_cmd *cmd = cmd_in;
+	struct cxi_svc_rsrc_list_get_resp_vf *resp_vf;
+	size_t count;
+	size_t resp_len;
+	int rc;
+
+	rc = cxi_svc_rsrc_list_get(client->ucxi->dev, 0, NULL);
+	if (rc < 0)
+		return rc;
+	count = rc;
+
+	resp_len = sizeof(*resp_vf) + (cmd->count * sizeof(struct cxi_rsrc_use));
+
+	resp_vf = kmalloc(resp_len, GFP_KERNEL);
+	if (!resp_vf)
+		return -ENOMEM;
+
+	if (cmd->count > 0) {
+		rc = cxi_svc_rsrc_list_get(client->ucxi->dev, cmd->count,
+					   resp_vf->rsrc_list);
+		if (rc < 0)
+			goto free_resp;
+
+		if (rc > count)
+			resp_vf->base.count = count;
+		else
+			resp_vf->base.count = rc;
+	} else {
+		resp_vf->base.count = count;
+	}
+
+	if (copy_response(client, resp_vf, resp_len, resp_out, resp_out_len)) {
+		rc = -EFAULT;
+		goto free_resp;
+	}
+
+	rc = 0;
+free_resp:
+	kfree(resp_vf);
+	return rc;
 }
 
 /* Passes size of service list back to user. Copies list of services into user
  * memory if user has allocated enough space.
  */
 static int cxi_user_svc_rsrc_list_get(struct user_client *client,
-				      const void *cmd_in,
-				      void *resp_out, size_t *resp_out_len)
+				      const void *cmd_in, void *resp_out,
+				      size_t *resp_out_len)
 {
 	const struct cxi_svc_rsrc_list_get_cmd *cmd = cmd_in;
 	struct cxi_svc_rsrc_list_get_resp resp = {};
 	struct cxi_rsrc_use *rsrc_list;
 	int rc;
+
+	if (client->is_vf)
+		return cxi_user_svc_rsrc_list_get_vf(client, cmd_in, resp_out,
+						     resp_out_len);
 
 	/* Call first to check svc count in kernel. */
 	rc = cxi_svc_rsrc_list_get(client->ucxi->dev, 0, NULL);
@@ -482,7 +594,7 @@ static int cxi_user_svc_get_lpr(struct user_client *client,
 	if (resp.value < 0)
 		return resp.value;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
@@ -512,7 +624,7 @@ static int cxi_user_svc_get_exclusive_cp(struct user_client *client,
 
 	resp.exclusive_cp = (bool)rc;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
@@ -541,7 +653,7 @@ static int cxi_user_svc_get_vni_range(struct user_client *client,
 	if (rc)
 		return rc;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
@@ -561,14 +673,14 @@ static int cxi_user_svc_get_netns(struct user_client *client,
 				  void *resp_out, size_t *resp_out_len)
 {
 	const struct cxi_svc_get_netns_cmd *cmd = cmd_in;
-	unsigned int netns = 0;
+	struct cxi_svc_get_value_resp resp = {};
 	int rc;
 
-	rc = cxi_svc_get_netns(client->ucxi->dev, cmd->svc_id, &netns);
+	rc = cxi_svc_get_netns(client->ucxi->dev, cmd->svc_id, &resp.value);
 	if (rc)
 		return rc;
 
-	if (copy_to_user(cmd->resp, &netns, sizeof(netns)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
@@ -1346,7 +1458,6 @@ static int cxi_user_map_csrs(struct user_client *client,
 			     void *resp_out, size_t *resp_out_len)
 {
 	int rc;
-	const struct cxi_map_csrs_cmd *cmd = cmd_in;
 	struct cxi_map_csrs_resp resp = {};
 	struct cxi_mmap_info *mminfo;
 	phys_addr_t base;
@@ -1368,7 +1479,7 @@ static int cxi_user_map_csrs(struct user_client *client,
 	resp.csr = mminfo->mminfo;
 
 	/* Return the response to user space */
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp))) {
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len)) {
 		rc = -EFAULT;
 		goto free_mminfo;
 	}
@@ -1728,8 +1839,8 @@ static int cxi_user_eq_resize_complete(struct user_client *client,
 }
 
 static int cxi_user_pte_alloc(struct user_client *client,
-			      const void *cmd_in,
-			      void *resp_out, size_t *resp_out_len)
+			      const void *cmd_in, void *resp_out,
+			      size_t *resp_out_len)
 {
 	// TODO: revisit issue of validating enough "reserved" slots in EQ
 	const struct cxi_pte_alloc_cmd *cmd = cmd_in;
@@ -2026,7 +2137,7 @@ static int cxi_user_pte_status(struct user_client *client,
 
 	resp.status = status;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
 
 	return 0;
@@ -2124,7 +2235,7 @@ static int cxi_user_wait_alloc(struct user_client *client,
 		goto release_idr;
 	}
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp))) {
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len)) {
 		rc = -EFAULT;
 		goto free_dirent;
 	}
@@ -2259,7 +2370,7 @@ static int cxi_user_eq_adjust_reserved_fc(struct user_client *client,
 	rc = cxi_eq_adjust_reserved_fc(eq_obj->eq, cmd->value);
 	if (rc >= 0) {
 		resp.reserved_fc = rc;
-		if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+		if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 			rc = -EFAULT;
 		else
 			rc = 0;
@@ -2282,7 +2393,6 @@ static int cxi_user_dev_info_get(struct user_client *client,
 				 const void *cmd_in,
 				 void *resp_out, size_t *resp_out_len)
 {
-	const struct cxi_dev_info_get_cmd *cmd = cmd_in;
 	struct cxi_dev_info_get_resp resp = {};
 	int rc;
 
@@ -2291,8 +2401,64 @@ static int cxi_user_dev_info_get(struct user_client *client,
 	if (rc)
 		return rc;
 
-	if (copy_to_user(cmd->resp, &resp, sizeof(resp)))
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
 		return -EFAULT;
+
+	return 0;
+}
+
+
+static int cxi_user_phys_lac_alloc(struct user_client *client,
+				   const void *cmd_in,
+				   void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_phys_lac_alloc_cmd *cmd = cmd_in;
+	struct cxi_phys_lac_alloc_resp resp = {};
+	struct ucxi_obj *lni;
+	int rc;
+
+	read_lock(&client->res_lock);
+
+	lni = idr_find(&client->lni_idr, cmd->lni);
+	if (!lni) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	atomic_inc(&lni->refs);
+
+	read_unlock(&client->res_lock);
+
+	rc = cxi_phys_lac_alloc(lni->lni);
+	if (rc < 0) {
+		atomic_dec(&lni->refs);
+		return rc;
+	}
+
+	resp.lac = rc;
+	return copy_response(client, &resp, sizeof(resp), resp_out,
+			   resp_out_len);
+}
+
+static int cxi_user_phys_lac_free(struct user_client *client,
+				  const void *cmd_in,
+				  void *resp_out, size_t *resp_out_len)
+{
+	const struct cxi_phys_lac_free_cmd *cmd = cmd_in;
+	struct ucxi_obj *lni;
+
+	read_lock(&client->res_lock);
+
+	lni = idr_find(&client->lni_idr, cmd->lni);
+	if (!lni) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	read_unlock(&client->res_lock);
+
+	cxi_phys_lac_free(lni->lni, cmd->lac);
+	atomic_dec(&lni->refs);
 
 	return 0;
 }
@@ -2311,7 +2477,6 @@ static int cxi_user_vf_get_token(struct user_client *client,
 	return copy_response(client, &resp, sizeof(resp), resp_out,
 			   resp_out_len);
 }
-
 
 static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_LNI_ALLOC] = {
@@ -2556,11 +2721,18 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "CQ_ALLOC_BUF",
 		.handler    = cxi_user_cq_alloc_buf,
 	},
+	[CXI_OP_PHYS_LAC_ALLOC] = {
+		.req_size   = sizeof(struct cxi_phys_lac_alloc_cmd),
+		.name       = "PHYS_LAC_ALLOC",
+		.handler    = cxi_user_phys_lac_alloc, },
+	[CXI_OP_PHYS_LAC_FREE] = {
+		.req_size   = sizeof(struct cxi_phys_lac_free_cmd),
+		.name       = "PHYS_LAC_FREE",
+		.handler    = cxi_user_phys_lac_free, },
 	[CXI_OP_VF_GET_TOKEN] = {
 		.req_size   = sizeof(struct cxi_vf_get_token_cmd),
 		.name       = "VF_GET_TOKEN",
 		.handler    = cxi_user_vf_get_token, },
-
 };
 
 /* Read and process a command from userspace or from a Virtual
