@@ -6,11 +6,12 @@
 
 #include <linux/device.h>
 #include <linux/cdev.h>
+#include <linux/scatterlist.h>
 
 #include <uapi/ethernet/cxi-abi.h>
 
 /* Size of the biggest command */
-#define MAX_REQ_SIZE 112
+#define MAX_REQ_SIZE 22432
 
 #ifdef CONFIG_ARM64
 extern struct static_key_false avoid_writecombine;
@@ -117,6 +118,7 @@ struct ucxi_obj {
 	atomic_t mappings;
 
 	struct cxi_mmap_info *mminfo;
+	struct sg_table *ext_sgt;
 
 	/* Pointer to the core object */
 	union {

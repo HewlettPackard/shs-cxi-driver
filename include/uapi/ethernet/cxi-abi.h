@@ -127,6 +127,7 @@ enum cxi_command_opcode {
 		CXI_OP_VF_GET_TOKEN,
 		CXI_OP_PHYS_LAC_ALLOC,
 		CXI_OP_PHYS_LAC_FREE,
+		CXI_OP_ATU_MAP_SGT,
 		CXI_OP_MAX,
 };
 
@@ -597,6 +598,29 @@ struct cxi_atu_map_cmd {
 	__u32 flags;
 
 	struct cxi_md_hints hints;
+};
+
+#define CXI_ATU_SGT_MAX_ENTRIES 1400
+
+struct cxi_sgt_entry {
+	__u64 dma_addr;
+	__u32 dma_len;
+	__u32 offset;
+};
+
+struct cxi_atu_map_sgt_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+
+	unsigned int lni;
+	__u32 flags;
+	__u32 nents;
+	struct cxi_sgt_entry sge[CXI_ATU_SGT_MAX_ENTRIES];
+};
+
+struct cxi_atu_map_sgt_resp {
+	unsigned int id;
+	struct cxi_md md;
 };
 
 struct cxi_atu_map_resp {

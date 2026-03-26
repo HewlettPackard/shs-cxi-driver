@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2019 Hewlett Packard Enterprise Development LP */
+/* Copyright 2019, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /*
  * Address Translation Unit (ATU) management
@@ -212,8 +212,8 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv,
 	cac->iova_end = cac->iova_base + cac->iova_len - 1;
 
 	ac->cntr_pool_id = 1;
-	ac->ats_vf_en = 0;
-	ac->ats_vf_num = 0;
+	ac->ats_vf_en = lni_priv->is_vf;
+	ac->ats_vf_num = lni_priv->is_vf ? lni_priv->vf_num : 0;
 	ac->ats_no_write = 0;
 	ac->ats_pasid = cac->pasid;
 	ac->ats_pasid_en = 1;

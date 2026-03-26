@@ -27,6 +27,18 @@ struct cxi_cp_priv_vf {
 	unsigned int cp_hndl;
 };
 
+struct cxi_md_priv_vf {
+	/* Matching fields in cxi_md_priv */
+	struct cxi_lni_priv *lni_priv;
+	struct device *device;
+	struct cxi_md md;
+	struct sg_table *sgt;        /* Scatter-gather table for DMA mapping */
+	struct page **pages;         /* Array of pinned pages */
+	u32 flags;                   /* Mapping flags */
+	/* VF only fields */
+	int npages;                  /* Number of pinned pages */
+};
+
 int cass_vf_get_token(struct cxi_dev *cdev, int vf_idx, unsigned int *token);
 
 #endif /* CASS_VF_H */

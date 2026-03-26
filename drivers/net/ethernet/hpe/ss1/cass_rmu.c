@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Create and destroy Cassini command queues */
 
@@ -122,6 +122,52 @@ void cxi_domain_lni_cleanup(struct cxi_lni_priv *lni_priv)
 	}
 }
 
+/** cxi_domain_alloc_vf() - Allocate a domain for VF
+ *
+ * @lni: LNI to allocate the domain on
+ * @vni: VNI for the domain
+ * @pid: PID for the domain
+ *
+ * Return: Pointer to allocated domain on success, ERR_PTR on failure.
+ */
+static struct cxi_domain *
+cxi_domain_alloc_vf(struct cxi_lni *lni, unsigned int vni, unsigned int pid)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cxi_domain_priv_vf *domain_priv_vf;
+	const struct cxi_domain_alloc_cmd cmd = {
+		.op = CXI_OP_DOMAIN_ALLOC,
+		.lni = lni_priv_vf->lni.id,
+		.vni = vni,
+		.pid = pid,
+	};
+	struct cxi_domain_alloc_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	domain_priv_vf = kzalloc(sizeof(*domain_priv_vf), GFP_KERNEL);
+	if (!domain_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		goto error_out;
+
+	domain_priv_vf->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	domain_priv_vf->domain.id = resp.domain;
+	domain_priv_vf->domain.vni = resp.vni;
+	domain_priv_vf->domain.pid = resp.pid;
+
+	return &domain_priv_vf->domain;
+
+error_out:
+	kfree(domain_priv_vf);
+
+	return ERR_PTR(rc);
+}
+
 /* Allocate a new domain, with a unique per-device VNI+PID. The VNI is
  * reserved in the RMU table if it doesn't already exist.
  */
@@ -136,6 +182,9 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 	int rc;
 	int domain_pid = pid;
 	struct cxi_rx_profile *rx_profile;
+
+	if (!cdev->is_physfn)
+		return cxi_domain_alloc_vf(lni, vni, pid);
 
 	/* Sanity checks. */
 	if (!is_vni_valid(vni))
@@ -209,6 +258,29 @@ put_rx_profile:
 }
 EXPORT_SYMBOL(cxi_domain_alloc);
 
+/** cxi_domain_free_vf() - Free an allocated domain for VF
+ *
+ * @domain: Domain to be freed
+ */
+static void cxi_domain_free_vf(struct cxi_domain *domain)
+{
+	struct cxi_domain_priv_vf *domain_priv_vf =
+		container_of(domain, struct cxi_domain_priv_vf, domain);
+	struct cxi_dev *dev = domain_priv_vf->lni_priv->dev;
+	const struct cxi_domain_free_cmd cmd = {
+		.op = CXI_OP_DOMAIN_FREE,
+		.domain = domain_priv_vf->domain.id,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return;
+
+	kfree(domain_priv_vf);
+}
+
 /* Free an allocated domain. */
 void cxi_domain_free(struct cxi_domain *domain)
 {
@@ -217,6 +289,11 @@ void cxi_domain_free(struct cxi_domain *domain)
 	struct cxi_lni_priv *lni_priv = domain_priv->lni_priv;
 	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn) {
+		cxi_domain_free_vf(domain);
+		return;
+	}
 
 	cxidev_WARN_ONCE(cdev, !refcount_dec_and_test(&domain_priv->refcount),
 			 "Resource leaks - Domain refcount not zero: %d\n",

@@ -1326,16 +1326,17 @@ static int cxi_user_atu_map(struct user_client *client,
 	struct cxi_atu_map_resp resp = {};
 	struct cxi_md *md;
 	struct cxi_md_hints hints = {};
+	unsigned int flags;
 
 	/* Allocate Memory Descriptor Object */
 	md_obj = alloc_obj(1);
-	if (md_obj == NULL)
+	if (!md_obj)
 		return -ENOMEM;
 
 	read_lock(&client->res_lock);
 
 	lni_obj = idr_find(&client->lni_idr, cmd->lni);
-	if (lni_obj == NULL) {
+	if (!lni_obj) {
 		read_unlock(&client->res_lock);
 		rc = -EINVAL;
 		goto free_obj;
@@ -1359,8 +1360,14 @@ static int cxi_user_atu_map(struct user_client *client,
 
 	read_unlock(&client->res_lock);
 
-	md = cxi_map(lni_obj->lni, cmd->va, cmd->len,
-		     cmd->flags | CXI_MAP_USER_ADDR, &hints);
+	/* If the client is not a VF, this means that we are called from user space,
+	 * so we add the CXI_MAP_USER_ADDR flag. When the client is VF it might have
+	 * already added the CXI_MAP_USER_ADDR accordingly */
+	flags = cmd->flags;
+	if (!client->is_vf)
+		flags |= CXI_MAP_USER_ADDR;
+
+	md = cxi_map(lni_obj->lni, cmd->va, cmd->len, flags, &hints);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto free_obj;
@@ -1390,9 +1397,111 @@ copy_failed:
 	idr_remove(&client->md_idr, resp.id);
 	write_unlock(&client->res_lock);
 idr_full:
-	rc = cxi_unmap(md_obj->md);
+	cxi_unmap(md_obj->md);
+free_obj:
+	free_obj(md_obj);
+
+	return rc;
+}
+
+static int cxi_user_atu_map_sgt(struct user_client *client,
+				const void *cmd_in, void *resp_out,
+				size_t *resp_out_len)
+{
+	int rc;
+	struct ucxi_obj *lni_obj;
+	struct ucxi_obj *md_obj;
+	const struct cxi_atu_map_sgt_cmd *cmd = cmd_in;
+	struct cxi_atu_map_sgt_resp resp = {};
+	struct cxi_md *md;
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	unsigned int i;
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	if (!cmd->nents || cmd->nents > CXI_ATU_SGT_MAX_ENTRIES)
+		return -EINVAL;
+
+	/* Allocate Memory Descriptor Object */
+	md_obj = alloc_obj(1);
+	if (!md_obj)
+		return -ENOMEM;
+
+	read_lock(&client->res_lock);
+
+	lni_obj = idr_find(&client->lni_idr, cmd->lni);
+	if (!lni_obj) {
+		read_unlock(&client->res_lock);
+		rc = -EINVAL;
+		goto free_obj;
+	}
+
+	atomic_inc(&lni_obj->refs);
+	md_obj->deps[0] = lni_obj;
+	md_obj->num_deps = 1;
+
+	read_unlock(&client->res_lock);
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt) {
+		rc = -ENOMEM;
+		goto free_obj;
+	}
+
+	rc = sg_alloc_table(sgt, cmd->nents, GFP_KERNEL);
+	if (rc)
+		goto free_sgt;
+
+	sg = sgt->sgl;
+	for (i = 0; i < cmd->nents; i++) {
+		sg->dma_address = cmd->sge[i].dma_addr;
+		sg->dma_length = cmd->sge[i].dma_len;
+		sg->offset = cmd->sge[i].offset;
+		sg->length = cmd->sge[i].dma_len;
+		sg = sg_next(sg);
+	}
+
+	md = cxi_map_sgtable(lni_obj->lni, sgt, cmd->flags);
+	if (IS_ERR(md)) {
+		rc = PTR_ERR(md);
+		goto free_sgt_table;
+	}
+	md_obj->md = md;
+	md_obj->ext_sgt = sgt;
+	pr_debug("PF map_sgt: vf:%u lni:%u rgid:%u md:%d lac:%u iova:%llx nents:%u flags:0x%x\n",
+		 client->vf_num, cmd->lni, lni_obj->lni->rgid, md->id,
+		 md->lac, md->iova, cmd->nents, cmd->flags);
+
+	idr_preload(GFP_KERNEL);
+	write_lock(&client->res_lock);
+	rc = idr_alloc(&client->md_idr, md_obj, md->id, md->id + 1, GFP_NOWAIT);
+	write_unlock(&client->res_lock);
+	idr_preload_end();
+
 	if (rc < 0)
-		pr_err("cxi_unmap failed %d\n", rc);
+		goto idr_full;
+
+	resp.id = rc;
+	resp.md = *md;
+
+	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
+	if (rc)
+		goto copy_failed;
+
+	return 0;
+
+copy_failed:
+	write_lock(&client->res_lock);
+	idr_remove(&client->md_idr, resp.id);
+	write_unlock(&client->res_lock);
+idr_full:
+	cxi_unmap(md_obj->md);
+free_sgt_table:
+	sg_free_table(sgt);
+free_sgt:
+	kfree(sgt);
 free_obj:
 	free_obj(md_obj);
 
@@ -2733,6 +2842,10 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_vf_get_token_cmd),
 		.name       = "VF_GET_TOKEN",
 		.handler    = cxi_user_vf_get_token, },
+	[CXI_OP_ATU_MAP_SGT] = {
+		.req_size   = sizeof(struct cxi_atu_map_sgt_cmd),
+		.name       = "ATU_MAP_SGT",
+		.handler    = cxi_user_atu_map_sgt, },
 };
 
 /* Read and process a command from userspace or from a Virtual
@@ -3036,6 +3149,11 @@ static int free_md_obj(int id, void *obj_, void *data)
 
 	if (client->ucxi)
 		cxi_unmap(md->md);
+	if (md->ext_sgt) {
+		sg_free_table(md->ext_sgt);
+		kfree(md->ext_sgt);
+		md->ext_sgt = NULL;
+	}
 	free_obj(md);
 	return 0;
 }

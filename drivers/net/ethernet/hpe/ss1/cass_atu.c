@@ -1124,9 +1124,7 @@ void cxi_phys_lac_free(struct cxi_lni *lni, int lac)
 	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
 	struct cxi_dev *cdev = lni_priv->dev;
 
-	/* We do not free physical LACs for VFs. They will be freed when the
-	 * LNI is freed.
-	 */
+	/* VFs do not free physical LACs. They will be freed when the LNI is freed */
 	if (!cdev->is_physfn)
 		return;
 
@@ -1295,6 +1293,124 @@ md_free:
 EXPORT_SYMBOL(cxi_map_iov);
 
 /**
+ * cxi_map_sgtable_vf() - Map an sg table to an IO virtual address space for a VF
+ *
+ * @lni: The Logical Network Interface
+ * @sgt: The sg_table object. It is expected to be dma mapped.
+ * @flags: Various options affecting the map
+ *
+ * @return: memory descriptor or error code
+ */
+static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
+					 struct sg_table *sgt, u32 flags)
+{
+	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_md_priv_vf *md_priv_vf;
+	struct cxi_atu_map_sgt_cmd *cmd;
+	struct cxi_atu_map_sgt_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	struct scatterlist *sg;
+	int i;
+	int rc;
+	size_t sgt_len;
+
+	if (!sgt)
+		return ERR_PTR(-EINVAL);
+
+	if (!cass_sgtable_is_valid(hw, sgt, &sgt_len))
+		return ERR_PTR(-EINVAL);
+
+	sg = sgt->sgl;
+
+	md_priv_vf = kzalloc(sizeof(*md_priv_vf), GFP_KERNEL);
+	if (!md_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	md_priv_vf->lni_priv = lni_priv;
+	md_priv_vf->device = &hw->cdev.pdev->dev;
+	md_priv_vf->md.va = 0;
+	md_priv_vf->md.len = sgt_len;
+	md_priv_vf->md.page_shift = PAGE_SHIFT;
+	md_priv_vf->md.huge_shift = PMD_SHIFT;
+	md_priv_vf->flags = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
+	md_priv_vf->sgt = sgt;
+	md_priv_vf->pages = NULL;
+	md_priv_vf->npages = 0;
+
+	/* Send sgt to the PF to run cxi_map_sgtable there */
+	if (sgt->nents > CXI_ATU_SGT_MAX_ENTRIES) {
+		rc = -E2BIG;
+		cxidev_err(&hw->cdev, "SGT has too many entries: %u\n", sgt->nents);
+		goto free_md_priv;
+	}
+
+	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
+		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid, sgt->nents, sgt_len,
+		 flags);
+
+	cmd = kvzalloc(sizeof(*cmd), GFP_KERNEL);
+	if (!cmd) {
+		rc = -ENOMEM;
+		goto free_md_priv;
+	}
+
+	cmd->op = CXI_OP_ATU_MAP_SGT;
+	cmd->lni = lni_priv_vf->lni.id;
+	cmd->flags = flags;
+	cmd->nents = sgt->nents;
+
+	pr_debug("Sending SGT with %d entries to PF\n", sgt->nents);
+	for (i = 0; i < sgt->nents; i++) {
+		cmd->sge[i].dma_addr = sg_dma_address(sg);
+		cmd->sge[i].dma_len = sg_dma_len(sg);
+		cmd->sge[i].offset = sg->offset;
+
+		sg = sg_next(sg);
+	}
+
+	rc = cxi_send_msg_to_pf(dev, cmd, sizeof(*cmd), &resp, &resp_len);
+	kvfree(cmd);
+	if (rc)
+		goto free_md_priv;
+
+	/* Set the iova and the lac retrieved from the PF */
+	md_priv_vf->md.iova = resp.md.iova;
+	md_priv_vf->md.lac = resp.md.lac;
+	md_priv_vf->md.id = resp.md.id;
+	pr_debug("VF map resp: md:%d iova:%llx lac:%u resp_len:%zu\n",
+		 md_priv_vf->md.id, md_priv_vf->md.iova,
+		 md_priv_vf->md.lac, resp_len);
+
+	return &md_priv_vf->md;
+
+free_md_priv:
+	kfree(md_priv_vf);
+	return ERR_PTR(rc);
+}
+
+static int cxi_unmap_sgtable_vf(struct cxi_dev *dev,
+				struct cxi_md_priv_vf *md_priv_vf,
+				struct cass_dev *hw, int md_id)
+{
+	struct cxi_atu_unmap_cmd cmd = {
+		.op = CXI_OP_ATU_UNMAP,
+		.id = md_priv_vf->md.id,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		cxidev_err(&hw->cdev, "VF ATU_UNMAP failed md:%d pf_md:%d rc:%d\n",
+			   md_id, md_priv_vf->md.id, rc);
+
+	return rc;
+}
+
+/**
  * cxi_map_sgtable() - Map an sg table to an IO virtual address space
  *
  * @lni: The Logical Network Interface
@@ -1325,6 +1441,9 @@ struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni, struct sg_table *sgt,
 
 	if (!cass_sgtable_is_valid(hw, sgt, &len))
 		return ERR_PTR(-EINVAL);
+
+	if (!cdev->is_physfn)
+		return cxi_map_sgtable_vf(lni, sgt, flags);
 
 	m_opts.va_start = 0;
 	m_opts.flags = flags;
@@ -1426,6 +1545,147 @@ int cxi_update_sgtable(struct cxi_md *md, struct sg_table *sgt)
 EXPORT_SYMBOL(cxi_update_sgtable);
 
 /**
+ * cass_virt_to_pages() - Get page structures for kernel virtual addresses
+ *
+ * @hw: Cassini device for error reporting
+ * @va: Starting virtual address (will be page-aligned)
+ * @npages: Number of pages to get
+ * @pages: Array to store page pointers
+ *
+ * @return: 0 on success, negative error code on failure
+ */
+static int cass_virt_to_pages(struct cass_dev *hw, uintptr_t va, int npages,
+			      struct page **pages)
+{
+	int i;
+	uintptr_t addr = va & PAGE_MASK;
+
+	for (i = 0; i < npages; i++, addr += PAGE_SIZE) {
+		if (is_vmalloc_addr((void *)addr))
+			pages[i] = vmalloc_to_page((void *)addr);
+		else
+			pages[i] = virt_to_page(addr);
+
+		if (!pages[i]) {
+			cxidev_err(&hw->cdev, "Failed to get page for addr 0x%lx\n", addr);
+			return -EFAULT;
+		}
+	}
+
+	return 0;
+}
+
+static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
+				 u32 flags, const struct cxi_md_hints *hints)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_md *md;
+	struct cxi_md_priv_vf *md_priv_vf;
+	/* For now, we do not support hugepages. This will come later when we add the ATS
+	 * for both VF and PF: NETCASSINI-7859.
+	 * In this effort we will reuse code to align pages and to support huge pages too
+	 */
+	const int npages = (PAGE_ALIGN(va + len) - (va & PAGE_MASK)) >> PAGE_SHIFT;
+	struct page **pages;
+	struct sg_table *sgt;
+	int rc;
+
+	if (flags & CXI_MAP_USER_ADDR && !(flags & CXI_MAP_PIN)) {
+		cxidev_err(&hw->cdev, "VF does not support ODP\n");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
+	if (flags & CXI_MAP_DEVICE) {
+		cxidev_err(&hw->cdev, "TODO: VF does not support device memory\n");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
+	if (!va) {
+		cxidev_err(&hw->cdev, "NULL virtual address\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
+	if (!pages) {
+		rc = -ENOMEM;
+		return ERR_PTR(rc);
+	}
+
+	/* Get the pages and pin them if requested */
+	if (flags & CXI_MAP_PIN) {
+		rc = pin_user_pages_fast(va & PAGE_MASK, npages, FOLL_WRITE | FOLL_LONGTERM, pages);
+		if (rc != npages) {
+			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n", rc, npages);
+			if (rc > 0)
+				unpin_user_pages(pages, rc);
+			rc = rc < 0 ? rc : -EFAULT;
+			goto free_pages;
+		}
+	} else {
+		rc = cass_virt_to_pages(hw, va, npages, pages);
+		if (rc)
+			goto free_pages;
+	}
+
+	/* Now we DMA-map the pages using a scatter-gather table */
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt) {
+		rc = -ENOMEM;
+		goto unpin_pages;
+	}
+
+	rc = sg_alloc_table_from_pages_segment(sgt, pages, npages,
+					       va & ~PAGE_MASK, len,
+					       UINT_MAX, GFP_KERNEL);
+	if (rc)
+		goto free_sgt;
+
+	rc = dma_map_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
+	if (rc) {
+		cxidev_err(&hw->cdev, "dma_map_sgtable failed\n");
+		goto free_sgt_table;
+	}
+
+	pr_debug("va:0x%lx len:0x%lx npages:%d nents:%u page_aligned_va:0x%lx page_offset:0x%lx\n",
+		 va, len, npages, sgt->nents, va & PAGE_MASK, va & ~PAGE_MASK);
+
+	md = cxi_map_sgtable_vf(lni, sgt, flags);
+	if (IS_ERR(md)) {
+		rc = PTR_ERR(md);
+		goto unmap_sgt;
+	}
+
+	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	md_priv_vf->md.va = va;
+	md_priv_vf->sgt = sgt;
+	md_priv_vf->pages = pages;
+	md_priv_vf->npages = npages;
+
+	/* Adjust IOVA to include the within-page offset.
+	 * PF returns page-aligned IOVA, but application needs the actual data address.
+	 */
+	md_priv_vf->md.iova += (va & ~PAGE_MASK);
+	md_priv_vf->md.len = len;
+
+	return md;
+
+unmap_sgt:
+	dma_unmap_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
+free_sgt_table:
+	sg_free_table(sgt);
+free_sgt:
+	kfree(sgt);
+unpin_pages:
+	if (flags & CXI_MAP_PIN)
+		unpin_user_pages(pages, npages);
+free_pages:
+	kvfree(pages);
+	return ERR_PTR(rc);
+}
+
+/**
  * cxi_map() - Map virtual addresses into IO  address space
  *
  * If CXI_MAP_ALLOC_MD is set, just allocate an IOVA and return the MD.
@@ -1486,6 +1746,9 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 	} else {
 		m_opts.ptg_mode = default_ptg_mode;
 	}
+
+	if (!cdev->is_physfn)
+		return cxi_map_vf(lni, va, len, flags, hints);
 
 	ret = cass_odp_supported(hw, flags);
 	if (ret)
@@ -1602,6 +1865,38 @@ md_free:
 }
 EXPORT_SYMBOL(cxi_map);
 
+static int cxi_unmap_vf(struct cxi_md *md)
+{
+	struct cxi_md_priv_vf *md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+
+	pr_debug("VF md:%d lac:%d va:%llx iova:%llx len:%lx\n",
+		 md->id, md->lac, md->va, md->iova, md->len);
+
+	/* Notify PF to free the MD created from the VF sglist */
+	cxi_unmap_sgtable_vf(dev, md_priv_vf, hw, md->id);
+
+	/* Unmap and free scatter-gather table if we own it */
+	if (md_priv_vf->pages && md_priv_vf->sgt) {
+		dma_unmap_sgtable(md_priv_vf->device, md_priv_vf->sgt, DMA_BIDIRECTIONAL, 0);
+		sg_free_table(md_priv_vf->sgt);
+		kfree(md_priv_vf->sgt);
+	}
+
+	/* Unpin pages if they were pinned, or just free the pages array */
+	if (md_priv_vf->pages) {
+		if (md_priv_vf->flags & CXI_MAP_PIN)
+			unpin_user_pages(md_priv_vf->pages, md_priv_vf->npages);
+		kvfree(md_priv_vf->pages);
+	}
+
+	/* Free the VF MD structure */
+	kfree(md_priv_vf);
+
+	return 0;
+}
+
 /**
  * cxi_unmap() - Unmap a virtual address
  *
@@ -1616,6 +1911,10 @@ int cxi_unmap(struct cxi_md *md)
 
 	if (!md || md->lac >= C_NUM_LACS)
 		return -EINVAL;
+
+	dev = container_of(md, struct cxi_md_priv, md)->lni_priv->dev;
+	if (!dev->is_physfn)
+		return cxi_unmap_vf(md);
 
 	md_priv = container_of(md, struct cxi_md_priv, md);
 	lni_priv = md_priv->lni_priv;
