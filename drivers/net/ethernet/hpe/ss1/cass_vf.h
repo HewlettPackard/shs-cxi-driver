@@ -27,6 +27,21 @@ struct cxi_cp_priv_vf {
 	unsigned int cp_hndl;
 };
 
+struct cxi_cq_priv_vf {
+	/* Matching fields in cxi_cq_priv */
+	struct cxi_lni_priv *lni_priv;
+	struct cxi_cq cass_cq;
+	size_t cmds_len;
+	size_t cmds_order;
+	struct page **pages;
+	struct page *cmds_pages;
+	void *cmds;
+	dma_addr_t cmds_dma_addr;
+	void __iomem *cq_mmio;
+	u32 flags;
+	struct cxi_md_priv *md_priv;
+};
+
 struct cxi_md_priv_vf {
 	/* Matching fields in cxi_md_priv */
 	struct cxi_lni_priv *lni_priv;

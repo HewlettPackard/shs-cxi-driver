@@ -974,9 +974,10 @@ static int cxi_user_cq_alloc_buf(struct user_client *client,
 	size_t queue_size;
 	struct cxi_cq *cq;
 	const struct cxi_cq_alloc_buf_cmd *cmd = cmd_in;
+	const struct cxi_cq_alloc_buf_cmd_vf *cmd_vf = cmd_in;
 	struct cxi_cq_alloc_resp resp = {};
 	struct cxi_cq_alloc_opts_buf opts_b = cmd->opts;
-	struct cxi_mmap_info *mminfo;  /* CSR and queue mappings */
+	struct cxi_mmap_info *mminfo = NULL;  /* CSR and queue mappings */
 	struct page *queue_pages;
 	struct ucxi_obj *lni;
 	struct ucxi_obj *obj;
@@ -1016,10 +1017,15 @@ static int cxi_user_cq_alloc_buf(struct user_client *client,
 
 	read_unlock(&client->res_lock);
 
-	opts_b.opts.flags |= CXI_CQ_USER;
+	if (!client->is_vf) {
+		opts_b.opts.flags |= CXI_CQ_USER;
+		cq = cxi_cq_alloc_buf(lni->lni, eq_obj ? eq_obj->eq : NULL, &opts_b,
+				      numa_node_id());
+	} else {
+		cq = cxi_cq_alloc_buf_internal(lni->lni, eq_obj ? eq_obj->eq : NULL, &opts_b,
+					       numa_node_id(), cmd_vf->dma_addr, cmd_vf->cmds_len);
+	}
 
-	cq = cxi_cq_alloc_buf(lni->lni, eq_obj ? eq_obj->eq : NULL, &opts_b,
-			      numa_node_id());
 	if (IS_ERR(cq)) {
 		rc = PTR_ERR(cq);
 		goto free_obj;
@@ -1041,23 +1047,25 @@ static int cxi_user_cq_alloc_buf(struct user_client *client,
 
 	resp.cq = rc;
 
-	cxi_cq_user_info(cq, &queue_size, &queue_pages, &csr_addr, &csr_size);
+	if (!client->is_vf) {
+		cxi_cq_user_info(cq, &queue_size, &queue_pages, &csr_addr,
+				 &csr_size);
+		mminfo = kcalloc(2, sizeof(*mminfo), GFP_KERNEL);
+		if (!mminfo)
+			goto release_cq_idr;
 
-	mminfo = kcalloc(2, sizeof(*mminfo), GFP_KERNEL);
-	if (!mminfo)
-		goto release_cq_idr;
+		fill_mmap_info(client, &mminfo[0], csr_addr, csr_size, MMAP_PHYSICAL);
 
-	fill_mmap_info(client, &mminfo[0], csr_addr, csr_size, MMAP_PHYSICAL);
-	resp.wp_addr = mminfo[0].mminfo;
-	mminfo[0].obj = obj;
-	mminfo[0].wc = true;
+		resp.wp_addr = mminfo[0].mminfo;
+		mminfo[0].obj = obj;
+		mminfo[0].wc = true;
 
-	//TODO: none of that in the PF if VF CQ
-	if (!opts_b.buf) {
-		fill_mmap_info(client, &mminfo[1], (uintptr_t)queue_pages,
-			       queue_size, MMAP_LOGICAL);
-		resp.cmds = mminfo[1].mminfo;
-		mminfo[1].obj = obj;
+		if (!opts_b.buf) {
+			fill_mmap_info(client, &mminfo[1], (uintptr_t)queue_pages,
+				       queue_size, MMAP_LOGICAL);
+			resp.cmds = mminfo[1].mminfo;
+			mminfo[1].obj = obj;
+		}
 	}
 
 	resp.count = cq->size;
@@ -1068,7 +1076,8 @@ static int cxi_user_cq_alloc_buf(struct user_client *client,
 
 	obj->mminfo = mminfo;
 
-	mminfo_pre_mmap(client, mminfo, 2);
+	if (!client->is_vf)
+		mminfo_pre_mmap(client, mminfo, 2);
 
 	return 0;
 
@@ -2874,6 +2883,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	},
 	[CXI_OP_CQ_ALLOC_BUF] = {
 		.req_size   = sizeof(struct cxi_cq_alloc_buf_cmd),
+		.req_size_vf = sizeof(struct cxi_cq_alloc_buf_cmd_vf),
 		.name       = "CQ_ALLOC_BUF",
 		.handler    = cxi_user_cq_alloc_buf,
 	},

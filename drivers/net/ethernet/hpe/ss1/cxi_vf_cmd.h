@@ -31,6 +31,12 @@ struct cxi_ct_wb_update_cmd_vf {
 	u64 wb_dma_addr;
 };
 
+struct cxi_cq_alloc_buf_cmd_vf {
+	struct cxi_cq_alloc_buf_cmd base;
+	u64 dma_addr;
+	size_t cmds_len;
+};
+
 struct cxi_eq_alloc_cmd_vf {
 	struct cxi_eq_alloc_cmd base;
 	u64 dma_addr;

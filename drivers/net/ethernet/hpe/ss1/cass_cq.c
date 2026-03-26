@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Create and destroy Cassini command queues */
 
@@ -10,7 +10,9 @@
 #include <linux/types.h>
 
 #include "cass_core.h"
+#include "cxi_internal.h"
 #include "cass_ss1_debugfs.h"
+#include "cxi_vf_cmd.h"
 
 #ifdef CONFIG_ARM64
 /* Provide a workaround for avoiding writecombine on platforms where it is broken
@@ -90,7 +92,7 @@ static int setup_hw_tx_cq(struct cass_dev *hw, unsigned int cq_n,
 		.mem_q_rgid = lni_priv->lni.rgid,
 		.mem_q_stat_cnt_pool = opts->stat_cnt_pool,
 		.mem_q_lcid = opts->lcid,
-		.mem_q_acid = ATU_PHYS_AC,
+		.mem_q_acid = lni_priv->phys_ac,
 		.mem_q_policy = opts->policy,
 	};
 	union c_cq_cfg_init_txq_hw_state txq_init;
@@ -163,7 +165,7 @@ static int setup_hw_tgt_cq(struct cass_dev *hw, unsigned int cq_n,
 		.mem_q_rgid = lni_priv->lni.rgid,
 		.mem_q_stat_cnt_pool = opts->stat_cnt_pool,
 		.mem_q_tc_reg = cq_n % MEM_Q_TC_REG_SIZE,
-		.mem_q_acid = ATU_PHYS_AC,
+		.mem_q_acid = lni_priv->phys_ac,
 		.mem_q_policy = opts->policy,
 	};
 	union c_cq_cfg_init_tgq_hw_state tgq_init;
@@ -293,6 +295,51 @@ static void put_cq_id(struct cxi_cq_priv *cq)
 	else
 		cxi_rgroup_free_resource(lni_priv->rgroup, CXI_RESOURCE_TGQ);
 	kfree(cq);
+}
+
+/**
+ * cxi_cq_free_vf() - Free the communication profile for VF
+ *
+ * @cmdq: Command queue to be freed
+ */
+static void cxi_cq_free_vf(struct cxi_cq *cmdq)
+{
+	struct cxi_cq_priv_vf *cq_priv_vf =
+		container_of(cmdq, struct cxi_cq_priv_vf, cass_cq);
+	struct cxi_dev *dev = cq_priv_vf->lni_priv->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	const struct cxi_cq_free_cmd cmd = {
+		.op = CXI_OP_CQ_FREE,
+		.cq = cq_priv_vf->cass_cq.idx,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return;
+
+	if (cq_priv_vf->cq_mmio)
+		iounmap(cq_priv_vf->cq_mmio);
+
+	dma_unmap_page(&hw->cdev.pdev->dev, cq_priv_vf->cmds_dma_addr,
+		       cq_priv_vf->cmds_len, DMA_BIDIRECTIONAL);
+
+	if (cq_priv_vf->cmds_pages) {
+		__free_pages(cq_priv_vf->cmds_pages, cq_priv_vf->cmds_order);
+	} else {
+		if (cq_priv_vf->md_priv) {
+			cass_device_put_pages(cq_priv_vf->md_priv);
+			kfree(cq_priv_vf->md_priv);
+		}
+
+		if (cq_priv_vf->pages) {
+			unpin_user_pages(cq_priv_vf->pages, cq_priv_vf->cmds_len >> PAGE_SHIFT);
+			kfree(cq_priv_vf->pages);
+		}
+	}
+
+	kfree(cq_priv_vf);
 }
 
 /**
@@ -458,7 +505,165 @@ md_free:
 }
 
 /**
- * cxi_cq_alloc_buf() - Allocate a new command queue
+ * cxi_cq_alloc_buf_vf() - Allocate a new command queue for VF
+ *
+ * The new CQ is attached to attached to the NI.
+ *
+ * @lni: LNI to associate with the command queue.
+ * @evtq: Event Queue to associate with the command queue, for error
+ *        reporting. May be NULL.
+ * @opts_b: Options affecting the CQ.
+ * @numa_node: NUMA node ID CQ memory should be allocated from.
+ *
+ * @return: the command queue or an error pointer
+ */
+static struct cxi_cq *cxi_cq_alloc_buf_vf(struct cxi_lni *lni, struct cxi_eq *evtq,
+					  const struct cxi_cq_alloc_opts_buf *opts_b,
+					  int numa_node)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *cdev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	const struct cxi_cq_alloc_opts *opts = &opts_b->opts;
+	struct cxi_cq_priv_vf *cq;
+	struct cxi_cq_alloc_buf_cmd_vf cmd = {
+		.base.op = CXI_OP_CQ_ALLOC_BUF,
+		.base.lni = lni_priv_vf->lni.id,
+		.base.eq = evtq ? evtq->eqn : C_EQ_NONE,
+		.base.opts = *opts_b,
+	};
+	struct cxi_cq_alloc_resp resp;
+	size_t resp_len = sizeof(resp);
+	bool is_user = opts->flags & CXI_CQ_USER;
+	struct page *cmds_pages;
+	size_t cmds_count;
+	size_t cmds_order;
+	size_t cmds_len;
+	int rc;
+
+	/* Use provided commands count to calculate commands length. Then, use
+	 * commands length to recalculate commands count to consume entire
+	 * buffer space.
+	 */
+	cmds_count = max_t(size_t, MIN_CQ_COUNT, opts->count);
+	cmds_order = get_order(cmds_count * C_CQ_CMD_SIZE);
+	cmds_len = (1 << cmds_order) * PAGE_SIZE;
+	cmds_count = cmds_len / C_CQ_CMD_SIZE;
+
+	if (cmds_count > CXI_MAX_CQ_COUNT) {
+		cxidev_dbg(cdev, "cmds_count:%ld is > CXI_MAX_CQ_COUNT:%d\n",
+			   cmds_count, CXI_MAX_CQ_COUNT);
+		return ERR_PTR(-E2BIG);
+	}
+
+	cq = kzalloc(sizeof(*cq), GFP_KERNEL);
+	if (!cq)
+		return ERR_PTR(-ENOMEM);
+
+	if (opts_b->buf) {
+		if (!IS_ALIGNED((u64)opts_b->buf, PAGE_SIZE)) {
+			cxidev_dbg(cdev, "buffer %llx not aligned to PAGE_SIZE\n",
+				   (u64)opts_b->buf);
+			rc = -EINVAL;
+			goto free_cq;
+		}
+
+		if (opts_b->is_host_mem) {
+			rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
+						    DMA_BIDIRECTIONAL,
+						    &cq->pages,
+						    &cq->cmds_dma_addr);
+			if (rc)
+				goto free_cq;
+		} else {
+			cq->md_priv = get_device_addr(container_of(lni, struct cxi_lni_priv, lni),
+						      (uintptr_t)opts_b->buf,
+						      cmds_len,
+						      opts_b->dmabuf_fd,
+						      opts_b->dmabuf_offset,
+						      &cq->cmds_dma_addr);
+			if (IS_ERR(cq->md_priv)) {
+				rc = PTR_ERR(cq->md_priv);
+				goto free_cq;
+			}
+		}
+		cq->cmds = NULL;
+	} else {
+		cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
+					      cmds_order);
+		if (!cmds_pages) {
+			rc = -ENOMEM;
+			goto free_cq;
+		}
+
+		cq->cmds_order = cmds_order;
+		cq->cmds = page_address(cmds_pages);
+		cq->cmds_pages = cmds_pages;
+		cq->cmds_dma_addr = dma_map_page(&hw->cdev.pdev->dev,
+						 cmds_pages, 0, cmds_len,
+						 DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(&hw->cdev.pdev->dev, cq->cmds_dma_addr)) {
+			rc = -ENOMEM;
+			goto free_pages;
+		}
+	}
+
+	cq->cmds_len = cmds_len;
+	cmd.dma_addr = cq->cmds_dma_addr;
+	cmd.cmds_len = cmds_len;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		goto cq_release;
+
+	if (!is_user) {
+		phys_addr_t mmio_phys = cq_mmio_phys_addr(hw, resp.cq);
+#ifdef CONFIG_ARM64
+		if (static_branch_unlikely(&avoid_writecombine))
+			cq->cq_mmio = ioremap(mmio_phys, PAGE_SIZE);
+		else
+#endif
+		cq->cq_mmio = ioremap_wc(mmio_phys, PAGE_SIZE);
+		if (!cq->cq_mmio) {
+			cxidev_warn_once(cdev, "ioremap_wc failed\n");
+			rc = -EFAULT;
+			goto cq_release;
+		}
+	}
+
+	/* Initialize client interface structure */
+	cxi_cq_init(&cq->cass_cq,
+		    cq->cmds,
+		    cmds_count,
+		    (__force void *)cq->cq_mmio,
+		    resp.cq);
+
+	cq->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	cq->flags = opts->flags;
+	cq->cass_cq.size = resp.count;
+	cq->cass_cq.idx = resp.cq;
+
+	return &cq->cass_cq;
+
+cq_release:
+	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
+		       cq->cmds_len, DMA_BIDIRECTIONAL);
+
+	if (cq->pages) {
+		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
+		kfree(cq->pages);
+	}
+free_pages:
+	if (cq->cmds_pages)
+		__free_pages(cq->cmds_pages, cmds_order);
+free_cq:
+	kfree(cq);
+	return ERR_PTR(rc);
+}
+
+/**
+ * cxi_cq_alloc_buf_internal() - Allocate a new command queue
  *
  * The new CQ is attached to the LNI.
  * The CQ buffer may be supplied by the user. It must be physically
@@ -469,12 +674,15 @@ md_free:
  *        reporting. May be NULL.
  * @opts_b: Options affecting the CQ.
  * @numa_node: NUMA node ID CQ memory should be allocated from.
+ * @cmds_dma_addr: Pre-allocated DMA address (0 to allocate new)
+ * @cmds_len: Length of pre-allocated memory (0 to allocate new)
  *
  * @return: the command queue or an error pointer
  */
-struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
-				const struct cxi_cq_alloc_opts_buf *opts_b,
-				int numa_node)
+struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evtq,
+					 const struct cxi_cq_alloc_opts_buf *opts_b,
+					 int numa_node, dma_addr_t cmds_dma_addr,
+					 size_t cmds_len)
 {
 	struct cxi_lni_priv *lni_priv =
 		container_of(lni, struct cxi_lni_priv, lni);
@@ -487,7 +695,6 @@ struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
 	int cq_n;
 	int rc;
 	size_t cmds_count;
-	size_t cmds_len;
 	size_t cmds_order;
 	struct page *cmds_pages;
 	struct cxi_cp_priv *cp_priv = NULL;
@@ -548,57 +755,73 @@ struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
 	cq->flags = opts->flags;
 	cq->cmds_len = cmds_len;
 
-	if (opts_b->buf) {
-		if (!IS_ALIGNED((u64)opts_b->buf, PAGE_SIZE)) {
-			cxidev_dbg(cdev, "buffer %llx not aligned to PAGE_SIZE\n",
-				   (u64)opts_b->buf);
-			rc = -EINVAL;
-			goto put_id;
-		}
-
-		if (opts_b->is_host_mem) {
-			rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
-						    DMA_BIDIRECTIONAL,
-						    &cq->pages,
-						    &cq->cmds_dma_addr);
-			if (rc)
-				goto put_id;
-		} else {
-			cq->md_priv = get_device_addr(lni_priv,
-						      (uintptr_t)opts_b->buf,
-						      cmds_len,
-						      opts_b->dmabuf_fd,
-						      opts_b->dmabuf_offset,
-						      &cq->cmds_dma_addr);
-			if (IS_ERR(cq->md_priv)) {
-				rc = PTR_ERR(cq->md_priv);
+	if (!lni_priv->is_vf) {
+		/* For physical function, we use user buffer if provided or we
+		 * allocate a new one
+		 */
+		if (opts_b->buf) {
+			if (!IS_ALIGNED((u64)opts_b->buf, PAGE_SIZE)) {
+				cxidev_dbg(cdev, "buffer %llx not aligned to PAGE_SIZE\n",
+					   (u64)opts_b->buf);
+				rc = -EINVAL;
 				goto put_id;
 			}
-		}
 
-		cq->cmds = NULL;
+			if (opts_b->is_host_mem) {
+				rc = get_dma_addr_if_contig(hw, opts_b->buf, cmds_len,
+							DMA_BIDIRECTIONAL,
+							&cq->pages,
+							&cq->cmds_dma_addr);
+				if (rc)
+					goto put_id;
+			} else {
+				cq->md_priv = get_device_addr(lni_priv,
+							(uintptr_t)opts_b->buf,
+							cmds_len,
+							opts_b->dmabuf_fd,
+							opts_b->dmabuf_offset,
+							&cq->cmds_dma_addr);
+				if (IS_ERR(cq->md_priv)) {
+					rc = PTR_ERR(cq->md_priv);
+					goto put_id;
+				}
+			}
+
+			cq->cmds = NULL;
+		} else {
+			/* CQ needs contiguous memory region. */
+			cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
+						      cmds_order);
+			if (!cmds_pages) {
+				rc = -ENOMEM;
+				goto put_id;
+			}
+
+			cq->cmds_order = cmds_order;
+			cq->cmds = page_address(cmds_pages);
+			cq->cmds_pages = cmds_pages;
+			cq->cmds_dma_addr = dma_map_page(&hw->cdev.pdev->dev,
+							 cmds_pages, 0, cq->cmds_len,
+							 DMA_BIDIRECTIONAL);
+			if (dma_mapping_error(&hw->cdev.pdev->dev, cq->cmds_dma_addr)) {
+				rc = -ENOMEM;
+				goto free_pages;
+			}
+		}
 	} else {
-		/* CQ needs contiguous memory region. */
-		cmds_pages = alloc_pages_node(numa_node, GFP_KERNEL | __GFP_ZERO,
-					      cmds_order);
-		if (!cmds_pages) {
-			rc = -ENOMEM;
-			goto put_id;
-		}
+		/* For VF we use the provided dma_addr */
+		if (!cmds_dma_addr)
+			return ERR_PTR(-EINVAL);
 
-		cq->cmds_order = cmds_order;
-		cq->cmds = page_address(cmds_pages);
-		cq->cmds_pages = cmds_pages;
-		cq->cmds_dma_addr = dma_map_page(&hw->cdev.pdev->dev,
-						 cmds_pages, 0, cq->cmds_len,
-						 DMA_BIDIRECTIONAL);
-		if (dma_mapping_error(&hw->cdev.pdev->dev, cq->cmds_dma_addr)) {
-			rc = -ENOMEM;
-			goto free_pages;
-		}
+		cq->cmds_len = cmds_len;
+		cq->cmds_dma_addr = cmds_dma_addr;
+		/* PF doesn't have access to VF's virtual address space.
+		 * VF has already initialized its own cxi_cq structure.
+		 */
+		cq->cmds = NULL;
 	}
 
-	if (!is_user) {
+	if (!is_user && !lni_priv->is_vf) {
 		phys_addr_t mmio_phys = cq_mmio_phys_addr(hw, cq_idx);
 #ifdef CONFIG_ARM64
 		if (static_branch_unlikely(&avoid_writecombine))
@@ -641,12 +864,17 @@ struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
 	if (eq)
 		refcount_inc(&eq->refcount);
 
+	/* Grant access to the resource from the VF */
+	if (lni_priv->is_vf)
+		cass_config_sriovt(hw, true, lni_priv->vf_num,
+				   (cq->flags & CXI_CQ_IS_TX) ? cq_n :
+								(1024 + cq_n));
+
 	return &cq->cass_cq;
 
 cq_unmap:
 	if (!is_user)
 		iounmap(cq->cq_mmio);
-
 cq_release:
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
@@ -664,11 +892,38 @@ cq_release:
 free_pages:
 	if (cq->cmds_pages)
 		__free_pages(cq->cmds_pages, cmds_order);
-
 put_id:
 	put_cq_id(cq);
 
 	return ERR_PTR(rc);
+}
+EXPORT_SYMBOL(cxi_cq_alloc_buf_internal);
+
+/**
+ * cxi_cq_alloc_buf() - Allocate a new command queue
+ *
+ * The new CQ is attached to the LNI.
+ * The CQ buffer may be supplied by the user. It must be physically
+ * contiguous.
+ *
+ * @lni: LNI to associate with the command queue.
+ * @evtq: Event Queue to associate with the command queue, for error
+ *        reporting. May be NULL.
+ * @opts_b: Options affecting the CQ.
+ * @numa_node: NUMA node ID CQ memory should be allocated from.
+ *
+ * @return: the command queue or an error pointer
+ */
+struct cxi_cq *cxi_cq_alloc_buf(struct cxi_lni *lni, struct cxi_eq *evtq,
+				const struct cxi_cq_alloc_opts_buf *opts_b,
+				int numa_node)
+{
+	struct cxi_dev *cdev = container_of(lni, struct cxi_lni_priv, lni)->dev;
+
+	if (!cdev->is_physfn)
+		return cxi_cq_alloc_buf_vf(lni, evtq, opts_b, numa_node);
+
+	return cxi_cq_alloc_buf_internal(lni, evtq, opts_b, numa_node, 0, 0);
 }
 EXPORT_SYMBOL(cxi_cq_alloc_buf);
 
@@ -750,6 +1005,17 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 	unsigned int cq_n = cxi_cq_get_cqn(cmdq);
 	unsigned int mem_q_rd_ptr;
 
+	if (!cdev->is_physfn) {
+		cxi_cq_free_vf(cmdq);
+		return;
+	}
+
+	/* Remove access to this resource from a VF */
+	if (lni_priv->is_vf)
+		cass_config_sriovt(hw, false, lni_priv->vf_num,
+				   (cq->flags & CXI_CQ_IS_TX) ? cq_n :
+								(1024 + cq_n));
+
 	/* CQ invalidation requires disabling and setting the drain bit for the
 	 * CQ. This is done in cass_tx_cq_disable() and cass_tgt_cq_disable().
 	 *
@@ -791,23 +1057,25 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 		}
 	}
 
-	if (!(cq->flags & CXI_CQ_USER))
-		iounmap(cq->cq_mmio);
+	if (!lni_priv->is_vf) {
+		if (!(cq->flags & CXI_CQ_USER))
+			iounmap(cq->cq_mmio);
 
-	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
-		       cq->cmds_len, DMA_BIDIRECTIONAL);
+		dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
+			       cq->cmds_len, DMA_BIDIRECTIONAL);
 
-	if (cq->cmds_pages) {
-		__free_pages(cq->cmds_pages, cq->cmds_order);
-	} else {
-		if (cq->md_priv) {
-			cass_device_put_pages(cq->md_priv);
-			kfree(cq->md_priv);
-		}
+		if (cq->cmds_pages) {
+			__free_pages(cq->cmds_pages, cq->cmds_order);
+		} else {
+			if (cq->md_priv) {
+				cass_device_put_pages(cq->md_priv);
+				kfree(cq->md_priv);
+			}
 
-		if (cq->pages) {
-			unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
-			kfree(cq->pages);
+			if (cq->pages) {
+				unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
+				kfree(cq->pages);
+			}
 		}
 	}
 
@@ -911,6 +1179,33 @@ int cxi_cq_user_info(struct cxi_cq *cmdq, size_t *cmds_size,
 EXPORT_SYMBOL(cxi_cq_user_info);
 
 /**
+ * cxi_cq_ack_counter_vf() - Get the current ack counter for a CQ in VF
+ *
+ * @cmdq: CQ to get current ack counter for.
+ *
+ * Return: Current ack counter value.
+ */
+static unsigned int cxi_cq_ack_counter_vf(struct cxi_cq *cmdq)
+{
+	struct cxi_cq_priv_vf *cq_priv_vf =
+		container_of(cmdq, struct cxi_cq_priv_vf, cass_cq);
+	struct cxi_dev *dev = cq_priv_vf->lni_priv->dev;
+	const struct cxi_cq_ack_counter_cmd cmd = {
+		.op = CXI_OP_CQ_ACK_COUNTER,
+		.cq = cq_priv_vf->cass_cq.idx,
+	};
+	struct cxi_cq_ack_counter_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.ack_counter;
+}
+
+/**
  * cxi_cq_ack_counter() - Get the current ack counter for a CQ.
  *
  * @cq: CQ to get current ack counter for.
@@ -927,6 +1222,9 @@ unsigned int cxi_cq_ack_counter(struct cxi_cq *cq)
 	union c_cq_txq_ack_ctr txq_ack_ctr;
 	union c_cq_tgq_ack_ctr tgq_ack_ctr;
 	unsigned int ack_ctr;
+
+	if (!hw->cdev.is_physfn)
+		return cxi_cq_ack_counter_vf(cq);
 
 	if (cq_priv->flags & CXI_CQ_IS_TX) {
 		cass_read(hw, C_CQ_TXQ_ACK_CTR(cq_n), &txq_ack_ctr,

@@ -402,6 +402,7 @@ struct cxi_cq_priv {
 	void __iomem *cq_mmio;
 
 	u32 flags;
+	struct cxi_md_priv *md_priv;
 
 	struct list_head list;
 	struct dentry *debug_dir;
@@ -409,7 +410,6 @@ struct cxi_cq_priv {
 
 	/* EQ for error reporting. May be NULL. */
 	struct cxi_eq_priv *eq;
-	struct cxi_md_priv *md_priv;
 };
 
 struct cxi_pte_priv {

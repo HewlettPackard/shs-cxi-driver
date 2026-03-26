@@ -25,4 +25,9 @@ struct cxi_eq *cxi_eq_alloc_internal(struct cxi_lni *lni, const struct cxi_md *m
 int cxi_eq_resize_internal(struct cxi_eq *evtq, void *queue,
 			   size_t queue_len, struct cxi_md *queue_md,
 			   dma_addr_t dma_addr);
+
+struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evtq,
+					 const struct cxi_cq_alloc_opts_buf *opts_b,
+					 int numa_node, dma_addr_t cmds_dma_addr,
+					 size_t cmds_len);
 #endif /* _CXI_INTERNAL_H */

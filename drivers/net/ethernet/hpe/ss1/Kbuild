@@ -18,7 +18,7 @@ cxi-ss1-objs := cxi_core.o cass_core.o cass_lni.o cass_rmu.o cass_eq.o \
 		 cxi_ac_entry_list.o cass_dev_info.o \
 		 cxi_rxtx_profile_list.o cass_rx_tx_profile.o \
 		 cxi_rxtx_profile.o cxi_rx_profile.o cxi_tx_profile.o \
-		 cass_rgroup.o cxi_rgroup.o cass_rgid.o cass_vf_notif.o
+		 cass_rgroup.o cxi_rgroup.o cass_rgid.o cass_vf_notif.o cass_vf.o
 #dma buf code
 cxi-ss1-y += cass_p2p.o cass_dma_buf.o
 cxi-ss1-$(CONFIG_DEBUG_FS) += cass_ss1_debugfs.o
