@@ -126,7 +126,7 @@ static int dump_rgroups(struct cass_dev *hw, struct seq_file *s)
 		cxi_rgroup_print_ac_entry_info(rgroup, s);
 
 		seq_puts(s, "           ACs     CTs     EQs    PTEs    TGQs    TXQs    LE0s    LE1s    LE2s    LE3s    TLEs\n");
-		seq_puts(s, "  max   ");
+		seq_puts(s, "  Max   ");
 		for (i = 0; i < ARRAY_SIZE(rsrc_dump_order); i++) {
 			rc = cxi_rgroup_get_resource_entry(rgroup,
 							   rsrc_dump_order[i],
@@ -135,7 +135,7 @@ static int dump_rgroups(struct cass_dev *hw, struct seq_file *s)
 		}
 		seq_puts(s, "\n");
 
-		seq_puts(s, "  res   ");
+		seq_puts(s, "  Res   ");
 		for (i = 0; i < ARRAY_SIZE(rsrc_dump_order); i++) {
 			rc = cxi_rgroup_get_resource_entry(rgroup,
 							   rsrc_dump_order[i],
@@ -144,12 +144,34 @@ static int dump_rgroups(struct cass_dev *hw, struct seq_file *s)
 		}
 		seq_puts(s, "\n");
 
-		seq_puts(s, "Alloc   ");
+		seq_puts(s, "In use  ");
 		for (i = 0; i < ARRAY_SIZE(rsrc_dump_order); i++) {
-			rc = cxi_rgroup_get_resource_entry(rgroup,
-							   rsrc_dump_order[i],
-							   &entry);
-			seq_printf(s, "%6lu  ", rc ? 0 : entry->limits.in_use);
+			int rtype = rsrc_dump_order[i];
+			long val = -1;
+
+			if (rtype == CXI_RESOURCE_TLE) {
+				struct cxi_resource_entry tle_entry = {};
+
+				if (!cass_get_tle_in_use(rgroup, &tle_entry))
+					val = tle_entry.limits.in_use;
+				else
+					val = -1;
+			} else if (rtype >= CXI_RESOURCE_PE0_LE &&
+				   rtype <= CXI_RESOURCE_PE3_LE) {
+				int pe = rtype - CXI_RESOURCE_PE0_LE;
+				struct cxi_resource_entry le_entry = {};
+
+				if (!cass_get_le_in_use_by_pe(rgroup, pe, &le_entry))
+					val = le_entry.limits.in_use;
+				else
+					val = -1;
+			} else {
+				rc = cxi_rgroup_get_resource_entry(rgroup,
+								   rtype,
+								   &entry);
+				val = rc ? 0 : entry->limits.in_use;
+			}
+			seq_printf(s, "%6ld  ", val);
 		}
 		seq_puts(s, "\n");
 	}

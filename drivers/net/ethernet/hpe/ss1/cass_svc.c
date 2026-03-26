@@ -69,23 +69,32 @@ static void copy_rsrc_use(struct cxi_dev *dev, struct cxi_rsrc_use *rsrcs,
 			  struct cxi_rgroup *rgroup)
 {
 	int rc;
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-	union c_cq_sts_tle_in_use tle_in_use;
 	int type;
 	enum cxi_resource_type rtype;
 	struct cxi_resource_entry *entry;
+	struct cxi_resource_entry local_entry = {};
 
 	for (type = 0; type < CXI_RSRC_TYPE_MAX; type++) {
 		rtype = stype_to_rtype(type, 0);
-		if (type == CXI_RSRC_TYPE_TLE) {
-			if (cxi_rgroup_tle_pool_id(rgroup) == -1)
-				continue;
 
-			cass_read(hw,
-				  C_CQ_STS_TLE_IN_USE(cxi_rgroup_tle_pool_id(rgroup)),
-				  &tle_in_use, sizeof(tle_in_use));
-			rsrcs->in_use[type] = tle_in_use.count;
-			rsrcs->tle_pool_id = cxi_rgroup_tle_pool_id(rgroup);
+		/* rsrcs->in_use[type] = U16_MAX; indicates that "in use"
+		 * is not valid and any consumer should treat it as
+		 * NOT APPLICABLE.
+		 */
+		if (type == CXI_RSRC_TYPE_TLE) {
+			if (!cass_get_tle_in_use(rgroup, &local_entry)) {
+				rsrcs->in_use[type] = local_entry.limits.in_use;
+				rsrcs->tle_pool_id = cxi_rgroup_tle_pool_id(rgroup);
+			} else {
+				rsrcs->in_use[type] = U16_MAX;
+				rsrcs->tle_pool_id = DEFAULT_TLE_POOL_ID;
+			}
+		} else if (type == CXI_RSRC_TYPE_LE) {
+			if (!cass_get_le_in_use(rgroup, &local_entry)) {
+				rsrcs->in_use[type] = local_entry.limits.in_use;
+			} else {
+				rsrcs->in_use[type] = U16_MAX;
+			}
 		} else {
 			rc = cxi_rgroup_get_resource_entry(rgroup,
 							   rtype, &entry);

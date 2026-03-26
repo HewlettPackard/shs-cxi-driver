@@ -273,17 +273,102 @@ int cass_alloc_resource(struct cxi_rgroup *rgroup,
 	return rc;
 }
 
-void cass_get_tle_in_use(struct cxi_rgroup *rgroup,
-			 struct cxi_resource_entry *entry)
+/**
+ * in_use_valid() - check if the "in use" count is valid for resource type
+ *                  LE and TLE. This check currently not needed for other
+ *                  resource types.
+ *
+ * @rgroup: resource group
+ * @rtype: resource type to check
+ *
+ * return: true if "in use" count is valid and can be read from hardware or if
+ *         it does not apply, false if "in use" count is not valid and should
+ *         not be read from hardware.
+ */
+static bool in_use_valid(struct cxi_rgroup *rgroup, enum cxi_resource_type rtype)
+{
+	int rc;
+	struct cxi_resource_entry *entry;
+
+	if (rtype == CXI_RESOURCE_TLE ||
+	    (rtype >= CXI_RESOURCE_PE0_LE && rtype <= CXI_RESOURCE_PE3_LE)) {
+		rc = cxi_rgroup_get_resource_entry(rgroup, rtype, &entry);
+
+		/* We report "in use" only if there is dedicated pool allocated
+		 * or if this is the default service. For shared pool "in use"
+		 * count is not valid.
+		 */
+		if (!rc &&
+		    (entry->limits.reserved != 0 ||
+		     rgroup->id == CXI_DEFAULT_SVC_ID))
+			return true;
+		else
+			return false;
+	}
+
+	return true;
+}
+
+int cass_get_tle_in_use(struct cxi_rgroup *rgroup,
+			struct cxi_resource_entry *entry)
 {
 	union c_cq_sts_tle_in_use tle_in_use;
 
-	if (cxi_rgroup_tle_pool_id(rgroup) == -1)
-		return;
+	if (!in_use_valid(rgroup, CXI_RESOURCE_TLE))
+		return -EINVAL;
 
 	cass_read(rgroup->hw,
 		  C_CQ_STS_TLE_IN_USE(cxi_rgroup_tle_pool_id(rgroup)),
 		  &tle_in_use, sizeof(tle_in_use));
 
 	entry->limits.in_use = tle_in_use.count;
+	return 0;
+}
+
+int cass_get_le_in_use_by_pe(struct cxi_rgroup *rgroup, int pe,
+			     struct cxi_resource_entry *entry)
+{
+	int pool_id;
+	union c_lpe_sts_pe_le_alloc le_alloc;
+
+	if (pe < 0 || pe >= C_PE_COUNT)
+		return -EINVAL;
+
+	if (!in_use_valid(rgroup, CXI_RESOURCE_PE0_LE + pe))
+		return -EINVAL;
+
+	pool_id = rgroup->pools.le_pool_id[pe];
+
+	cass_lpe_reserve_pool_sts(rgroup->hw, pe, (unsigned int)pool_id, &le_alloc);
+	entry->limits.in_use = le_alloc.num_allocated;
+	return 0;
+}
+
+/**
+ * cass_get_le_in_use() - get max LE "in use" across all PEs for an rgroup.
+ *			  Call into per-PE helper cass_get_le_in_use_by_pe()
+ *			  for each PE and return the maximum. Callers receive
+ *			  the peak per-PE LE count from registers.
+ *
+ * @rgroup: resource group
+ * @entry: output resource entry where limits.in_use will contain the max
+ */
+int cass_get_le_in_use(struct cxi_rgroup *rgroup,
+		       struct cxi_resource_entry *entry)
+{
+	int pe, ret;
+	unsigned long max_in_use = 0;
+
+	for (pe = 0; pe < C_PE_COUNT; pe++) {
+		struct cxi_resource_entry local_entry = {};
+
+		ret = cass_get_le_in_use_by_pe(rgroup, pe, &local_entry);
+		if (ret)
+			return ret;
+		if (local_entry.limits.in_use > max_in_use)
+			max_in_use = local_entry.limits.in_use;
+	}
+
+	entry->limits.in_use = max_in_use;
+	return 0;
 }
