@@ -1162,16 +1162,17 @@ static int cxi_user_cq_ack_counter(struct user_client *client,
 }
 
 static int cxi_user_ct_alloc(struct user_client *client,
-			     const void *cmd_in,
-			     void *resp_out, size_t *resp_out_len)
+			     const void *cmd_in, void *resp_out,
+			     size_t *resp_out_len)
 {
 	int rc;
 	const struct cxi_ct_alloc_cmd *cmd = cmd_in;
+	const struct cxi_ct_alloc_cmd_vf *cmd_vf = cmd_in;
 	struct cxi_ct_alloc_resp resp = {};
 	struct ucxi_obj *ct_obj;
 	struct ucxi_obj *lni;
 	struct cxi_ct *ct;
-	struct cxi_mmap_info *mminfo;
+	struct cxi_mmap_info *mminfo = NULL;
 	phys_addr_t doorbell_addr;
 	size_t doorbell_size;
 
@@ -1196,7 +1197,12 @@ static int cxi_user_ct_alloc(struct user_client *client,
 	read_unlock(&client->res_lock);
 
 	/* Allocating userspace counting event. */
-	ct = cxi_ct_alloc(lni->lni, cmd->wb, true);
+	if (client->is_vf)
+		ct = cxi_ct_alloc_internal(lni->lni, NULL, true,
+					   cmd_vf->wb_dma_addr);
+	else
+		ct = cxi_ct_alloc(lni->lni, cmd->wb, true);
+
 	if (IS_ERR(ct)) {
 		rc = PTR_ERR(ct);
 		goto free_obj;
@@ -1215,32 +1221,39 @@ static int cxi_user_ct_alloc(struct user_client *client,
 	if (rc < 0)
 		goto free_ct;
 
-	/* Prepare the doorbell for userspace. */
-	rc = cxi_ct_user_info(ct, &doorbell_addr, &doorbell_size);
-	if (rc)
-		goto release_ct_idr;
+	if (!client->is_vf) {
+		/* Prepare the doorbell for userspace. */
+		rc = cxi_ct_user_info(ct, &doorbell_addr, &doorbell_size);
+		if (rc)
+			goto release_ct_idr;
 
-	mminfo = kzalloc(sizeof(*mminfo), GFP_KERNEL);
-	if (!mminfo) {
-		rc = -ENOMEM;
-		goto release_ct_idr;
+		mminfo = kzalloc(sizeof(*mminfo), GFP_KERNEL);
+		if (!mminfo) {
+			rc = -ENOMEM;
+			goto release_ct_idr;
+		}
+
+		fill_mmap_info(client, mminfo, doorbell_addr, doorbell_size,
+			       MMAP_PHYSICAL);
+		mminfo->obj = ct_obj;
 	}
-
-	fill_mmap_info(client, mminfo, doorbell_addr, doorbell_size,
-		       MMAP_PHYSICAL);
-	mminfo->obj = ct_obj;
 
 	/* Prepare response for user. */
 	resp.ctn = ct->ctn;
-	resp.doorbell = mminfo->mminfo;
+	if (!client->is_vf)
+		resp.doorbell = mminfo->mminfo;
 
 	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
 	if (rc)
 		goto free_ct_mmap;
 
-	ct_obj->mminfo = mminfo;
+	if (!client->is_vf)
+		ct_obj->mminfo = mminfo;
+	else
+		ct_obj->mminfo = NULL;
 
-	mminfo_pre_mmap(client, mminfo, 1);
+	if (mminfo)
+		mminfo_pre_mmap(client, mminfo, 1);
 
 	return 0;
 
@@ -1259,11 +1272,12 @@ free_obj:
 }
 
 static int cxi_user_ct_wb_update(struct user_client *client,
-				 const void *cmd_in,
-				 void *resp_out, size_t *resp_out_len)
+				 const void *cmd_in, void *resp_out,
+				 size_t *resp_out_len)
 {
 	int rc;
 	const struct cxi_ct_wb_update_cmd *cmd = cmd_in;
+	const struct cxi_ct_wb_update_cmd_vf *cmd_vf = cmd_in;
 	struct ucxi_obj *ct_obj;
 
 	read_lock(&client->res_lock);
@@ -1278,7 +1292,10 @@ static int cxi_user_ct_wb_update(struct user_client *client,
 
 	read_unlock(&client->res_lock);
 
-	rc = cxi_ct_wb_update(ct_obj->ct, cmd->wb);
+	if (client->is_vf)
+		rc = cxi_ct_wb_update_internal(ct_obj->ct, NULL, cmd_vf->wb_dma_addr);
+	else
+		rc = cxi_ct_wb_update(ct_obj->ct, cmd->wb);
 
 	atomic_dec(&ct_obj->refs);
 
@@ -2702,10 +2719,12 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.handler    = cxi_user_wait_free, },
 	[CXI_OP_CT_ALLOC] = {
 		.req_size   = sizeof(struct cxi_ct_alloc_cmd),
+		.req_size_vf = sizeof(struct cxi_ct_alloc_cmd_vf),
 		.name       = "CT_ALLOC",
 		.handler    = cxi_user_ct_alloc, },
 	[CXI_OP_CT_WB_UPDATE] = {
 		.req_size   = sizeof(struct cxi_ct_wb_update_cmd),
+		.req_size_vf = sizeof(struct cxi_ct_wb_update_cmd_vf),
 		.name       = "CT_WB_UPDATE",
 		.handler    = cxi_user_ct_wb_update, },
 	[CXI_OP_CT_FREE] = {
