@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Portals-like interface for Cassini */
 
@@ -9,7 +9,9 @@
 #include <linux/iopoll.h>
 
 #include "cass_core.h"
+#include "cxi_internal.h"
 #include "cass_ss1_debugfs.h"
+#include "cxi_vf_cmd.h"
 
 static unsigned int ee_timestamp_period_ms = 1000;
 module_param(ee_timestamp_period_ms, uint, 0644);
@@ -204,6 +206,35 @@ static int is_valid_eq_reserved_fc(struct cxi_eq_priv *eq, int fc_value)
 }
 
 /**
+ * cxi_eq_adjust_reserved_fc_vf() - Adjust EQ reserved FC value for VF.
+ * @eq: EQ
+ * @value: Amount to adjust reserved FC value by. Can be negative or positive.
+ *
+ * Return: On success, value greater than or equal to zero representing current
+ * EQ reserved FC value. Else, -EINVAL if value is invalid or -ENOSPC if a valid
+ * value is provided but could not be applied.
+ */
+static int cxi_eq_adjust_reserved_fc_vf(struct cxi_eq *eq, int value)
+{
+	struct cxi_dev *cdev = container_of(eq, struct cxi_eq_priv, eq)->lni_priv->dev;
+	struct cxi_eq_adjust_reserved_fc_resp resp;
+	size_t resp_len = sizeof(resp);
+	const struct cxi_eq_adjust_reserved_fc_cmd cmd = {
+		.op = CXI_OP_EQ_ADJUST_RESERVED_FC,
+		.eq_hndl = eq->eqn,
+		.value = value,
+		.resp = &resp,
+	};
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.reserved_fc;
+}
+
+/**
  * cxi_eq_adjust_reserved_fc() - Adjust EQ reserved FC value.
  * @eq: EQ
  * @value: Amount to adjust reserved FC value by. Can be negative or positive.
@@ -224,6 +255,10 @@ int cxi_eq_adjust_reserved_fc(struct cxi_eq *eq, int value)
 
 	eq_priv = container_of(eq, struct cxi_eq_priv, eq);
 	cdev = eq_priv->lni_priv->dev;
+
+	if (!cdev->is_physfn)
+		return cxi_eq_adjust_reserved_fc_vf(eq, value);
+
 	hw = container_of(cdev, struct cass_dev, cdev);
 
 	/* Use EQ shadow_lock to serialize EQ access. */
@@ -264,41 +299,21 @@ static void put_pages_contig(struct cass_dev *hw, struct eq_buf_desc *desc)
 	kfree(desc->pages);
 }
 
-/*
- * cxi_eq_resize() - Resize a CXI Event Queue buffer.
- *
- * Resizing an Event Queue is a multi-step process. The first step is to call
- * cxi_eq_resize() to pass a new event buffer to the device. After this call,
- * evtq will continue to reference the old EQ buffer. The device may write a
- * small number of events to the old EQ buffer followed by a special
- * C_EVENT_EQ_SWITCH event to indicate that hardware has transitioned to
- * writing to the new EQ buffer. When this event is detected, software must
- * call cxi_eq_resize_complete() in order to start reading events from the new
- * EQ buffer.
- *
- * The new event queue buffer must use the same translation mechanism as was
- * used to allocate the EQ. If translation is used, the Addressing Context (AC)
- * used by the new MD must match the MD used to allocate the EQ.
- *
- * The new event queue buffer must be cleared before calling cxi_eq_resize().
- *
- * @evtq: The Event Queue to resize.
- * @queue: The new event queue buffer. Must be page aligned.
- * @queue_len: The new event queue buffer length in bytes. Must be page aligned.
- * @queue_md: The new event queue memory descriptor.
- *
- * Return: On success, 0 is returned and a resized buffer has been
- * submitted to the device.
- */
-int cxi_eq_resize(struct cxi_eq *evtq, void *queue, size_t queue_len,
-		  struct cxi_md *queue_md)
+static int cxi_eq_resize_vf(struct cxi_eq *evtq, void *queue, size_t queue_len,
+			    struct cxi_md *queue_md)
 {
 	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
 	struct cxi_dev *cdev = eq->lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
-	struct cxi_md_priv *md_priv;
-	int rc;
-	int passthrough = !!(eq->attr.flags & CXI_EQ_PASSTHROUGH);
+	struct cxi_eq_resize_cmd_vf cmd = {
+		.base.op = CXI_OP_EQ_RESIZE,
+		.base.eq_hndl = eq->eq.eqn,
+		.base.queue_len = queue_len,
+		.base.queue_md = queue_md ? queue_md->id : CXI_MD_NONE,
+	};
+	bool passthrough = !!(eq->attr.flags & CXI_EQ_PASSTHROUGH);
+	bool is_user = eq->attr.flags & CXI_EQ_USER;
+	int rc = 0;
 
 	if (!queue_len || queue_len > MAX_EQ_LEN || !queue)
 		return -EINVAL;
@@ -310,7 +325,87 @@ int cxi_eq_resize(struct cxi_eq *evtq, void *queue, size_t queue_len,
 	if (!IS_ALIGNED(queue_len, PAGE_SIZE))
 		return -EINVAL;
 
-	if (!passthrough) {
+	mutex_lock(&eq->resize_mutex);
+
+	eq->resize.md = queue_md;
+	eq->resize.events = queue;
+	eq->resize.events_len = queue_len;
+
+	if (passthrough) {
+		if (is_user) {
+			rc = get_dma_addr_if_contig(hw, queue, queue_len,
+						    DMA_FROM_DEVICE,
+						    &eq->resize.pages,
+						    &eq->resize.dma_addr);
+		} else {
+			eq->resize.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
+							     eq->resize.events,
+							     eq->resize.events_len,
+							     DMA_FROM_DEVICE);
+			if (dma_mapping_error(&hw->cdev.pdev->dev, eq->resize.dma_addr))
+				rc = -ENOMEM;
+		}
+
+		if (rc)
+			goto unlock;
+	} else {
+		eq->resize.dma_addr = queue_md->iova;
+	}
+
+	cmd.dma_addr = eq->resize.dma_addr;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, NULL);
+	if (rc)
+		goto unmap_dma;
+
+	eq->resized = true;
+	mutex_unlock(&eq->resize_mutex);
+
+	return 0;
+unmap_dma:
+	if (passthrough) {
+		if (is_user)
+			put_pages_contig(hw, &eq->resize);
+		else
+			dma_unmap_single(&hw->cdev.pdev->dev, eq->resize.dma_addr,
+					 eq->resize.events_len, DMA_FROM_DEVICE);
+	}
+unlock:
+	mutex_unlock(&eq->resize_mutex);
+	return rc;
+}
+
+int cxi_eq_resize_internal(struct cxi_eq *evtq, void *queue,
+			   size_t queue_len, struct cxi_md *queue_md,
+			   dma_addr_t dma_addr)
+{
+	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
+	struct cxi_lni_priv *lni_priv = eq->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	struct cxi_md_priv *md_priv;
+	int rc = 0;
+	int passthrough = !!(eq->attr.flags & CXI_EQ_PASSTHROUGH);
+	bool is_vf = lni_priv->is_vf;
+
+	if (!cdev->is_physfn)
+		return -EOPNOTSUPP;
+
+	if (!queue_len || queue_len > MAX_EQ_LEN)
+		return -EINVAL;
+
+	if ((!is_vf && !queue) || (is_vf && !dma_addr))
+		return -EINVAL;
+
+	/* Queue buffer address and length must be page aligned. */
+	if ((!is_vf && !IS_ALIGNED((uintptr_t)queue, PAGE_SIZE)) ||
+	    (is_vf && !IS_ALIGNED(dma_addr, PAGE_SIZE)))
+		return -EINVAL;
+
+	if (!IS_ALIGNED(queue_len, PAGE_SIZE))
+		return -EINVAL;
+
+	if (!is_vf && !passthrough) {
 		if (!queue_md || !CXI_MD_CONTAINS(queue_md, queue, queue_len)) {
 			cxidev_err(cdev, "MD does not contain queue buffer\n");
 			return -EINVAL;
@@ -333,29 +428,34 @@ int cxi_eq_resize(struct cxi_eq *evtq, void *queue, size_t queue_len,
 	eq->resize.events = queue;
 	eq->resize.events_len = queue_len;
 
-	if (passthrough) {
-		if (eq->attr.flags & CXI_EQ_USER) {
-			rc = get_dma_addr_if_contig(hw, queue, queue_len,
-						    DMA_FROM_DEVICE,
-						    &eq->resize.pages,
-						    &eq->resize.dma_addr);
+	if (!is_vf) {
+		if (passthrough) {
+			if (eq->attr.flags & CXI_EQ_USER) {
+				rc = get_dma_addr_if_contig(hw, queue, queue_len,
+							    DMA_FROM_DEVICE,
+							    &eq->resize.pages,
+							    &eq->resize.dma_addr);
+			} else {
+				eq->resize.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
+								     queue, queue_len,
+								     DMA_FROM_DEVICE);
+				if (dma_mapping_error(&hw->cdev.pdev->dev, eq->resize.dma_addr))
+					rc = -ENOMEM;
+				else
+					rc = 0;
+			}
+
+			if (rc)
+				goto unlock;
 		} else {
-			eq->resize.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
-							     queue, queue_len,
-							     DMA_FROM_DEVICE);
-			if (dma_mapping_error(&hw->cdev.pdev->dev, eq->resize.dma_addr))
-				rc = -ENOMEM;
-			else
-				rc = 0;
+			eq->resize.dma_addr = CXI_VA_TO_IOVA(queue_md, queue);
+			md_priv = container_of(eq->resize.md, struct cxi_md_priv, md);
+			refcount_inc(&md_priv->refcount);
 		}
-
-		if (rc)
-			goto unlock;
-	} else {
-		eq->resize.dma_addr = CXI_VA_TO_IOVA(queue_md, queue);
-
+	} else if (!passthrough) {
 		md_priv = container_of(queue_md, struct cxi_md_priv, md);
 		refcount_inc(&md_priv->refcount);
+		eq->resize.dma_addr = dma_addr;
 	}
 
 	if (eq->cfg.use_buffer_b) {
@@ -397,7 +497,83 @@ unlock:
 
 	return rc;
 }
+EXPORT_SYMBOL(cxi_eq_resize_internal);
+
+/* cxi_eq_resize() - Resize a CXI Event Queue buffer.
+ *
+ * Resizing an Event Queue is a multi-step process. The first step is to call
+ * cxi_eq_resize() to pass a new event buffer to the device. After this call,
+ * evtq will continue to reference the old EQ buffer. The device may write a
+ * small number of events to the old EQ buffer followed by a special
+ * C_EVENT_EQ_SWITCH event to indicate that hardware has transitioned to
+ * writing to the new EQ buffer. When this event is detected, software must
+ * call cxi_eq_resize_complete() in order to start reading events from the new
+ * EQ buffer.
+ *
+ * The new event queue buffer must use the same translation mechanism as was
+ * used to allocate the EQ. If translation is used, the Addressing Context (AC)
+ * used by the new MD must match the MD used to allocate the EQ.
+ *
+ * The new event queue buffer must be cleared before calling cxi_eq_resize().
+ *
+ * @evtq: The Event Queue to resize.
+ * @queue: The new event queue buffer. Must be page aligned.
+ * @queue_len: The new event queue buffer length in bytes. Must be page aligned.
+ * @queue_md: The new event queue memory descriptor.
+ *
+ * Return: On success, 0 is returned and a resized buffer has been
+ * submitted to the device.
+ */
+int cxi_eq_resize(struct cxi_eq *evtq, void *queue, size_t queue_len,
+		  struct cxi_md *queue_md)
+{
+	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
+	struct cxi_lni_priv *lni_priv = eq->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+
+	if (cdev->is_physfn)
+		return cxi_eq_resize_internal(evtq, queue, queue_len, queue_md, 0);
+	else
+		return cxi_eq_resize_vf(evtq, queue, queue_len, queue_md);
+}
 EXPORT_SYMBOL(cxi_eq_resize);
+
+static int cxi_eq_resize_complete_vf(struct cxi_eq *evtq)
+{
+	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
+	struct cxi_dev *cdev = eq->lni_priv->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	const struct cxi_eq_resize_complete_cmd cmd = {
+		.op = CXI_OP_EQ_RESIZE_COMPLETE,
+		.eq_hndl = evtq->eqn,
+	};
+	int rc;
+
+	mutex_lock(&eq->resize_mutex);
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, NULL);
+	if (rc)
+		goto unlock;
+
+	if (eq->attr.flags & CXI_EQ_PASSTHROUGH) {
+		if (eq->attr.flags & CXI_EQ_USER)
+			put_pages_contig(hw, &eq->active);
+		else
+			dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
+					 eq->active.events_len, DMA_FROM_DEVICE);
+	}
+
+	eq->active = eq->resize;
+	eq->resized = false;
+	cxi_eq_init(evtq, eq->active.events, eq->active.events_len, eq->eq.eqn,
+		    (__force u64 *)(hw->regs + C_MEMORG_EE +
+				    eq->eq.eqn * C_EE_SW_STATE_PAGE_SIZE));
+	evtq->sw_state.reading_buffer_b = !evtq->sw_state.reading_buffer_b;
+
+unlock:
+	mutex_unlock(&eq->resize_mutex);
+	return rc;
+}
 
 /**
  * cxi_eq_resize_complete() - Complete resizing a CXI Event Queue buffer.
@@ -414,9 +590,14 @@ EXPORT_SYMBOL(cxi_eq_resize);
 int cxi_eq_resize_complete(struct cxi_eq *evtq)
 {
 	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
-	struct cxi_dev *cdev = eq->lni_priv->dev;
+	struct cxi_lni_priv *lni_priv = eq->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	struct cxi_md_priv *md_priv;
+	bool is_vf = lni_priv->is_vf;
+
+	if (!cdev->is_physfn)
+		return cxi_eq_resize_complete_vf(evtq);
 
 	mutex_lock(&eq->resize_mutex);
 
@@ -425,13 +606,18 @@ int cxi_eq_resize_complete(struct cxi_eq *evtq)
 		return -EINVAL;
 	}
 
-	if (eq->attr.flags & CXI_EQ_PASSTHROUGH) {
-		if (eq->attr.flags & CXI_EQ_USER)
-			put_pages_contig(hw, &eq->active);
-		else
-			dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
-					 eq->active.events_len, DMA_FROM_DEVICE);
-	} else {
+	if (!is_vf) {
+		if (eq->attr.flags & CXI_EQ_PASSTHROUGH) {
+			if (eq->attr.flags & CXI_EQ_USER)
+				put_pages_contig(hw, &eq->active);
+			else
+				dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
+						 eq->active.events_len, DMA_FROM_DEVICE);
+		} else {
+			md_priv = container_of(eq->active.md, struct cxi_md_priv, md);
+			refcount_dec(&md_priv->refcount);
+		}
+	} else if (!(eq->attr.flags & CXI_EQ_PASSTHROUGH)) {
 		md_priv = container_of(eq->active.md, struct cxi_md_priv, md);
 		refcount_dec(&md_priv->refcount);
 	}
@@ -545,7 +731,8 @@ static void pf_put_eq_id(struct cxi_eq_priv *eq)
 }
 
 /* Prepare and write the EQ config to the adapter */
-static int pf_write_eq_config(struct cxi_eq_priv *eq)
+static int pf_write_eq_config(struct cxi_eq_priv *eq, bool is_vf,
+			      int vf_event_irq_idx, int vf_status_irq_idx)
 {
 	struct cxi_dev *cdev = eq->lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
@@ -555,18 +742,24 @@ static int pf_write_eq_config(struct cxi_eq_priv *eq)
 	void __iomem *csr;
 	int rc;
 
-	if (eq->event_cb) {
+	if (is_vf && vf_event_irq_idx >= 0) {
+		eq->cfg.event_int_idx = vf_event_irq_idx;
+		eq->cfg.event_int_en = 1;
+	} else if (!is_vf && eq->event_cb) {
 		eq->cfg.event_int_idx = eq->event_msi_irq->idx;
 		eq->cfg.event_int_en = 1;
 	}
 
-	if (eq->status_cb) {
+	if (is_vf && vf_status_irq_idx >= 0) {
+		eq->cfg.eq_sts_int_idx = vf_status_irq_idx;
+		eq->cfg.eq_sts_int_en = 1;
+	} else if (!is_vf && eq->status_cb) {
 		eq->cfg.eq_sts_int_idx = eq->status_msi_irq->idx;
 		eq->cfg.eq_sts_int_en = 1;
 	}
 
 	if (eq->attr.flags & CXI_EQ_PASSTHROUGH) {
-		eq->cfg.acid = ATU_PHYS_AC;
+		eq->cfg.acid = eq->lni_priv->phys_ac;
 		eq->cfg.buffer_a_addr = eq->active.dma_addr >> C_ADDR_SHIFT;
 	} else {
 		struct cxi_md_priv *md_priv =
@@ -650,8 +843,211 @@ static int pf_write_eq_config(struct cxi_eq_priv *eq)
 	return 0;
 }
 
+static int eq_mmio_map(struct cass_dev *hw, void __iomem **eq_mmio, int eq_idx)
+{
+	phys_addr_t mmio_phys = hw->regs_base + C_MEMORG_EE +
+		eq_idx * C_EE_SW_STATE_PAGE_SIZE;
+
+	*eq_mmio = ioremap(mmio_phys, PAGE_SIZE);
+	if (!*eq_mmio) {
+		cxidev_warn_once(&hw->cdev, "ioremap failed");
+		return -EFAULT;
+	}
+
+	return 0;
+}
+
 /**
- * cxi_eq_alloc() - Allocate a new event queue resource.
+ * cass_eq_attach_irqs() - Attach event and status interrupt handlers to an EQ.
+ *
+ * @eq: Event queue structure
+ * @hw: Cassini device
+ * @cpus: CPU mask for IRQ affinity
+ * @event_cb: Event interrupt callback
+ * @event_cb_data: Event callback data
+ * @status_cb: Status interrupt callback
+ * @status_cb_data: Status callback data
+ *
+ * Return: 0 on success, negative error code on failure
+ */
+static int cass_eq_attach_irqs(struct cxi_eq_priv *eq, struct cass_dev *hw,
+			       struct cpumask *cpus,
+			       void (*event_cb)(void *cb_data), void *event_cb_data,
+			       void (*status_cb)(void *cb_data), void *status_cb_data)
+{
+	struct cass_irq *irq;
+	int rc = 0;
+
+	if (event_cb) {
+		eq->event_cb = event_cb;
+		eq->event_cb_data = event_cb_data;
+		eq->event_nb.notifier_call = eq_event_nb;
+
+		irq = cass_comp_irq_attach(hw, cpus, &eq->event_nb);
+		if (IS_ERR(irq)) {
+			rc = PTR_ERR(irq);
+			goto out;
+		}
+		eq->event_msi_irq = irq;
+	} else {
+		eq->event_msi_irq = NULL;
+	}
+
+	if (status_cb) {
+		eq->status_cb = status_cb;
+		eq->status_cb_data = status_cb_data;
+		eq->status_nb.notifier_call = eq_status_nb;
+
+		irq = cass_comp_irq_attach(hw, cpus, &eq->status_nb);
+		if (IS_ERR(irq)) {
+			rc = PTR_ERR(irq);
+			goto event_irq_detach;
+		}
+		eq->status_msi_irq = irq;
+	} else {
+		eq->status_msi_irq = NULL;
+	}
+
+	return 0;
+
+event_irq_detach:
+	if (eq->event_msi_irq)
+		cass_comp_irq_detach(hw, eq->event_msi_irq, &eq->event_nb);
+out:
+	return rc;
+}
+
+static struct cxi_eq *cxi_eq_alloc_vf(struct cxi_lni *lni, const struct cxi_md *md,
+				      const struct cxi_eq_attr *attr,
+				      void (*event_cb)(void *cb_data),
+				      void *event_cb_data,
+				      void (*status_cb)(void *cb_data),
+				      void *status_cb_data)
+{
+	struct cxi_dev *dev = container_of(lni, struct cxi_lni_priv, lni)->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_eq_priv *eq;
+	bool passthrough = !!(attr->flags & CXI_EQ_PASSTHROUGH);
+	struct cxi_eq_alloc_cmd_vf cmd = {
+		.base.op = CXI_OP_EQ_ALLOC,
+		.base.lni = lni->id,
+		.base.attr = *attr,
+		/* We explicitly tell PF to do nothing with these fields */
+		.base.queue_md = (!passthrough && md) ? md->id : CXI_MD_NONE,
+		.base.event_wait = CXI_WAIT_NONE,
+		.base.status_wait = CXI_WAIT_NONE,
+	};
+	struct cxi_eq_alloc_resp resp;
+	size_t resp_len = sizeof(resp);
+	bool is_user = attr->flags & CXI_EQ_USER;
+	struct cpumask cpus = {};
+	struct cxi_eq_attr cmd_attr = *attr;
+	int rc;
+
+	if (!passthrough && !md) {
+		cxidev_err(dev, "EQ_ALLOC(VF): missing MD for non-passthrough\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	/* Queue buffer address and length must be page aligned. */
+	if (!IS_ALIGNED((uintptr_t)attr->queue, PAGE_SIZE))
+		return ERR_PTR(-EINVAL);
+
+	if (!IS_ALIGNED(attr->queue_len, PAGE_SIZE))
+		return ERR_PTR(-EINVAL);
+
+	if (!passthrough) {
+		cmd_attr.queue = (void *)(uintptr_t)
+			((uintptr_t)attr->queue - (uintptr_t)md->va);
+	}
+
+	eq = kzalloc(sizeof(*eq), GFP_KERNEL);
+	if (!eq)
+		return ERR_PTR(-ENOMEM);
+
+	eq->attr = *attr;
+	eq->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	eq->active.md = md;
+	eq->active.events = eq->attr.queue;
+	eq->active.events_len = eq->attr.queue_len;
+	eq->queue_size = get_eq_queue_size(eq->active.events_len);
+	mutex_init(&eq->resize_mutex);
+	eq->resized = false;
+
+	if (eq->attr.cpu_affinity < nr_cpumask_bits)
+		cpumask_set_cpu(eq->attr.cpu_affinity, &cpus);
+
+	rc = cass_eq_attach_irqs(eq, hw, &cpus, event_cb, event_cb_data, status_cb, status_cb_data);
+	if (rc)
+		goto free_eq_alloc;
+
+	if (passthrough) {
+		if (is_user) {
+			rc = get_dma_addr_if_contig(hw, eq->active.events,
+						    eq->active.events_len,
+						    DMA_FROM_DEVICE,
+						    &eq->active.pages,
+						    &eq->active.dma_addr);
+		} else {
+			eq->active.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
+							     eq->active.events,
+							     eq->active.events_len,
+							     DMA_FROM_DEVICE);
+			if (dma_mapping_error(&hw->cdev.pdev->dev, eq->active.dma_addr))
+				rc = -ENOMEM;
+		}
+
+		if (rc)
+			goto free_irqs;
+	} else {
+		eq->active.dma_addr = md->iova;
+	}
+
+	cmd.dma_addr = eq->active.dma_addr;
+	/* ... and instead give it the IRQ indices */
+	cmd.event_irq_idx = eq->event_msi_irq ? eq->event_msi_irq->idx : -1;
+	cmd.status_irq_idx = eq->status_msi_irq ? eq->status_msi_irq->idx : -1;
+	cmd.base.attr = cmd_attr;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		goto free_dma_map;
+
+	eq->eq.eqn = resp.eq;
+
+	if (!is_user) {
+		rc = eq_mmio_map(hw, &eq->eq_mmio, eq->eq.eqn);
+		if (rc) {
+			cxi_eq_free(&eq->eq);
+			return ERR_PTR(rc);
+		}
+	}
+
+	cxi_eq_init(&eq->eq, eq->active.events, eq->active.events_len,
+		    eq->eq.eqn, (__force u64 *)eq->eq_mmio);
+
+	return &eq->eq;
+
+free_dma_map:
+	if (passthrough) {
+		if (is_user)
+			put_pages_contig(hw, &eq->active);
+		else
+			dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
+					 eq->active.events_len, DMA_FROM_DEVICE);
+	}
+free_irqs:
+	if (eq->event_msi_irq)
+		cass_comp_irq_detach(hw, eq->event_msi_irq, &eq->event_nb);
+	if (eq->status_msi_irq)
+		cass_comp_irq_detach(hw, eq->status_msi_irq, &eq->status_nb);
+free_eq_alloc:
+	kfree(eq);
+	return ERR_PTR(rc);
+}
+
+/**
+ * cxi_eq_alloc_internal() - Allocate a new event queue resource.
  *
  * @lni: LNI to associate with the event queue.
  * @md: Memory descriptor for the queue
@@ -662,31 +1058,36 @@ static int pf_write_eq_config(struct cxi_eq_priv *eq)
  * @status_cb: Status interrupt callback for that EQ.
  * @status_cb_data: Opaque owner context pointer. Can be used in the status
  *                  interrupt callback to retrieve some internal structures.
+ * @dma_addr: DMA address of the event queue buffer. NULL if not provided.
+ * @event_irq_idx: Event IRQ index for VF EQ allocation. Use -1 for PF EQ allocation.
+ * @status_irq_idx: Status IRQ index for VF EQ allocation. Use -1 for PF EQ allocation.
  *
  * Return: On success, a pointer to the allocated event queue structure. On
  * error, an error pointer containing a negative error number.
  */
-struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
-			    const struct cxi_eq_attr *attr,
-			    void (*event_cb)(void *cb_data),
-			    void *event_cb_data,
-			    void (*status_cb)(void *cb_data),
-			    void *status_cb_data)
+struct cxi_eq *cxi_eq_alloc_internal(struct cxi_lni *lni, const struct cxi_md *md,
+				     const struct cxi_eq_attr *attr,
+				     void (*event_cb)(void *cb_data),
+				     void *event_cb_data,
+				     void (*status_cb)(void *cb_data),
+				     void *status_cb_data, dma_addr_t dma_addr,
+				     int event_irq_idx, int status_irq_idx)
 {
-	struct cxi_lni_priv *lni_priv =
-		container_of(lni, struct cxi_lni_priv, lni);
-	struct cxi_dev *cdev;
-	struct cass_dev *hw;
+	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	struct cxi_eq_priv *eq;
 	struct cxi_md_priv *md_priv = NULL;
 	int eq_n;
 	int rc;
-	int passthrough = !!(attr->flags & CXI_EQ_PASSTHROUGH);
+	bool passthrough = !!(attr->flags & CXI_EQ_PASSTHROUGH);
 	bool is_user = attr->flags & CXI_EQ_USER;
 	struct cpumask cpus = {};
-	struct cass_irq *irq;
+	bool is_vf = lni_priv->is_vf;
+	u8 vf_num = lni_priv->vf_num;
 
-	if (!attr->queue_len || attr->queue_len > MAX_EQ_LEN || !attr->queue)
+	if (!attr->queue_len || attr->queue_len > MAX_EQ_LEN ||
+	    (!attr->queue && !(is_vf && !passthrough)))
 		return ERR_PTR(-EINVAL);
 
 	/* If status updates are enabled, ensure all requested updates are in
@@ -721,9 +1122,6 @@ struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
 	    (get_eq_queue_size(attr->queue_len) - 1))
 		return ERR_PTR(-EINVAL);
 
-	cdev = lni_priv->dev;
-	hw = container_of(cdev, struct cass_dev, cdev);
-
 	eq = pf_get_eq_id(lni_priv);
 	if (IS_ERR(eq))
 		return ERR_PTR(PTR_ERR(eq));
@@ -741,7 +1139,7 @@ struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
 
 	refcount_set(&eq->refcount, 1);
 
-	if (!is_user) {
+	if (!is_user && !is_vf) {
 		phys_addr_t mmio_phys = hw->regs_base + C_MEMORG_EE +
 				eq_n * C_EE_SW_STATE_PAGE_SIZE;
 		eq->eq_mmio = ioremap(mmio_phys, PAGE_SIZE);
@@ -752,72 +1150,57 @@ struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
 		}
 	}
 
-	if (eq->attr.cpu_affinity < nr_cpumask_bits)
+	if (!is_vf && eq->attr.cpu_affinity < nr_cpumask_bits)
 		cpumask_set_cpu(eq->attr.cpu_affinity, &cpus);
 
-	if (event_cb) {
-		eq->event_cb = event_cb;
-		eq->event_cb_data = event_cb_data;
-		eq->event_nb.notifier_call = eq_event_nb;
-
-		irq = cass_comp_irq_attach(hw, &cpus, &eq->event_nb);
-		if (IS_ERR(irq)) {
-			rc = PTR_ERR(irq);
-			goto eq_unmap;
-		}
-		eq->event_msi_irq = irq;
-	} else {
-		eq->event_msi_irq = NULL;
-	}
-
-	if (status_cb) {
-		eq->status_cb = status_cb;
-		eq->status_cb_data = status_cb_data;
-		eq->status_nb.notifier_call = eq_status_nb;
-
-		irq = cass_comp_irq_attach(hw, &cpus, &eq->status_nb);
-		if (IS_ERR(irq)) {
-			rc = PTR_ERR(irq);
-			goto event_irq_detach;
-		}
-		eq->status_msi_irq = irq;
-	} else {
-		eq->status_msi_irq = NULL;
-	}
-
-	if (passthrough) {
-		if (is_user) {
-			rc = get_dma_addr_if_contig(hw, eq->active.events,
-						    eq->active.events_len,
-						    DMA_FROM_DEVICE,
-						    &eq->active.pages,
-						    &eq->active.dma_addr);
-		} else {
-			eq->active.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
-							     eq->active.events,
-							     eq->active.events_len,
-							     DMA_FROM_DEVICE);
-			if (dma_mapping_error(&hw->cdev.pdev->dev, eq->active.dma_addr))
-				rc = -ENOMEM;
-			else
-				rc = 0;
-		}
-
+	if (!is_vf) {
+		rc = cass_eq_attach_irqs(eq, hw, &cpus, event_cb, event_cb_data,
+					 status_cb, status_cb_data);
 		if (rc)
-			goto status_irq_detach;
-	} else {
-		md_priv = container_of(eq->active.md, struct cxi_md_priv, md);
+			goto eq_unmap;
 
-		refcount_inc(&md_priv->refcount);
+		if (passthrough) {
+			if (is_user) {
+				rc = get_dma_addr_if_contig(hw, eq->active.events,
+							    eq->active.events_len,
+							    DMA_FROM_DEVICE,
+							    &eq->active.pages,
+							    &eq->active.dma_addr);
+			} else {
+				eq->active.dma_addr = dma_map_single(&hw->cdev.pdev->dev,
+								     eq->active.events,
+								     eq->active.events_len,
+								     DMA_FROM_DEVICE);
+				if (dma_mapping_error(&hw->cdev.pdev->dev, eq->active.dma_addr))
+					rc = -ENOMEM;
+				else
+					rc = 0;
+			}
+
+			if (rc)
+				goto status_irq_detach;
+		} else {
+			md_priv = container_of(eq->active.md, struct cxi_md_priv, md);
+
+			refcount_inc(&md_priv->refcount);
+		}
+	} else {
+		if (passthrough) {
+			/* VF EQ passthrough: use dma_addr from the VF */
+			eq->active.dma_addr = dma_addr;
+		} else {
+			md_priv = container_of(eq->active.md, struct cxi_md_priv, md);
+			refcount_inc(&md_priv->refcount);
+		}
 	}
 
 	cxi_eq_init(&eq->eq, eq->active.events, eq->active.events_len,
 		    eq_n, (__force u64 *)eq->eq_mmio);
 
-	if (!is_user)
+	if (!is_user && !is_vf)
 		memset(eq->active.events, 0, eq->active.events_len);
 
-	rc = pf_write_eq_config(eq);
+	rc = pf_write_eq_config(eq, is_vf, event_irq_idx, status_irq_idx);
 	if (rc)
 		goto free_md;
 
@@ -833,15 +1216,21 @@ struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
 		refcount_inc(&lni_priv->refcount);
 	}
 
+	/* Grant access to the resource from the VF */
+	if (is_vf)
+		cass_config_sriovt(hw, true, vf_num, 4096 + eq_n);
+
 	return &eq->eq;
 
 free_md:
 	if (passthrough) {
-		if (is_user)
-			put_pages_contig(hw, &eq->active);
-		else
-			dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
-					 eq->attr.queue_len, DMA_FROM_DEVICE);
+		if (!is_vf) {
+			if (is_user)
+				put_pages_contig(hw, &eq->active);
+			else
+				dma_unmap_single(&hw->cdev.pdev->dev, eq->active.dma_addr,
+						 eq->attr.queue_len, DMA_FROM_DEVICE);
+		}
 	} else {
 		refcount_dec(&md_priv->refcount);
 	}
@@ -849,7 +1238,6 @@ free_md:
 status_irq_detach:
 	if (eq->status_msi_irq)
 		cass_comp_irq_detach(hw, eq->status_msi_irq, &eq->status_nb);
-event_irq_detach:
 	if (eq->event_msi_irq)
 		cass_comp_irq_detach(hw, eq->event_msi_irq, &eq->event_nb);
 eq_unmap:
@@ -860,7 +1248,99 @@ id_remove:
 
 	return ERR_PTR(rc);
 }
+EXPORT_SYMBOL(cxi_eq_alloc_internal);
+
+/**
+ * cxi_eq_alloc() - Allocate a new event queue resource.
+ *
+ * @lni: LNI to associate with the event queue.
+ * @md: Memory descriptor for the queue
+ * @attr: Event queue creation attributes.
+ * @event_cb: Event interrupt callback for that EQ.
+ * @event_cb_data: Opaque owner context pointer. Can be used in the event
+ *                 interrupt callback to retrieve some internal structures.
+ * @status_cb: Status interrupt callback for that EQ.
+ * @status_cb_data: Opaque owner context pointer. Can be used in the status
+ *                  interrupt callback to retrieve some internal structures.
+ *
+ * Return: On success, a pointer to the allocated event queue structure. On
+ * error, an error pointer containing a negative error number.
+ */
+struct cxi_eq *cxi_eq_alloc(struct cxi_lni *lni, const struct cxi_md *md,
+			    const struct cxi_eq_attr *attr,
+			    void (*event_cb)(void *cb_data),
+			    void *event_cb_data,
+			    void (*status_cb)(void *cb_data),
+			    void *status_cb_data)
+{
+	struct cxi_dev *dev = container_of(lni, struct cxi_lni_priv, lni)->dev;
+
+	if (!dev->is_physfn)
+		return cxi_eq_alloc_vf(lni, md, attr,
+				       event_cb, event_cb_data,
+				       status_cb, status_cb_data);
+
+	return cxi_eq_alloc_internal(lni, md, attr,
+				     event_cb, event_cb_data,
+				     status_cb, status_cb_data, 0, -1, -1);
+}
 EXPORT_SYMBOL(cxi_eq_alloc);
+
+/** cxi_eq_free_vf() - Free VF event queue resource.
+ *
+ * @evtq: A pointer to previously allocated event queue structure.
+ *
+ * Return: On success, returns zero.
+ */
+static int cxi_eq_free_vf(struct cxi_eq *evtq)
+{
+	struct cxi_eq_priv *eq = container_of(evtq, struct cxi_eq_priv, eq);
+	struct cxi_dev *cdev = container_of(&eq->lni_priv->lni, struct cxi_lni_priv_vf, lni)->dev;
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	bool passthrough = !!(eq->attr.flags & CXI_EQ_PASSTHROUGH);
+	bool is_user = eq->attr.flags & CXI_EQ_USER;
+	size_t resp_len = 0;
+	const struct cxi_eq_free_cmd cmd = {
+		.op = CXI_OP_EQ_FREE,
+		.eq = eq->eq.eqn,
+	};
+	int rc;
+
+	/* Send EQ free command to PF */
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return rc;
+
+	/* Detach IRQs */
+	if (eq->status_msi_irq)
+		cass_comp_irq_detach(hw, eq->status_msi_irq, &eq->status_nb);
+	if (eq->event_msi_irq)
+		cass_comp_irq_detach(hw, eq->event_msi_irq, &eq->event_nb);
+
+	/* Unmap EQ MMIO if not for user */
+	if (!is_user)
+		iounmap(eq->eq_mmio);
+
+	/* Unmap EQ buffer if passthrough */
+	if (passthrough) {
+		if (is_user) {
+			put_pages_contig(hw, &eq->active);
+			if (eq->resized)
+				put_pages_contig(hw, &eq->resize);
+		} else {
+			dma_unmap_single(&hw->cdev.pdev->dev,
+					 eq->active.dma_addr, eq->attr.queue_len,
+					 DMA_FROM_DEVICE);
+			if (eq->resized)
+				dma_unmap_single(&hw->cdev.pdev->dev,
+						 eq->resize.dma_addr,
+						 eq->resize.events_len,
+						 DMA_FROM_DEVICE);
+		}
+	}
+
+	return 0;
+}
 
 /**
  * cxi_eq_free() - Free event queue resource.
@@ -872,11 +1352,13 @@ EXPORT_SYMBOL(cxi_eq_alloc);
 int cxi_eq_free(struct cxi_eq *evtq)
 {
 	struct cxi_eq_priv *eq;
-	struct cxi_lni_priv *lni_priv;
 	struct cxi_dev *cdev;
 	struct cass_dev *hw;
+	struct cxi_lni_priv *lni_priv;
 	struct cxi_md_priv *md_priv;
+	bool passthrough;
 	bool is_user;
+	bool is_vf;
 	union c_ee_cfg_sts_eq_hw_state hw_state;
 	unsigned int wr_ptr;
 
@@ -884,10 +1366,20 @@ int cxi_eq_free(struct cxi_eq *evtq)
 		return -EINVAL;
 
 	eq = container_of(evtq, struct cxi_eq_priv, eq);
-	lni_priv = eq->lni_priv;
-	cdev = lni_priv->dev;
+	cdev = eq->lni_priv->dev;
+
+	if (!cdev->is_physfn)
+		return cxi_eq_free_vf(evtq);
+
 	hw = container_of(cdev, struct cass_dev, cdev);
+	lni_priv = eq->lni_priv;
 	is_user = eq->attr.flags & CXI_EQ_USER;
+	is_vf = lni_priv->is_vf;
+	passthrough = !!(eq->attr.flags & CXI_EQ_PASSTHROUGH);
+
+	/* Remove access to this resource from a VF */
+	if (is_vf)
+		cass_config_sriovt(hw, false, lni_priv->vf_num, 4096 + eq->eq.eqn);
 
 	cxidev_WARN_ONCE(cdev, !refcount_dec_and_test(&eq->refcount),
 			 "Resource leaks - EQ refcount not zero: %d\n",
@@ -935,21 +1427,23 @@ int cxi_eq_free(struct cxi_eq *evtq)
 		udelay(1);
 	}
 
-	if (eq->attr.flags & CXI_EQ_PASSTHROUGH) {
-		if (eq->attr.flags & CXI_EQ_USER) {
-			put_pages_contig(hw, &eq->active);
+	if (passthrough) {
+		if (!is_vf) {
+			if (is_user) {
+				put_pages_contig(hw, &eq->active);
 
-			if (eq->resized)
-				put_pages_contig(hw, &eq->resize);
-		} else {
-			dma_unmap_single(&hw->cdev.pdev->dev,
-					 eq->active.dma_addr, eq->attr.queue_len,
-					 DMA_FROM_DEVICE);
-			if (eq->resized)
+				if (eq->resized)
+					put_pages_contig(hw, &eq->resize);
+			} else {
 				dma_unmap_single(&hw->cdev.pdev->dev,
-						 eq->resize.dma_addr,
-						 eq->resize.events_len,
+						 eq->active.dma_addr, eq->attr.queue_len,
 						 DMA_FROM_DEVICE);
+				if (eq->resized)
+					dma_unmap_single(&hw->cdev.pdev->dev,
+							 eq->resize.dma_addr,
+							 eq->resize.events_len,
+							 DMA_FROM_DEVICE);
+			}
 		}
 	} else {
 		md_priv = container_of(eq->active.md, struct cxi_md_priv, md);

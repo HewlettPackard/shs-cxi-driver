@@ -1672,12 +1672,13 @@ enum {
 };
 
 static int cxi_user_eq_alloc(struct user_client *client,
-			     const void *cmd_in,
-			     void *resp_out, size_t *resp_out_len)
+			     const void *cmd_in, void *resp_out,
+			     size_t *resp_out_len)
 {
 	int rc;
 	struct cxi_eq *eq;
 	const struct cxi_eq_alloc_cmd *cmd = cmd_in;
+	const struct cxi_eq_alloc_cmd_vf *cmd_vf = cmd_in;
 	struct cxi_eq_alloc_resp resp = {};
 	struct ucxi_obj *lni_obj;
 	struct ucxi_obj *eq_obj;
@@ -1686,7 +1687,7 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	struct ucxi_wait *event_wait;
 	struct ucxi_wait *status_wait;
 	struct cxi_eq_attr attr = {};
-	struct cxi_mmap_info *mminfo;
+	struct cxi_mmap_info *mminfo = NULL;
 	phys_addr_t csr_addr;
 	size_t csr_size;
 
@@ -1713,9 +1714,15 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	eq_obj->deps[CXI_USER_EQ_DEP_LNI] = lni_obj;
 
 	if (!(cmd->attr.flags & CXI_EQ_PASSTHROUGH)) {
+		if (cmd->queue_md == CXI_MD_NONE) {
+			read_unlock(&client->res_lock);
+			rc = -EINVAL;
+			goto free_eq_obj;
+		}
+
 		/* Get MD reference */
 		md_obj = idr_find(&client->md_idr, cmd->queue_md);
-		if (md_obj == NULL) {
+		if (!md_obj) {
 			read_unlock(&client->res_lock);
 			rc = -EINVAL;
 			goto free_eq_obj;
@@ -1728,9 +1735,9 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	}
 
 	/* Get (optional) event wait object reference */
-	if (cmd->event_wait) {
+	if (!client->is_vf && cmd->event_wait) {
 		wait_obj = idr_find(&client->wait_idr, cmd->event_wait);
-		if (wait_obj == NULL || wait_obj->wait->going_away) {
+		if (!wait_obj || wait_obj->wait->going_away) {
 			read_unlock(&client->res_lock);
 			rc = -EINVAL;
 			goto free_eq_obj;
@@ -1744,9 +1751,9 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	}
 
 	/* Get (optional) status wait object reference */
-	if (cmd->status_wait) {
+	if (!client->is_vf && cmd->status_wait) {
 		wait_obj = idr_find(&client->wait_idr, cmd->status_wait);
-		if (wait_obj == NULL || wait_obj->wait->going_away) {
+		if (!wait_obj || wait_obj->wait->going_away) {
 			read_unlock(&client->res_lock);
 			rc = -EINVAL;
 			goto free_eq_obj;
@@ -1762,16 +1769,27 @@ static int cxi_user_eq_alloc(struct user_client *client,
 	read_unlock(&client->res_lock);
 
 	attr = cmd->attr;
-	attr.flags |= CXI_EQ_USER;
+	if (!client->is_vf)
+		attr.flags |= CXI_EQ_USER;
 
 	/* Allocate the event queue */
-	eq = cxi_eq_alloc(lni_obj->lni,
-			  md_obj ? md_obj->md : NULL,
-			  &attr,
-			  event_wait ? wait_callback : NULL,
-			  event_wait ? event_wait->dirent : NULL,
-			  status_wait ? wait_callback : NULL,
-			  status_wait ? status_wait->dirent : NULL);
+	if (!client->is_vf)
+		eq = cxi_eq_alloc(lni_obj->lni,
+				  md_obj ? md_obj->md : NULL,
+				  &attr,
+				  event_wait ? wait_callback : NULL,
+				  event_wait ? event_wait->dirent : NULL,
+				  status_wait ? wait_callback : NULL,
+				  status_wait ? status_wait->dirent : NULL);
+	else
+		eq = cxi_eq_alloc_internal(lni_obj->lni,
+					   md_obj ? md_obj->md : NULL,
+					   &attr,
+					   NULL, NULL, NULL, NULL,
+					   cmd_vf->dma_addr,
+					   cmd_vf->event_irq_idx,
+					   cmd_vf->status_irq_idx);
+
 	if (IS_ERR(eq)) {
 		rc = PTR_ERR(eq);
 		goto free_eq_obj;
@@ -1791,22 +1809,24 @@ static int cxi_user_eq_alloc(struct user_client *client,
 		goto free_eq;
 	resp.eq = rc;
 
-	rc = cxi_eq_user_info(eq, &csr_addr, &csr_size);
-	if (rc)
-		goto free_eq_idr;
+	if (!client->is_vf) {
+		rc = cxi_eq_user_info(eq, &csr_addr, &csr_size);
+		if (rc)
+			goto free_eq_idr;
 
-	/* Allocate mmap info */
-	mminfo = kcalloc(1, sizeof(*mminfo), GFP_KERNEL);
-	if (!mminfo)
-		goto free_eq_idr;
+		/* Allocate mmap info */
+		mminfo = kcalloc(1, sizeof(*mminfo), GFP_KERNEL);
+		if (!mminfo)
+			goto free_eq_idr;
 
-	/* Create mmap entry for the csrs */
-	fill_mmap_info(client, &mminfo[0], (uintptr_t)csr_addr,
-		       csr_size, MMAP_PHYSICAL);
-	mminfo[0].obj = eq_obj;
+		/* Create mmap entry for the csrs */
+		fill_mmap_info(client, &mminfo[0], (uintptr_t)csr_addr,
+			       csr_size, MMAP_PHYSICAL);
+		mminfo[0].obj = eq_obj;
 
-	/* Build the event queue Object response for user space */
-	resp.csr = mminfo[0].mminfo;
+		/* Build the event queue Object response for user space */
+		resp.csr = mminfo[0].mminfo;
+	}
 
 	/* Return the response to user space */
 	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
@@ -1815,7 +1835,8 @@ static int cxi_user_eq_alloc(struct user_client *client,
 
 	eq_obj->mminfo = mminfo;
 
-	mminfo_pre_mmap(client, mminfo, 1);
+	if (!client->is_vf)
+		mminfo_pre_mmap(client, mminfo, 1);
 
 	return 0;
 
@@ -1834,8 +1855,8 @@ free_eq_obj:
 }
 
 static int cxi_user_eq_free(struct user_client *client,
-			    const void *cmd_in,
-			    void *resp_out, size_t *resp_out_len)
+			    const void *cmd_in, void *resp_out,
+			    size_t *resp_out_len)
 {
 	const struct cxi_eq_free_cmd *cmd = cmd_in;
 	struct ucxi_obj *eq_obj;
@@ -1868,10 +1889,11 @@ static int cxi_user_eq_free(struct user_client *client,
 }
 
 static int cxi_user_eq_resize(struct user_client *client,
-			      const void *cmd_in,
-			      void *resp_out, size_t *resp_out_len)
+			      const void *cmd_in, void *resp_out,
+			      size_t *resp_out_len)
 {
 	const struct cxi_eq_resize_cmd *cmd = cmd_in;
+	const struct cxi_eq_resize_cmd_vf *cmd_vf = cmd_in;
 	struct ucxi_obj *eq_obj;
 	struct ucxi_obj *md_obj;
 	int rc;
@@ -1899,8 +1921,12 @@ static int cxi_user_eq_resize(struct user_client *client,
 	 */
 	mutex_lock(&client->eq_resize_mutex);
 
-	rc = cxi_eq_resize(eq_obj->eq, cmd->queue, cmd->queue_len,
-			   md_obj ? md_obj->md : NULL);
+	if (client->is_vf)
+		rc = cxi_eq_resize_internal(eq_obj->eq, cmd->queue, cmd->queue_len,
+					    md_obj ? md_obj->md : NULL, cmd_vf->dma_addr);
+	else
+		rc = cxi_eq_resize(eq_obj->eq, cmd->queue, cmd->queue_len,
+				   md_obj ? md_obj->md : NULL);
 	if (rc) {
 		pr_debug("EQ resize failed: %d\n", rc);
 
@@ -2667,6 +2693,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.handler    = cxi_user_update_md, },
 	[CXI_OP_EQ_ALLOC] = {
 		.req_size   = sizeof(struct cxi_eq_alloc_cmd),
+		.req_size_vf = sizeof(struct cxi_eq_alloc_cmd_vf),
 		.name       = "EQ_ALLOC",
 		.handler    = cxi_user_eq_alloc, },
 	[CXI_OP_EQ_FREE] = {
@@ -2675,6 +2702,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.handler    = cxi_user_eq_free, },
 	[CXI_OP_EQ_RESIZE] = {
 		.req_size   = sizeof(struct cxi_eq_resize_cmd),
+		.req_size_vf = sizeof(struct cxi_eq_resize_cmd_vf),
 		.name       = "EQ_RESIZE",
 		.handler    = cxi_user_eq_resize, },
 	[CXI_OP_EQ_RESIZE_COMPLETE] = {

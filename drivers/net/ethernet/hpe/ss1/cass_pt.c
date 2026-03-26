@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018-2020 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018-2020, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Create and destroy Cassini portal tables */
 
@@ -327,6 +327,47 @@ static void pt_cleanup(struct cxi_pte_priv *pt)
 	cass_flush_pci(hw);
 }
 
+static struct cxi_pte *cxi_pte_alloc_vf(struct cxi_lni *lni,
+					struct cxi_eq *evtq,
+					const struct cxi_pt_alloc_opts *opts)
+{
+	struct cxi_lni_priv *lni_priv =
+		container_of(lni, struct cxi_lni_priv, lni);
+	const struct cxi_pte_alloc_cmd cmd = {
+		.op = CXI_OP_PTE_ALLOC,
+		.lni_hndl = lni_priv->lni.id,
+		.evtq_hndl = evtq ? evtq->eqn : C_EQ_NONE,
+		.opts = *opts,
+	};
+	struct cxi_pte_alloc_resp resp = {};
+	size_t resp_size = sizeof(resp);
+	int rc;
+	struct cxi_pte_priv *pt_priv;
+
+	pt_priv = kzalloc(sizeof(*pt_priv), GFP_KERNEL);
+	if (!pt_priv)
+		return ERR_PTR(-ENOMEM);
+
+	rc = cxi_send_msg_to_pf(lni_priv->dev, &cmd, sizeof(cmd),
+				&resp, &resp_size);
+	if (rc)
+		goto free_pt;
+
+	pt_priv->lni_priv = lni_priv;
+	pt_priv->pte.id = resp.pte_number;
+
+	if (evtq)
+		pt_priv->eq = container_of(evtq, struct cxi_eq_priv, eq);
+	else
+		pt_priv->eq = NULL;
+
+	return &pt_priv->pte;
+
+free_pt:
+	kfree(pt_priv);
+	return ERR_PTR(rc);
+}
+
 /**
  * cxi_pte_alloc() - Allocate a portal table entry (PTE)
  *
@@ -369,6 +410,9 @@ struct cxi_pte *cxi_pte_alloc(struct cxi_lni *lni, struct cxi_eq *evtq,
 	};
 	bool pt_reuse = false;
 	int count;
+
+	if (!cdev->is_physfn)
+		return cxi_pte_alloc_vf(lni, evtq, opts);
 
 	if (opts->ethernet && !capable(CAP_NET_RAW))
 		return ERR_PTR(-EPERM);
@@ -493,6 +537,27 @@ pt_free:
 }
 EXPORT_SYMBOL(cxi_pte_alloc);
 
+static void cxi_pte_free_vf(struct cxi_pte *pt)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	const struct cxi_pte_free_cmd cmd = {
+		.op = CXI_OP_PTE_FREE,
+		.pte_number = pt_priv->pte.id,
+	};
+	int rc;
+	size_t resp_len = 0;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		cxidev_err(cdev, "Failed to free PTE %u on PF: %d\n",
+			   pt_priv->pte.id, rc);
+
+	kfree(pt_priv);
+}
+
 /**
  * cxi_pte_free() - Release a portal table entry
  *
@@ -508,6 +573,11 @@ void cxi_pte_free(struct cxi_pte *pt)
 	const u64 ptl_state = C_PTLTE_RESET;
 	u64 before;
 	u64 after;
+
+	if (!cdev->is_physfn) {
+		cxi_pte_free_vf(pt);
+		return;
+	}
 
 	cxidev_WARN_ONCE(cdev, !refcount_dec_and_test(&pt_priv->refcount),
 			 "Resource leaks - PT refcount not zero: %d\n",
@@ -622,6 +692,35 @@ void finalize_pt_cleanups(struct cxi_lni_priv *lni, bool force)
 	}
 }
 
+static int cxi_pte_map_vf(struct cxi_pte *pt, struct cxi_domain *domain,
+			  unsigned int pid_offset, bool is_multicast,
+			  unsigned int *pt_index)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cxi_pte_map_cmd cmd = {
+		.op = CXI_OP_PTE_MAP,
+		.pte_number = pt->id,
+		.domain_hndl = domain->id,
+		.pid_offset = pid_offset,
+		.is_multicast = is_multicast,
+	};
+	struct cxi_pte_map_resp resp = {};
+	size_t resp_size = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd),
+				&resp, &resp_size);
+	if (rc)
+		return rc;
+
+	*pt_index = resp.pte_index;
+
+	return 0;
+}
+
 /**
  * cxi_pte_map() - Map a portal entry to a portal index entry
  *
@@ -653,6 +752,10 @@ int cxi_pte_map(struct cxi_pte *pt, struct cxi_domain *domain,
 	int mcast_n;
 	int pti_n;
 	int ret;
+
+	if (!cdev->is_physfn)
+		return cxi_pte_map_vf(pt, domain, pid_offset,
+				      is_multicast, pt_index);
 
 	/* Sanity checks */
 	if (domain_priv->lni_priv != pt_priv->lni_priv)
@@ -729,6 +832,27 @@ rls_pti_n:
 }
 EXPORT_SYMBOL(cxi_pte_map);
 
+static int cxi_pte_unmap_vf(struct cxi_pte *pt, struct cxi_domain *domain,
+			    int pt_index)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cxi_pte_unmap_cmd cmd = {
+		.op = CXI_OP_PTE_UNMAP,
+		.pte_index = pt_index,
+	};
+	int rc;
+	size_t resp_len = 0;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
 /**
  * cxi_pte_unmap() - Unmap a portal entry from the index table
  *
@@ -744,6 +868,9 @@ int cxi_pte_unmap(struct cxi_pte *pt, struct cxi_domain *domain, int pt_index)
 			container_of(domain, struct cxi_domain_priv, domain);
 	struct cxi_dev *cdev = domain_priv->lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return cxi_pte_unmap_vf(pt, domain, pt_index);
 
 	cass_invalidate_portal_list(hw, pt_index);
 
@@ -762,6 +889,29 @@ int cxi_pte_unmap(struct cxi_pte *pt, struct cxi_domain *domain, int pt_index)
 	return 0;
 }
 EXPORT_SYMBOL(cxi_pte_unmap);
+
+static void cxi_pte_le_invalidate_vf(struct cxi_pte *pt,
+				     unsigned int buffer_id,
+				     enum c_ptl_list list)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cxi_pte_le_invalidate_cmd cmd = {
+		.op = CXI_OP_PTE_LE_INVALIDATE,
+		.pte_index = pt->id,
+		.buffer_id = buffer_id,
+		.list = list,
+	};
+	int rc;
+	size_t resp_len = 0;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		cxidev_err(cdev, "Failed to invalidate LE on PTE %u on PF: %d\n",
+			   pt_priv->pte.id, rc);
+}
 
 /**
  * cxi_pte_le_invalidate() - Invalidate a non-locally managed persistent LE.
@@ -805,6 +955,11 @@ void cxi_pte_le_invalidate(struct cxi_pte *pt, unsigned int buffer_id,
 	int i;
 	int rc;
 
+	if (!cdev->is_physfn) {
+		cxi_pte_le_invalidate_vf(pt, buffer_id, list);
+		return;
+	}
+
 	mutex_lock(&hw->mst_table_lock);
 
 	rc = cxi_dmac_xfer(cdev, hw->dmac_pt_id);
@@ -828,6 +983,29 @@ void cxi_pte_le_invalidate(struct cxi_pte *pt, unsigned int buffer_id,
 	mutex_unlock(&hw->mst_table_lock);
 }
 EXPORT_SYMBOL(cxi_pte_le_invalidate);
+
+static int cxi_pte_status_vf(struct cxi_pte *pt,
+			     struct cxi_pte_status *status)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
+	struct cxi_dev *cdev = lni_priv->dev;
+	struct cxi_pte_status_cmd cmd = {
+		.op = CXI_OP_PTE_STATUS,
+		.pte_index = pt->id,
+	};
+	struct cxi_pte_status_resp resp = {};
+	size_t resp_size = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_size);
+	if (rc)
+		return rc;
+
+	*status = resp.status;
+	return 0;
+}
 
 #define ULE_START_OFFSET 24
 
@@ -860,6 +1038,9 @@ int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
 	union c_lpe_sts_pe_le_alloc le_alloc;
 	size_t ule_count = 0;
 	unsigned int idx;
+
+	if (!cdev->is_physfn)
+		return cxi_pte_status_vf(pt, status);
 
 	spin_lock(&hw->lpe_shadow_lock);
 	cass_read_pte(hw, pt_priv->pte.id, &ptl_table);
@@ -967,6 +1148,9 @@ int cxi_pte_transition_sm(struct cxi_pte *pt, unsigned int drop_count)
 	u8 old_rrq_cdts;
 	int count;
 	int ret;
+
+	if (!cdev->is_physfn)
+		return -EOPNOTSUPP;
 
 	spin_lock(&hw->lpe_shadow_lock);
 	cass_read_pte(hw, pt_priv->pte.id, &ptl_table);

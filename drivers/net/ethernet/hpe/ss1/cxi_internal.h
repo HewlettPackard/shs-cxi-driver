@@ -15,4 +15,14 @@ int cxi_ct_wb_update_internal(struct cxi_ct *ct, struct c_ct_writeback *wb,
 struct cxi_lni *cxi_lni_alloc_internal(struct cxi_dev *dev, unsigned int svc_id,
 				       bool vf_en, u8 vf_num);
 
+struct cxi_eq *cxi_eq_alloc_internal(struct cxi_lni *lni, const struct cxi_md *md,
+				     const struct cxi_eq_attr *attr,
+				     void (*event_cb)(void *cb_data),
+				     void *event_cb_data,
+				     void (*status_cb)(void *cb_data),
+				     void *status_cb_data, dma_addr_t dma_addr,
+				     int event_irq_idx, int status_irq_idx);
+int cxi_eq_resize_internal(struct cxi_eq *evtq, void *queue,
+			   size_t queue_len, struct cxi_md *queue_md,
+			   dma_addr_t dma_addr);
 #endif /* _CXI_INTERNAL_H */
