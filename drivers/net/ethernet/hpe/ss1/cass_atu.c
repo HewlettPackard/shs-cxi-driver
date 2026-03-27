@@ -1766,7 +1766,14 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 	m_opts.md_priv = md_priv;
 
 	if (flags & CXI_MAP_ATS) {
-		cass_align_start_len(&m_opts, va, len, PAGE_SHIFT);
+		if (!hw->ats_enabled) {
+			cxidev_info_ratelimited(cdev, "ATS not enabled\n");
+			ret = -EOPNOTSUPP;
+			goto md_free;
+		}
+
+		m_opts.page_shift = hw->cdev.pdev->ats_stu;
+		cass_align_start_len(&m_opts, va, len, m_opts.page_shift);
 	} else if (flags & CXI_MAP_DEVICE) {
 		if (hints) {
 			if (hints->dmabuf_valid) {

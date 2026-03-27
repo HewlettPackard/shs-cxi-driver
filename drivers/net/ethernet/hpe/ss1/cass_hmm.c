@@ -310,9 +310,9 @@ int cass_odp_supported(struct cass_dev *hw, u32 flags)
 	}
 
 	if (cass_version(hw, CASSINI_1) && (flags & CXI_MAP_ATS) &&
-			!hw->ats_c1_odp_enable && !ats_c1_override) {
+			 !ats_c1_override) {
 		cxidev_dbg(&hw->cdev,
-			   "ATS support requires invalidate interface for Cassini 1.x\n");
+			   "ATS PRI not supported with Cassini 1.x\n");
 		return -EOPNOTSUPP;
 	}
 

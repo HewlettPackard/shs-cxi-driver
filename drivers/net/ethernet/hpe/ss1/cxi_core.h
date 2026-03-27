@@ -53,6 +53,25 @@
 #define HAVE_IOVA_INIT_RCACHES
 #endif
 
+/* AMD IOMMU SVA support matrix:
+ * Linux 6.13, sles15sp7, rhel9.6 and rhel10.0
+ */
+#if defined(CONFIG_IOMMU_SVA)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+#define HAVE_SVA
+#endif
+
+#if defined(CONFIG_SUSE_PRODUCT_SLE) && \
+	CONFIG_SUSE_VERSION == 15 && CONFIG_SUSE_PATCHLEVEL >= 7
+#define HAVE_SVA
+#endif
+
+#if defined(RHEL_MAJOR) && \
+	((RHEL_MAJOR == 9 && RHEL_MINOR >= 6) || RHEL_MAJOR >= 10)
+#define HAVE_SVA
+#endif
+#endif /* CONFIG_IOMMU_SVA */
+
 #define dev_emerg_always(dev, fmt, ...)	  dev_emerg(dev, fmt, ##__VA_ARGS__)
 #define dev_alert_always(dev, fmt, ...)	  dev_alert(dev, fmt, ##__VA_ARGS__)
 #define dev_crit_always(dev, fmt, ...)	  dev_crit(dev, fmt, ##__VA_ARGS__)

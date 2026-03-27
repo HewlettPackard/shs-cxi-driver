@@ -878,10 +878,8 @@ struct cass_dev {
 	struct mutex mm_mutex;
 	struct ida md_index_table;
 	bool ac_filter_disabled;
-	/* Flag to indicate that the IOMMU callback is in place to support
-	 * C1 ODP.
-	 */
-	bool ats_c1_odp_enable;
+	bool ats_enabled;
+	bool nic_pri;
 
 	/* Number of invalidations due to memory deregistration */
 	atomic_t dcpl_md_clear_inval;

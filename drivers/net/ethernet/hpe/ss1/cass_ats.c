@@ -7,8 +7,8 @@
  */
 
 #include <linux/pci.h>
-#include <linux/types.h>
 #include <linux/iommu.h>
+#include <linux/iopoll.h>
 
 #include "cass_core.h"
 
@@ -21,11 +21,7 @@
 #define ATU_NUM_PASIDS ATU_PHYS_AC
 #define MAX_PAGE_REQS 512
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
-#undef CONFIG_IOMMU_SVA
-#endif
-
-#ifdef CONFIG_IOMMU_SVA
+#ifdef HAVE_SVA
 
 static bool enable_ats = true;
 module_param(enable_ats, bool, 0644);
@@ -77,7 +73,7 @@ static int cass_bind_ac(struct cass_dev *hw, struct cass_ac *cac)
 {
 	struct pci_dev *pdev = hw->cdev.pdev;
 
-	if (!pdev->ats_enabled) {
+	if (!hw->ats_enabled) {
 		cxidev_dbg(&hw->cdev, "ATS not enabled\n");
 		return -EOPNOTSUPP;
 	}
@@ -98,7 +94,7 @@ static int cass_bind_ac(struct cass_dev *hw, struct cass_ac *cac)
  */
 void cass_unbind_ac(struct cass_dev *hw, const struct cass_ac *cac)
 {
-	if (!enable_ats)
+	if (!hw->ats_enabled)
 		return;
 
 	if (cac->sva)
@@ -118,10 +114,46 @@ void cass_iommu_fini(struct cass_dev *hw)
  */
 void cass_iommu_init(struct cass_dev *hw)
 {
-	int pos;
+	int rc;
+	u16 control;
+	u16 status;
 	u32 filter_mask;
 	u32 max_requests;
 	struct pci_dev *pdev = hw->cdev.pdev;
+	int pri = pdev->pri_cap;
+
+	if (!enable_ats) {
+		cxidev_info(&hw->cdev,
+			    "ATS is disabled by enable_ats module parameter\n");
+		return;
+	}
+
+	if (!pdev->ats_enabled) {
+		cxidev_info(&hw->cdev,
+			    "ATS is disabled by pci device subsystem\n");
+		return;
+	}
+
+	if (!pdev->pasid_enabled) {
+		cxidev_info(&hw->cdev,
+			    "ATS is disabled - PASID is disabled\n");
+		return;
+	}
+
+	/* The IOMMU Smallest Translation Unit (STU) determines
+	 * the page shift for ATS mode. It is analogous to the
+	 * Cassini's base_pg_size. In the latest kernel, 6.19,
+	 * it is PAGE_SHIFT - PCI_ATS_MIN_STU. This could
+	 * change or be configurable in newer kernels.
+	 */
+	if (pdev->ats_stu - PCI_ATS_MIN_STU > MAX_PG_TABLE_SIZE) {
+		cxidev_info(&hw->cdev, "ATS is disabled - STU:%d is too large\n",
+			    pdev->ats_stu - PCI_ATS_MIN_STU);
+		return;
+	}
+
+	hw->ats_enabled = true;
+	cxidev_info(&hw->cdev, "ATS is enabled\n");
 
 	/*
 	 * Mask length match for completions.
@@ -154,20 +186,59 @@ void cass_iommu_init(struct cass_dev *hw)
 		pci_write_config_dword(pdev, FILTER_MASK_2_OFF, filter_mask);
 	}
 
-	/*
-	 * The AMD IOMMU is currently hardcoding max requests to 32.
-	 * Set to MAX_PAGE_REQS.
-	 */
-	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_PRI);
-	if (!pos) {
-		dev_WARN(&pdev->dev, "Error setting PRI max requests\n");
-		return;
+	if (odp_mode_nic_pri)
+		goto no_pri;
+
+	if (!pri || !pdev->pri_enabled) {
+		cxidev_info(&hw->cdev,
+			    "PRI is disabled by pci device subsystem\n");
+		goto no_pri;
 	}
 
-	pci_read_config_dword(pdev, pos + PCI_PRI_MAX_REQ, &max_requests);
+	/* The PRI enable needs to transition from disabled to enabled
+	 * before the ATU will be enabled to send PRI requests. Before it
+	 * is enabled, the Stopped status bit must be true.
+	 * Start by toggling from disabled to enabled to get the ATU
+	 * PRI state machine in a known state. We then can disable which
+	 * will cause the FSM to transition to Stopped. We are now free to
+	 * enable PRI.
+	 */
+	pci_read_config_word(pdev, pri + PCI_PRI_CTRL, &control);
+	control &= ~PCI_PRI_CTRL_ENABLE;
+	pci_write_config_word(pdev, pri + PCI_PRI_CTRL, control);
+	control |= PCI_PRI_CTRL_ENABLE;
+	pci_write_config_word(pdev, pri + PCI_PRI_CTRL, control);
+	control &= ~PCI_PRI_CTRL_ENABLE;
+	pci_write_config_word(pdev, pri + PCI_PRI_CTRL, control);
+
+	rc = read_poll_timeout(pci_read_config_word, rc,
+			       (status & PCI_PRI_STATUS_STOPPED),
+			       10, 10000, false, pdev, pri + PCI_PRI_STATUS,
+			       &status);
+
+	if (rc) {
+		cxidev_warn(&hw->cdev, "Timed out waiting for Stopped bit\n");
+		goto no_pri;
+	}
+
+	control |= PCI_PRI_CTRL_ENABLE;
+	pci_write_config_word(pdev, pri + PCI_PRI_CTRL, control);
+
+	/* The AMD IOMMU is currently hardcoding max requests to 32.
+	 * Set to MAX_PAGE_REQS.
+	 */
+	pci_read_config_dword(pdev, pri + PCI_PRI_MAX_REQ, &max_requests);
 	max_requests = min_t(u32, max_requests, (u32)MAX_PAGE_REQS);
 	pdev->pri_reqs_alloc = max_requests;
-	pci_write_config_dword(pdev, pos + PCI_PRI_ALLOC_REQ, max_requests);
+	pci_write_config_dword(pdev, pri + PCI_PRI_ALLOC_REQ, max_requests);
+
+	cxidev_info(&hw->cdev, "PRI is enabled\n");
+	return;
+
+no_pri:
+	/* Use ODP_MOD_NIC_PRI instead of PCIe PRI */
+	hw->nic_pri = true;
+	cxidev_info(&hw->cdev, "NIC PRI is enabled\n");
 }
 
 /**
@@ -189,9 +260,8 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv,
 	union c_atu_cfg_ac_table *ac = &cac->cfg_ac;
 	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
-	bool have_pri = hw->cdev.pdev->pri_enabled;
 
-	if (!enable_ats)
+	if (!hw->ats_enabled)
 		return -EOPNOTSUPP;
 
 	ret = cass_bind_ac(hw, cac);
@@ -221,7 +291,7 @@ int cass_ats_init(struct cxi_lni_priv *lni_priv,
 	ac->ats_pasid_pmr = !!privileged;
 	ac->mem_base = cac->iova_base >> ATU_CFG_AC_TABLE_MB_SHIFT;
 	ac->mem_size = cac->iova_len >> C_ADDR_SHIFT;
-	ac->odp_mode = have_pri && !odp_mode_nic_pri ?
+	ac->odp_mode = !hw->nic_pri ?
 			C_ATU_ODP_MODE_ATS_PRS : C_ATU_ODP_MODE_NIC_PRI;
 
 	return 0;
@@ -249,11 +319,8 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 	struct cass_dev *hw = container_of(md_priv->lni_priv->dev,
 					   struct cass_dev, cdev);
 
-	if (!enable_ats)
-		return -EOPNOTSUPP;
-
 	if (!(m_opts->flags & CXI_MAP_PIN)) {
-		if (odp_mode_nic_pri || !hw->cdev.pdev->pri_enabled)
+		if (hw->nic_pri)
 			return cass_mmu_notifier_insert(md_priv, m_opts);
 
 		return 0;
@@ -275,7 +342,7 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 	return ret;
 }
 
-#else /* CONFIG_IOMMU_SVA */
+#else /* HAVE_SVA */
 void cass_unbind_ac(struct cass_dev *hw, const struct cass_ac *cac)
 {
 }
@@ -286,6 +353,7 @@ void cass_iommu_fini(struct cass_dev *hw)
 
 void cass_iommu_init(struct cass_dev *hw)
 {
+	cxidev_info(&hw->cdev, "ATS is disabled - no SVA support\n");
 }
 
 int cass_ats_init(struct cxi_lni_priv *lni_priv,
@@ -300,4 +368,4 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 {
 	return -ENODEV;
 }
-#endif /* !CONFIG_IOMMU_SVA */
+#endif /* !HAVE_SVA */

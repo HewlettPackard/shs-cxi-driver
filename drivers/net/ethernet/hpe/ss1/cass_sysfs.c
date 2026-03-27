@@ -460,6 +460,16 @@ static ssize_t pcie_uncorr_err_show(struct kobject *kobj,
 }
 PROP_ATTR_RO(pcie_uncorr_err);
 
+static ssize_t ats_enabled_show(struct kobject *kobj,
+				struct kobj_attribute *kattr, char *buf)
+{
+	struct cass_dev *hw = container_of(kobj, struct cass_dev,
+					   properties_kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", hw->ats_enabled);
+}
+PROP_ATTR_RO(ats_enabled);
+
 static struct attribute *properties_attrs[] = {
 	&dev_attr_nic_addr.attr,
 	&dev_attr_nid.attr,
@@ -493,6 +503,7 @@ static struct attribute *properties_attrs[] = {
 	&dev_attr_pcie_corr_err.attr,
 	&dev_attr_pcie_uncorr_err.attr,
 	&dev_attr_amo_remap_to_pcie_fadd.attr,
+	&dev_attr_ats_enabled.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(properties);
