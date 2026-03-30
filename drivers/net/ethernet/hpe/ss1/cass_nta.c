@@ -1862,8 +1862,8 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 	cass_cond_lock(&cac->ac_mutex, need_lock);
 
 	for_each_sgtable_dma_sg(md_priv->sgt, sg, i) {
-		long len = sg_dma_len(sg);
 		dma_addr_t dma_addr = sg_dma_address(sg) & PAGE_MASK;
+		long len = sg_dma_len(sg) + (sg_dma_address(sg) % PAGE_SIZE);
 
 		atu_debug("dma_addr:%llx len:%lx\n", dma_addr, len);
 
