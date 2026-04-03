@@ -14,7 +14,7 @@ cxi-ss1-objs := cxi_core.o cass_core.o cass_lni.o cass_rmu.o cass_eq.o \
 		 cass_sysfs.o cass_sbus.o cass_phy.o cass_dmac.o \
 		 cass_link.o cass_link_misc.o cass_port_misc.o cass_lmon.o \
 		 cass_ixe.o cass_irq.o cass_cable.o cass_odp_decouple.o \
-		 cass_ats_inval.o cass_pcie_mon.o \
+		 cass_pcie_mon.o \
 		 cxi_ac_entry_list.o cass_dev_info.o \
 		 cxi_rxtx_profile_list.o cass_rx_tx_profile.o \
 		 cxi_rxtx_profile.o cxi_rx_profile.o cxi_tx_profile.o \
