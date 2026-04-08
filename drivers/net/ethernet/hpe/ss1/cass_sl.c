@@ -33,9 +33,9 @@
 #define CASS_SL_DEFAULT_BER_MANT_CCW 2
 #define CASS_SL_DEFAULT_BER_EXP_CCW  -5
 
-#define SL_DFLT_PML_REC_TIMEOUT_MS                   60    /* 60ms */
-#define SL_DFLT_PML_REC_RATE_LIMIT_MAX_TIME_MS       60    /* 60ms */
-#define SL_DFLT_PML_REC_RATE_LIMIT_WINDOW_SIZE_MS  1000    /* 1000ms */
+#define SL_DFLT_PML_REC_TIMEOUT_MS                 60
+#define SL_DFLT_PML_REC_RATE_LIMIT_MAX_TIME_MS     60
+#define SL_DFLT_PML_REC_RATE_LIMIT_WINDOW_SIZE_MS  1000
 
 static unsigned int cass_sl_pml_rec_timeout_ms = SL_DFLT_PML_REC_TIMEOUT_MS;
 module_param(cass_sl_pml_rec_timeout_ms, uint, 0644);
@@ -953,6 +953,8 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.link_config.pml_rec_rate_limit_max_time_ms    = cass_sl_pml_rec_rate_limit_max_time_ms;
 	cass_dev->sl.link_config.pml_rec_rate_limit_window_size_ms = cass_sl_pml_rec_rate_limit_win_size_ms;
 	cass_dev->sl.link_config.pause_map                         = 0;
+	cass_dev->sl.link_config.options                           = SL_LINK_CONFIG_OPT_PML_REC_ENABLE |
+								     SL_LINK_CONFIG_OPT_ALD_ENABLE;
 	cass_dev->sl.link_config.hpe_map                           = SL_LINK_CONFIG_HPE_C2;
 	cass_dev->sl.link_config.hpe_map                          |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 	if (cass_dev->sl.enable_llr)
