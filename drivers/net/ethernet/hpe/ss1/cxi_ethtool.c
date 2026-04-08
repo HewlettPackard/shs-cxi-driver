@@ -600,15 +600,15 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 		}
 	}
 
+	link_info.flags = flags;
+	cxi_link_mode_set(dev->cxi_dev, &link_info);
+
 	if (changes & CXI_ETH_PF_FEC_MONITOR) {
 		if (flags & CXI_ETH_PF_FEC_MONITOR)
 			dev->priv_flags |= CXI_ETH_PF_FEC_MONITOR;
 		else
 			dev->priv_flags &= ~CXI_ETH_PF_FEC_MONITOR;
 	}
-
-	link_info.flags = flags;
-	cxi_link_mode_set(dev->cxi_dev, &link_info);
 
 	if (changes & CXI_ETH_PF_ROCE_OPT) {
 		if (flags & CXI_ETH_PF_ROCE_OPT)
