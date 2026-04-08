@@ -17,6 +17,7 @@
 /drivers/net/ethernet/hpe/ss1/modules.livepatch
 /cxi/.tmp_versions
 /ucxi/*.o
+/ucxi/test_cp
 /ucxi/test_csr_access
 /ucxi/test_nlmsg
 /ucxi/test_rgroup
