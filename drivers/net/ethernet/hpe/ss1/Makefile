@@ -4,7 +4,7 @@ PWD := $(shell pwd)
 export TOPDIR := $(if $(TOPDIR),$(TOPDIR),$(shell readlink -e ..))
 
 KNL_BUILD_ARGS += KBUILD_EXTRA_SYMBOLS="$(TOPDIR)/../slingshot_base_link/drivers/net/ethernet/hpe/sbl/Module.symvers \
-	$(TOPDIR)/../sl-driver/staging_dir/lib/modules/$(shell uname -r)/module.symvers.sl"
+	$(TOPDIR)/../sl-driver/drivers/net/ethernet/hpe/sl/Module.symvers"
 
 .PHONY: build clean
 
