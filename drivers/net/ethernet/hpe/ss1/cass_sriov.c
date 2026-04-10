@@ -88,15 +88,26 @@ EXPORT_SYMBOL(cass_vf_get_token);
 #define CXI_SRIOV_VSOCK_PORT 0x17db
 #define CXI_SRIOV_VSOCK_NOTIF_PORT (CXI_SRIOV_VSOCK_PORT + 1)
 
-/* Magic numbers used in VF-PF handshake */
-#define CXI_SRIOV_MAGIC1 0x17db0000
-#define CXI_SRIOV_MAGIC2 0x12345678
+/* Handshake commands sent from PF to VF */
+#define CXI_SRIOV_CMD_RESET 0x17db0001  /* Prepare for IRQ probe. Respond with READY */
+#define CXI_SRIOV_CMD_CHECK 0x17db0002  /* Report HIT or MISS whether IRQ was received */
+#define CXI_SRIOV_CMD_DONE  0x17db0003  /* Handshake complete */
+
+/* Handshake responses sent from VF to PF */
+#define CXI_SRIOV_RSP_READY 0x17db8001  /* Ready for IRQ probe */
+#define CXI_SRIOV_RSP_HIT   0x17db8002  /* IRQ was received */
+#define CXI_SRIOV_RSP_MISS  0x17db8003  /* IRQ was not received */
 
 /* PF-side timeout for vsock. Kept short so that listener-thread loop still runs. */
 #define CXI_SRIOV_PF_TIMEOUT (HZ / 4)
 
 /* VF-side timeout - longer than PF timeout, to allow time for PF to respond to requests */
 #define CXI_SRIOV_VF_TIMEOUT (HZ * 10)
+
+/* VF-side timeout for waiting for an IRQ during handshake. Must be shorter than
+ * CXI_SRIOV_PF_TIMEOUT to ensure VF responds before PF's read times out.
+ */
+#define CXI_SRIOV_IRQ_TIMEOUT (CXI_SRIOV_PF_TIMEOUT / 4)
 
 static int write_message_to_vsock(struct socket *sock, const void *msg,
 				  size_t msg_len, int msg_rc, int seq)
@@ -338,103 +349,177 @@ err:
 
 	if (vf->kvm_task)
 		put_task_struct(vf->kvm_task);
+	vf->kvm_task = NULL;
+
 	kernel_sock_shutdown(vf->req_sock, SHUT_RDWR);
 	sock_release(vf->req_sock);
 	vf->req_sock = NULL;
+
 	if (vf->notif_sock) {
 		kernel_sock_shutdown(vf->notif_sock, SHUT_RDWR);
 		sock_release(vf->notif_sock);
 		vf->notif_sock = NULL;
 	}
 
-	vf->kvm_task = NULL;
-
 	cass_ac_phys_free(hw, vf->phys_ac);
 	vf->phys_ac = 0;
+
+	while (!kthread_should_stop())
+		schedule_timeout_interruptible(CXI_SRIOV_PF_TIMEOUT);
 
 	return rc;
 }
 
-/* Probe inactive VFs from range_min to range_max inclusive */
-static int pf_probe_vfs(struct cass_dev *hw, struct socket *sock,
-			int range_min, int range_max)
+static int handshake_send_cmd(struct cass_dev *hw, struct socket *sock,
+			      unsigned int cmd)
 {
-	int i, rc;
-	int magic;
-	size_t msg_len = sizeof(magic);
+	int rc;
+
+	rc = write_message_to_vsock(sock, &cmd, sizeof(cmd), 0, 0);
+	if (rc < 0)
+		cxidev_err(&hw->cdev, "VF handshake: could not send cmd %x: %d",
+			   cmd, rc);
+	return rc;
+}
+
+static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
+{
+	int rc;
+	int rsp;
+	size_t msg_len = sizeof(rsp);
+
+	do {
+		rc = read_message_from_vsock(sock, &rsp, &msg_len, NULL,
+					     NULL, NULL, NULL);
+		if (rc == -EINTR)
+			schedule();
+	} while (rc == -EINTR);
+
+	if (rc == 0) {
+		cxidev_err(&hw->cdev, "VF handshake: connection closed by VF");
+		return -ECONNRESET;
+	} else if (rc < 0) {
+		cxidev_err(&hw->cdev, "VF handshake: error reading response: %d",
+			   rc);
+		return rc;
+	} else if (msg_len != sizeof(rsp)) {
+		cxidev_err(&hw->cdev, "VF handshake: expected response of size %zu, got %zu",
+			   sizeof(rsp), msg_len);
+		return -EPROTO;
+	}
+
+	return rsp;
+}
+
+/* Probe a range of VFs by firing IRQs for VFs in [range_min, range_max], and
+ * asking the VF whether it got an IRQ. Returns 1 if hit, 0 if miss, negative on
+ * error.
+ */
+static int pf_probe_vf_range(struct cass_dev *hw, struct socket *sock,
+			     int range_min, int range_max)
+{
+	int i, rc, rsp;
 	union c_pi_ipd_cfg_pf_vf_irq irqs = {
 		.irq = 0,
 	};
 
+	cxidev_dbg(&hw->cdev, "probing for VF in range [%d, %d]", range_min, range_max);
+
+	/* Only probe VFs that are not already connected */
 	for (i = range_min; i <= range_max; i++)
-		if (!hw->vfs[i].req_sock) /* Only probe VFs that aren't already active */
+		if (!hw->vfs[i].req_sock)
 			irqs.irq |= 1ULL << i;
 	if (!irqs.irq)
 		return 0;
 
-	magic = CXI_SRIOV_MAGIC1;
-	rc = write_message_to_vsock(sock, &magic, sizeof(magic), 0, 0);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not send magic to incoming VF: %d", rc);
+	/* 1: Tell VF to reinit completion and wait for READY */
+	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_RESET);
+	if (rc < 0)
 		return rc;
+
+	rsp = handshake_read_rsp(hw, sock);
+	if (rsp < 0)
+		return rsp;
+	if (rsp != CXI_SRIOV_RSP_READY) {
+		cxidev_err(&hw->cdev, "VF handshake: expected READY, got %x", rsp);
+		return -EPROTO;
 	}
 
+	/* 2: Fire IRQs for the range */
 	cass_write(hw, C_PI_IPD_CFG_PF_VF_IRQ, &irqs,
 		   sizeof(union c_pi_ipd_cfg_pf_vf_irq));
 
-	msg_len = sizeof(magic);
-	do {
-		rc = read_message_from_vsock(sock, &magic, &msg_len, NULL, NULL, NULL, NULL);
-		if (rc == -EINTR)
-			schedule();
-	} while (rc == -EINTR);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not read magic from incoming VF: %d", rc);
+	/* 3: Ask VF to check for IRQ */
+	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_CHECK);
+	if (rc < 0)
 		return rc;
-	}
 
-	return magic;
+	rsp = handshake_read_rsp(hw, sock);
+	if (rsp < 0)
+		return rsp;
+
+	if (rsp == CXI_SRIOV_RSP_HIT)
+		return 1;
+	else if (rsp == CXI_SRIOV_RSP_MISS)
+		return 0;
+
+	cxidev_err(&hw->cdev, "VF handshake: expected HIT/MISS, got %x", rsp);
+	return -EPROTO;
 }
 
-/* Identify which VF an incoming connection belongs to, by probing the PF-to-VF
- * interrupt of VFs that do not have an active connection.
+/* PF side of PF-VF handshake: Identify which VF an incoming connection belongs
+ * to, by binary-searching with PF-to-VF interrupts. The PF drives the protocol;
+ * the VF only responds.
  */
 static int pf_vf_handshake(struct cass_dev *hw, struct socket *sock)
 {
-	int range_min = 0;
-	int range_max = hw->num_vfs - 1;
-	int range_mid, rc, seq, vf_idx;
-	int magic;
+	int lo = 0;
+	int hi = hw->num_vfs - 1;
+	int mid;
+	int rc;
 
-	seq = 0; /* Handshake sequence number */
-	do {
-		magic = CXI_SRIOV_MAGIC1 + seq;
-		range_mid = range_min + (range_max - range_min) / 2;
-		if (pf_probe_vfs(hw, sock, range_min, range_mid) == magic) {
-			seq += 1;
-			range_max = range_mid;
-		} else if (pf_probe_vfs(hw, sock, range_mid + 1, range_max) == magic) {
-			seq += 1;
-			range_min = range_mid + 1;
-		} else {
-			break;
+	while (lo < hi) {
+		mid = lo + (hi - lo) / 2;
+
+		rc = pf_probe_vf_range(hw, sock, lo, mid);
+		if (rc < 0)
+			return rc;
+		if (rc == 1) {
+			hi = mid;
+			continue;
 		}
-	} while (range_max != range_min);
 
-	if (range_max != range_min) {
-		cxidev_err(&hw->cdev, "vf search failed");
+		rc = pf_probe_vf_range(hw, sock, mid + 1, hi);
+		if (rc < 0)
+			return rc;
+		if (rc == 1) {
+			lo = mid + 1;
+			continue;
+		}
+
+		cxidev_err(&hw->cdev, "VF handshake: VF not found");
 		return -ENOENT;
 	}
-	vf_idx = range_min;
 
-	magic = CXI_SRIOV_MAGIC2;
-	rc = write_message_to_vsock(sock, &magic, sizeof(magic), 0, 0);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not send magic to incoming VF: %d", rc);
-		return rc;
+	/* If only one VF is present, the binary search above is a no-op, but
+	 * we still want to verify the presence of the VF.
+	 */
+	if (hw->num_vfs == 1) {
+		rc = pf_probe_vf_range(hw, sock, lo, lo);
+		if (rc < 0) {
+			return rc;
+		} else if (rc == 0) {
+			cxidev_err(&hw->cdev, "VF handshake: VF not found");
+			return -ENOENT;
+		}
 	}
 
-	return vf_idx;
+	/* Tell VF the handshake is complete */
+	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_DONE);
+	if (rc < 0)
+		return rc;
+
+	return lo;
 }
 
 /* Handle an incoming request connection from a VF */
@@ -465,6 +550,15 @@ static void handle_vf_req_conn(struct cass_dev *hw,
 	if (vf->req_sock) {
 		cxidev_err(&hw->cdev, "vf %d already in use", vf_idx);
 		goto close_sock;
+	}
+
+	/* The listener loop periodically cleans up stale VF message handler
+	 * threads but we should check here too, in case a new connection comes
+	 * in before the listener loop has a chance to clean up the old one.
+	 */
+	if (vf->task) {
+		kthread_stop(vf->task);
+		vf->task = NULL;
 	}
 
 	mutex_init(&vf->notif_lock);
@@ -659,14 +753,26 @@ static int pf_vf_listener(void *data)
 				   rc);
 			break;
 		}
+
+		/* Periodically clean up old handler threads that have
+		 * relinquished their request sockets
+		 */
+		for (vf_idx = 0; vf_idx < hw->num_vfs; vf_idx++) {
+			if (!hw->vfs[vf_idx].req_sock && hw->vfs[vf_idx].task) {
+				kthread_stop(hw->vfs[vf_idx].task);
+				hw->vfs[vf_idx].task = NULL;
+			}
+		}
 	}
 
 	cxidev_dbg(&hw->cdev, "vf listener exiting");
 
 	for (vf_idx = 0; vf_idx < hw->num_vfs; vf_idx++) {
-		if (hw->vfs[vf_idx].req_sock) {
+		if (hw->vfs[vf_idx].task) {
 			kthread_stop(hw->vfs[vf_idx].task);
 			hw->vfs[vf_idx].task = NULL;
+		}
+		if (hw->vfs[vf_idx].req_sock) {
 			kernel_sock_shutdown(hw->vfs[vf_idx].req_sock, SHUT_RDWR);
 			sock_release(hw->vfs[vf_idx].req_sock);
 			hw->vfs[vf_idx].req_sock = NULL;
@@ -675,6 +781,10 @@ static int pf_vf_listener(void *data)
 			kernel_sock_shutdown(hw->vfs[vf_idx].notif_sock, SHUT_RDWR);
 			sock_release(hw->vfs[vf_idx].notif_sock);
 			hw->vfs[vf_idx].notif_sock = NULL;
+		}
+		if (hw->vfs[vf_idx].phys_ac) {
+			cass_ac_phys_free(hw, hw->vfs[vf_idx].phys_ac);
+			hw->vfs[vf_idx].phys_ac = 0;
 		}
 	}
 
@@ -834,12 +944,85 @@ static int vf_notif_handler(void *data)
 	return 0;
 }
 
+/* VF side of VF-PF handshake: respond to commands from PF.
+ * Returns 0 on success, negative on error.
+ */
+static int vf_handshake(struct cass_dev *hw)
+{
+	int rc;
+	unsigned int cmd;
+	unsigned int rsp;
+	size_t msg_len;
+
+	while (true) {
+		msg_len = sizeof(cmd);
+		do {
+			rc = read_message_from_vsock(hw->vf_req_sock, &cmd,
+						     &msg_len, NULL,
+						     NULL, NULL, NULL);
+			if (rc == -EINTR)
+				schedule();
+		} while (rc == -EINTR);
+		if (rc < 0) {
+			cxidev_err(&hw->cdev, "VF handshake: error reading cmd: %d",
+				   rc);
+			return rc;
+		} else if (rc == 0) {
+			cxidev_err(&hw->cdev, "handshake: PF closed connection");
+			return -ENOTCONN;
+		} else if (msg_len != sizeof(cmd)) {
+			cxidev_err(&hw->cdev, "VF handshake: expected cmd of size %zu, got %zu",
+				   sizeof(cmd), msg_len);
+			return -EPROTO;
+		}
+
+		switch (cmd) {
+		case CXI_SRIOV_CMD_RESET:
+			cxidev_dbg(&hw->cdev, "handshake: got RESET command from PF");
+			reinit_completion(&hw->pf_to_vf_comp);
+			rsp = CXI_SRIOV_RSP_READY;
+			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
+						    sizeof(rsp), 0, 0);
+			if (rc < 0) {
+				cxidev_err(&hw->cdev,
+					   "VF handshake: error sending READY: %d",
+					   rc);
+				return rc;
+			}
+			break;
+
+		case CXI_SRIOV_CMD_CHECK:
+			cxidev_dbg(&hw->cdev, "handshake: got CHECK command from PF");
+
+			rc = wait_for_completion_timeout(&hw->pf_to_vf_comp,
+							 CXI_SRIOV_IRQ_TIMEOUT);
+			rsp = rc ? CXI_SRIOV_RSP_HIT : CXI_SRIOV_RSP_MISS;
+			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
+						    sizeof(rsp), 0, 0);
+			if (rc < 0) {
+				cxidev_err(&hw->cdev,
+					   "VF handshake: error sending HIT/MISS: %d",
+					   rc);
+				return rc;
+			}
+			break;
+
+		case CXI_SRIOV_CMD_DONE:
+			cxidev_dbg(&hw->cdev, "handshake: got DONE command from PF, handshake complete");
+			return 0;
+
+		default:
+			cxidev_err(&hw->cdev,
+				   "VF handshake: unexpected cmd from PF: %x",
+				   cmd);
+			return -EPROTO;
+		}
+	}
+}
+
 int cass_vf_init(struct cass_dev *hw)
 {
-	int rc, seq;
-	unsigned int magic;
-	size_t msg_len = sizeof(magic);
-	bool init_done = false;
+	int rc;
 	const struct cxi_vf_get_token_cmd token_cmd = {
 		.op = CXI_OP_VF_GET_TOKEN,
 	};
@@ -887,58 +1070,7 @@ int cass_vf_init(struct cass_dev *hw)
 		goto release_vf_sock;
 	}
 
-	/* Handshake with PF driver starts here. */
-	seq = 0;
-	while (!init_done) {
-		msg_len = sizeof(magic);
-		do {
-			rc = read_message_from_vsock(hw->vf_req_sock, &magic, &msg_len,
-						     NULL, NULL, NULL, NULL);
-			if (rc == -EINTR)
-				schedule();
-		} while (rc == -EINTR);
-		if (rc < 0) {
-			cxidev_err(&hw->cdev, "error receiving magic from PF: %d", rc);
-			init_done = true;
-			break;
-		} else if (rc == 0) {
-			cxidev_err(&hw->cdev, "PF closed connection during handshake");
-			rc = -ENOTCONN;
-			init_done = true;
-			break;
-		}
-		switch (magic) {
-		case CXI_SRIOV_MAGIC1:
-			rc = wait_for_completion_timeout(&hw->pf_to_vf_comp,
-							 CXI_SRIOV_VF_TIMEOUT);
-			if (rc == 0) {
-				cxidev_err(&hw->cdev, "timed out waiting for irq from pf");
-				rc = -ETIMEDOUT;
-				init_done = true;
-				break;
-			}
-			magic = CXI_SRIOV_MAGIC1 + seq;
-			msg_len = sizeof(magic);
-			rc = write_message_to_vsock(hw->vf_req_sock, &magic,
-						    msg_len, 0, 0);
-			if (rc < 0) {
-				cxidev_err(&hw->cdev, "error sending magic to PF: %d", rc);
-				init_done = true;
-				break;
-			}
-			seq += 1;
-			break;
-		case CXI_SRIOV_MAGIC2:
-			init_done = true;
-			break;
-		default:
-			cxidev_err(&hw->cdev, "got unexpected magic from PF: %x", magic);
-			rc = -EINVAL;
-			init_done = true;
-			break;
-		}
-	}
-
+	rc = vf_handshake(hw);
 	if (rc < 0)
 		goto shutdown_vf_sock;
 
