@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018,2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2025-2026 Hewlett Packard Enterprise Development LP */
 
 /* cxi-ss1 debug fs*/
 #include <linux/etherdevice.h>
@@ -491,7 +491,6 @@ void pt_debugfs_create(int id, struct cxi_pte_priv *pt, struct cass_dev *hw,
 					     path);
 }
 
-
 void lni_debugfs_create(int id, struct cass_dev *hw, struct cxi_lni_priv *lni_priv)
 {
 	char name[30];
@@ -626,6 +625,98 @@ void cass_dmac_debugfs_init(struct cass_dev *hw)
 			    hw, &cass_dmac_desc_sets_fops);
 }
 
+static int cass_rmu_eth_filters_show(struct seq_file *s, void *unused)
+{
+	struct cass_dev *hw = s->private;
+	struct cxi_rmu_eth *rmu_eth;
+	int id;
+	int active_filters = 0;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	idr_for_each_entry(&hw->rmu_eth_idr, rmu_eth, id) {
+		struct cxi_rmu_eth_priv *priv =
+			container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
+		unsigned int i;
+
+		for (i = 0; i < priv->set_list_quota; i++) {
+			union c_rmu_cfg_ptlte_set_list set_list;
+			union c_rmu_cfg_ptlte_set_list set_list_mask;
+			unsigned int hw_idx;
+			u8 mac[ETH_ALEN];
+			char func[8];
+			const char *type;
+			const char *rss;
+
+			if (!priv->mac_filter_slots[i])
+				continue;
+
+			hw_idx = priv->set_list_base + i;
+			if (priv->is_vf)
+				scnprintf(func, sizeof(func), "vf%u", priv->vf_num + 1);
+			else
+				scnprintf(func, sizeof(func), "pf");
+			rss = priv->mac_filter_slots[i] == CXI_RMU_ETH_FILTER_RSS ?
+				"on" : "off";
+
+			spin_lock(&hw->rmu_lock);
+			cass_read(hw, C_RMU_CFG_PTLTE_SET_LIST_X(hw_idx), &set_list,
+				  sizeof(set_list));
+			cass_shadow_read(hw, C_RMU_BASE,
+					 C_RMU_CFG_PTLTE_SET_LIST_Y_OFFSET(hw_idx),
+					 &set_list_mask, sizeof(set_list_mask));
+			spin_unlock(&hw->rmu_lock);
+
+			u64_to_ether_addr(set_list.dmac, mac);
+
+			if (!set_list.dmac && !set_list_mask.dmac)
+				type = "promisc";
+			else if (set_list.dmac == 0x010000000000ULL)
+				type = "allmcst";
+			else
+				type = "macaddr";
+
+			seq_printf(s,
+				   "func=%-4s client=%-3d slot=%-3u hw_idx=%-4u rss=%-3s type=%-7s mac=%pM ",
+				   func, id, i, hw_idx, rss, type, mac);
+			seq_printf(s,
+				   "match=%016llx:%016llx:%016llx:%016llx ",
+				   (unsigned long long)set_list.qw[0],
+				   (unsigned long long)set_list.qw[1],
+				   (unsigned long long)set_list.qw[2],
+				   (unsigned long long)set_list.qw[3]);
+			seq_printf(s,
+				   "mask=%016llx:%016llx:%016llx:%016llx",
+				   (unsigned long long)set_list_mask.qw[0],
+				   (unsigned long long)set_list_mask.qw[1],
+				   (unsigned long long)set_list_mask.qw[2],
+				   (unsigned long long)set_list_mask.qw[3]);
+			seq_puts(s, "\n");
+
+			active_filters++;
+		}
+	}
+
+	if (!active_filters)
+		seq_puts(s, "none\n");
+
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	return 0;
+}
+
+static int cass_rmu_eth_filters_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cass_rmu_eth_filters_show, inode->i_private);
+}
+
+static const struct file_operations cass_rmu_eth_filters_fops = {
+	.owner = THIS_MODULE,
+	.open = cass_rmu_eth_filters_open,
+	.read = seq_read,
+	.llseek  = seq_lseek,
+	.release = single_release,
+};
+
 static int tc_cfg_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, tc_cfg_show, inode->i_private);
@@ -681,6 +772,8 @@ void cass_probe_debugfs_init(struct cass_dev *hw)
 			    &sw_decouple_fops);
 
 	debugfs_create_file("uc_log", 0444, hw->debug_dir, hw, &uc_fops);
+	debugfs_create_file("rmu_eth_filters", 0444, hw->debug_dir, hw,
+			    &cass_rmu_eth_filters_fops);
 
 	/* setup SBL debugfs interface */
 	cass_port_debugfs_init(hw);

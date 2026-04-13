@@ -76,6 +76,10 @@ struct cxi_domain {
 	unsigned int pid;
 };
 
+struct cxi_rmu_eth {
+	unsigned int id;
+};
+
 struct cxi_ac {
 	int acid;
 	int lac;
@@ -94,15 +98,6 @@ enum cxi_async_event {
 	 */
 	CXI_EVENT_NID_CHANGED,
 };
-
-/* Maximum possible number of RSS queues (must be a power of 2.) */
-#define CXI_ETH_MAX_RSS_QUEUES 64
-
-/* Maximum possible number of entries in the indirection table */
-#define CXI_ETH_MAX_INDIR_ENTRIES 2048
-
-/* Size of RSS key in bytes, rounded up from 351 bits */
-#define CXI_ETH_HASH_KEY_SIZE 44
 
 /* Resources used by an Ethernet device. */
 struct cxi_eth_res {
@@ -491,6 +486,26 @@ void cxi_eth_set_list_invalidate_all(struct cxi_dev *cdev,
 void cxi_eth_set_indir_table(struct cxi_dev *cdev, struct cxi_eth_res *res);
 void cxi_eth_clear_indir_table(struct cxi_dev *cdev, struct cxi_eth_res *res);
 void cxi_eth_get_hash_key(struct cxi_dev *cdev, u8 *key);
+
+/* RMU Ethernet API */
+struct cxi_rmu_eth *cxi_rmu_eth_alloc(struct cxi_dev *cdev);
+
+void cxi_rmu_eth_free(struct cxi_rmu_eth *rmu_eth);
+
+int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+			       u64 mac_addr, struct cxi_pte *pte, bool use_rss);
+int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+				     struct cxi_pte *pte, bool use_rss);
+int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+				       struct cxi_pte *pte, bool use_rss);
+int cxi_rmu_eth_remove_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx);
+int cxi_rmu_eth_set_rss_queues(struct cxi_rmu_eth *rmu_eth, unsigned int num_queues,
+			       struct cxi_pte **ptes, u32 hash_types);
+int cxi_rmu_eth_set_indir_table(struct cxi_rmu_eth *rmu_eth, const u8 *indir_table,
+				unsigned int indir_size);
+void cxi_rmu_eth_get_hash_key(struct cxi_dev *cdev, u8 *key);
+
+/* Ethernet utility functions */
 void cxi_eth_get_pause(struct cxi_dev *cdev, struct ethtool_pauseparam *pause);
 void cxi_eth_set_pause(struct cxi_dev *cdev, const struct ethtool_pauseparam *pause);
 int cxi_eth_cfg_timestamp(struct cxi_dev *cdev,

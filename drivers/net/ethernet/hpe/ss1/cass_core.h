@@ -543,6 +543,41 @@ struct cass_vf {
 	struct task_struct *kvm_task;
 };
 
+enum cxi_rmu_eth_filter_mode {
+	CXI_RMU_ETH_FILTER_NONE = 0,
+	CXI_RMU_ETH_FILTER_DIRECT,
+	CXI_RMU_ETH_FILTER_RSS,
+};
+
+/**
+ * struct cxi_rmu_eth_priv - Private Ethernet resource tracking (INTERNAL)
+ *
+ * Full internal structure containing all resource management state.
+ * One allocation per function (PF or VF).
+ */
+struct cxi_rmu_eth_priv {
+	struct cxi_rmu_eth rmu_eth;     /* Public opaque handle */
+	struct cxi_dev *dev;            /* Device this allocation belongs to */
+	bool is_vf;                     /* True if this is a VF allocation */
+	unsigned int vf_num;            /* VF number (if is_vf=true) */
+	bool admin;                     /* True if it has admin privileges */
+
+	/* Resource allocation */
+	unsigned int indir_base;        /* Absolute offset in HW indirection table */
+	unsigned int indir_size;        /* Number of indir entries allocated */
+	unsigned int set_list_base;     /* Absolute offset in HW set_list (4+ for dynamic) */
+	unsigned int set_list_quota;    /* Max set_list entries for this function */
+
+	/* Default RSS configuration (used by all MACs when use_rss=true) */
+	unsigned int rss_queues;
+	struct cxi_pte *ptes[64];   /* PTE pointers for RSS queues */
+	u32 hash_types;
+	unsigned int indir_entries;     /* Active indirection table size */
+
+	/* Filter tracking [0..quota-1]: enum cxi_rmu_eth_filter_mode values */
+	u8 *mac_filter_slots;
+};
+
 /* Private hardware data for Cassini. This is not seen by clients. */
 struct cass_dev {
 	/* Embed a cxi device. */
@@ -803,6 +838,12 @@ struct cass_dev {
 	/* Ethernet Set List */
 	struct ida set_list_table;
 	struct cxi_tx_profile eth_tx_profile;
+
+	/* RMU Ethernet resource management */
+	struct idr rmu_eth_idr;
+
+	/* Protects all RMU Eth resources */
+	struct mutex rmu_eth_lock;
 
 	/* Protects C_RMU_CFG_PORTAL_LIST_X/Y. */
 	spinlock_t rmu_portal_list_lock;

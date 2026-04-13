@@ -30,6 +30,7 @@ static int free_pte_map(int id, void *obj_, void *data);
 static int free_wait_obj(int id, void *obj_, void *data);
 static int free_ct_obj(int id, void *obj_, void *data);
 static int free_cp_obj(int id, void *obj_, void *data);
+static int free_rmu_eth_obj(int id, void *obj_, void *data);
 
 #ifdef CONFIG_ARM64
 /* Provide a workaround for avoiding writecombine on platforms where it is broken
@@ -228,6 +229,429 @@ free_obj:
 	free_obj(obj);
 free_lni:
 	cxi_lni_free(lni);
+
+	return rc;
+}
+
+/* rmu_eth dependency layout in deps[]:
+ *   [0 .. CXI_USER_RMU_ETH_MAX_PTE_REFS-1]           : indexed filter slots
+ *   [CXI_USER_RMU_ETH_RSS_DEP_OFFSET .. +RSS_QUEUES) : RSS queue slots
+ */
+#define CXI_USER_RMU_ETH_MAX_PTE_REFS 256
+#define CXI_USER_RMU_ETH_RSS_DEP_OFFSET CXI_USER_RMU_ETH_MAX_PTE_REFS
+#define CXI_USER_RMU_ETH_TOTAL_PTE_REFS \
+	(CXI_USER_RMU_ETH_RSS_DEP_OFFSET + CXI_ETH_MAX_RSS_QUEUES)
+
+static int cxi_user_rmu_eth_alloc(struct user_client *client,
+				  const void *cmd_in, void *resp_out,
+				  size_t *resp_out_len)
+{
+	struct cxi_rmu_eth *rmu_eth;
+	struct cxi_rmu_eth_alloc_resp resp = {};
+	int rc;
+	struct ucxi_obj *obj;
+
+	if (!client->is_vf)
+		rmu_eth = cxi_rmu_eth_alloc(client->ucxi->dev);
+	else
+		rmu_eth = cxi_rmu_eth_alloc_internal(client->ucxi->dev, true,
+						     client->vf_num);
+
+	if (IS_ERR(rmu_eth))
+		return PTR_ERR(rmu_eth);
+
+	obj = alloc_obj(CXI_USER_RMU_ETH_TOTAL_PTE_REFS);
+	if (!obj) {
+		rc = -ENOMEM;
+		goto free_rmu_eth;
+	}
+
+	obj->rmu_eth = rmu_eth;
+
+	idr_preload(GFP_KERNEL);
+	write_lock(&client->res_lock);
+	rc = idr_alloc(&client->rmu_eth_idr, obj, rmu_eth->id,
+		       rmu_eth->id + 1, GFP_NOWAIT);
+	write_unlock(&client->res_lock);
+	idr_preload_end();
+	if (rc < 0)
+		goto free_obj;
+
+	resp.rmu_eth = rc;
+	resp.id = rmu_eth->id;
+
+	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
+	if (rc)
+		goto release_rmu_eth_idr;
+
+	return 0;
+
+release_rmu_eth_idr:
+	write_lock(&client->res_lock);
+	idr_remove(&client->rmu_eth_idr, resp.rmu_eth);
+	write_unlock(&client->res_lock);
+free_obj:
+	free_obj(obj);
+free_rmu_eth:
+	cxi_rmu_eth_free(rmu_eth);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_free(struct user_client *client,
+				 const void *cmd_in, void *resp_out,
+				 size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_free_cmd *cmd = cmd_in;
+	struct ucxi_obj *obj;
+
+	write_lock(&client->res_lock);
+
+	obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+	if (!obj) {
+		write_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	if (atomic_read(&obj->refs) != 0) {
+		write_unlock(&client->res_lock);
+		return -EBUSY;
+	}
+
+	idr_remove(&client->rmu_eth_idr, cmd->rmu_eth);
+	write_unlock(&client->res_lock);
+	free_rmu_eth_obj(0, obj, client);
+
+	return 0;
+}
+
+static int cxi_user_rmu_eth_add_mac_filter(struct user_client *client,
+					   const void *cmd_in, void *resp_out,
+					   size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_add_mac_filter_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj, *pte_obj, *old_pte_obj;
+	int rc;
+
+	if (cmd->idx >= CXI_USER_RMU_ETH_MAX_PTE_REFS)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+	pte_obj = idr_find(&client->pte_idr, cmd->pte);
+
+	if (!rmu_eth_obj || !pte_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	/* Save old PTE for later swap */
+	old_pte_obj = rmu_eth_obj->deps[cmd->idx];
+
+	/* Reference objects */
+	atomic_inc(&rmu_eth_obj->refs);
+	atomic_inc(&pte_obj->refs);
+	if (old_pte_obj)
+		atomic_inc(&old_pte_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	/* Program filter */
+	rc = cxi_rmu_eth_add_mac_filter(rmu_eth_obj->rmu_eth, cmd->idx, cmd->mac_addr,
+					pte_obj->pte, cmd->use_rss);
+
+	if (!rc) {
+		/* Success - update PTE references */
+		write_lock(&client->res_lock);
+
+		/* Decrement old PTE if it existed */
+		if (old_pte_obj)
+			atomic_dec(&old_pte_obj->refs);
+
+		/* Store new PTE */
+		rmu_eth_obj->deps[cmd->idx] = pte_obj;
+		atomic_inc(&pte_obj->refs);
+
+		write_unlock(&client->res_lock);
+	}
+
+	if (old_pte_obj)
+		atomic_dec(&old_pte_obj->refs);
+	atomic_dec(&pte_obj->refs);
+	atomic_dec(&rmu_eth_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_add_promisc_filter(struct user_client *client,
+					       const void *cmd_in, void *resp_out,
+					       size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_add_promisc_filter_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj, *pte_obj, *old_pte_obj;
+	int rc;
+
+	if (cmd->idx >= CXI_USER_RMU_ETH_MAX_PTE_REFS)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+	pte_obj = idr_find(&client->pte_idr, cmd->pte);
+
+	if (!rmu_eth_obj || !pte_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	/* Save old PTE for later swap */
+	old_pte_obj = rmu_eth_obj->deps[cmd->idx];
+
+	/* Reference objects */
+	atomic_inc(&rmu_eth_obj->refs);
+	atomic_inc(&pte_obj->refs);
+	if (old_pte_obj)
+		atomic_inc(&old_pte_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	/* Program filter */
+	rc = cxi_rmu_eth_add_promiscuous_filter(rmu_eth_obj->rmu_eth, cmd->idx,
+						pte_obj->pte, cmd->use_rss);
+
+	if (!rc) {
+		/* Success - update PTE references */
+		write_lock(&client->res_lock);
+
+		/* Decrement old PTE if it existed */
+		if (old_pte_obj)
+			atomic_dec(&old_pte_obj->refs);
+
+		/* Store new PTE */
+		rmu_eth_obj->deps[cmd->idx] = pte_obj;
+		atomic_inc(&pte_obj->refs);
+
+		write_unlock(&client->res_lock);
+	}
+
+	if (old_pte_obj)
+		atomic_dec(&old_pte_obj->refs);
+	atomic_dec(&pte_obj->refs);
+	atomic_dec(&rmu_eth_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_add_all_mcast_filter(struct user_client *client,
+						 const void *cmd_in, void *resp_out,
+						 size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_add_all_mcast_filter_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj, *pte_obj, *old_pte_obj;
+	int rc;
+
+	if (cmd->idx >= CXI_USER_RMU_ETH_MAX_PTE_REFS)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+	pte_obj = idr_find(&client->pte_idr, cmd->pte);
+
+	if (!rmu_eth_obj || !pte_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	/* Save old PTE for later swap */
+	old_pte_obj = rmu_eth_obj->deps[cmd->idx];
+
+	/* Reference objects */
+	atomic_inc(&rmu_eth_obj->refs);
+	atomic_inc(&pte_obj->refs);
+	if (old_pte_obj)
+		atomic_inc(&old_pte_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	/* Program filter */
+	rc = cxi_rmu_eth_add_all_mcast_filter(rmu_eth_obj->rmu_eth, cmd->idx,
+					      pte_obj->pte, cmd->use_rss);
+
+	if (!rc) {
+		/* Success - update PTE references */
+		write_lock(&client->res_lock);
+
+		/* Decrement old PTE if it existed */
+		if (old_pte_obj)
+			atomic_dec(&old_pte_obj->refs);
+
+		/* Store new PTE */
+		rmu_eth_obj->deps[cmd->idx] = pte_obj;
+		atomic_inc(&pte_obj->refs);
+
+		write_unlock(&client->res_lock);
+	}
+
+	if (old_pte_obj)
+		atomic_dec(&old_pte_obj->refs);
+	atomic_dec(&pte_obj->refs);
+	atomic_dec(&rmu_eth_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_remove_filter(struct user_client *client,
+					  const void *cmd_in, void *resp_out,
+					  size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_remove_filter_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj, *pte_obj;
+	int rc;
+
+	if (cmd->idx >= CXI_USER_RMU_ETH_MAX_PTE_REFS)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+
+	if (!rmu_eth_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	/* Get PTE from slot before removing */
+	pte_obj = rmu_eth_obj->deps[cmd->idx];
+	if (!pte_obj) {
+		read_unlock(&client->res_lock);
+		return -ENOENT;  /* Slot is empty */
+	}
+
+	/* Reference objects */
+	atomic_inc(&rmu_eth_obj->refs);
+	atomic_inc(&pte_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	rc = cxi_rmu_eth_remove_filter(rmu_eth_obj->rmu_eth, cmd->idx);
+
+	if (!rc) {
+		/* Successfully removed - dereference PTE and clear slot */
+		write_lock(&client->res_lock);
+		atomic_dec(&pte_obj->refs);
+		rmu_eth_obj->deps[cmd->idx] = NULL;
+		write_unlock(&client->res_lock);
+	}
+
+	atomic_dec(&pte_obj->refs);
+	atomic_dec(&rmu_eth_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_set_rss_queues(struct user_client *client,
+					   const void *cmd_in, void *resp_out,
+					   size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_set_rss_queues_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj;
+	struct ucxi_obj **rss_deps;
+	struct ucxi_obj *pte_objs[CXI_ETH_MAX_RSS_QUEUES];
+	struct cxi_pte *ptes[CXI_ETH_MAX_RSS_QUEUES];
+	unsigned int i;
+	int rc;
+
+	if (cmd->num_queues > CXI_ETH_MAX_RSS_QUEUES)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+
+	if (!rmu_eth_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	atomic_inc(&rmu_eth_obj->refs);
+
+	/* Lookup all new PTE objects */
+	for (i = 0; i < cmd->num_queues; i++) {
+		pte_objs[i] = idr_find(&client->pte_idr, cmd->ptes[i]);
+		if (!pte_objs[i]) {
+			atomic_dec(&rmu_eth_obj->refs);
+			read_unlock(&client->res_lock);
+			return -EINVAL;
+		}
+		ptes[i] = pte_objs[i]->pte;
+	}
+
+	/* Reference all the PTE objects */
+	for (i = 0; i < cmd->num_queues; i++)
+		atomic_inc(&pte_objs[i]->refs);
+
+	read_unlock(&client->res_lock);
+
+	rc = cxi_rmu_eth_set_rss_queues(rmu_eth_obj->rmu_eth, cmd->num_queues,
+					ptes, cmd->hash_types);
+	if (!rc) {
+		write_lock(&client->res_lock);
+		rss_deps = &rmu_eth_obj->deps[CXI_USER_RMU_ETH_RSS_DEP_OFFSET];
+
+		/* Dereference old RSS PTEs and clear RSS dependency window */
+		for (i = 0; i < CXI_ETH_MAX_RSS_QUEUES; i++) {
+			if (rss_deps[i]) {
+				atomic_dec(&rss_deps[i]->refs);
+				rss_deps[i] = NULL;
+			}
+		}
+
+		/* Add new RSS PTEs */
+		for (i = 0; i < cmd->num_queues; i++) {
+			rss_deps[i] = pte_objs[i];
+			atomic_inc(&pte_objs[i]->refs);
+		}
+
+		write_unlock(&client->res_lock);
+	}
+
+	for (i = 0; i < cmd->num_queues; i++)
+		atomic_dec(&pte_objs[i]->refs);
+	atomic_dec(&rmu_eth_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_rmu_eth_set_indir_table(struct user_client *client,
+					    const void *cmd_in, void *resp_out,
+					    size_t *resp_out_len)
+{
+	const struct cxi_rmu_eth_set_indir_table_cmd *cmd = cmd_in;
+	struct ucxi_obj *rmu_eth_obj;
+	int rc;
+
+	if (cmd->indir_size > CXI_ETH_MAX_INDIR_ENTRIES)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	rmu_eth_obj = idr_find(&client->rmu_eth_idr, cmd->rmu_eth);
+
+	if (!rmu_eth_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	atomic_inc(&rmu_eth_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	rc = cxi_rmu_eth_set_indir_table(rmu_eth_obj->rmu_eth,
+					 cmd->indir_table, cmd->indir_size);
+
+	atomic_dec(&rmu_eth_obj->refs);
 
 	return rc;
 }
@@ -2637,6 +3061,20 @@ static int cxi_user_eth_max_rxsize_get(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_rmu_eth_hash_key_get(struct user_client *client,
+				     const void *cmd_in, void *resp_out,
+				     size_t *resp_out_len)
+{
+	struct cxi_rmu_eth_get_hash_key_resp resp = {};
+
+	cxi_rmu_eth_get_hash_key(client->ucxi->dev, resp.key);
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int cxi_user_eth_link_state_get(struct user_client *client,
 				       const void *cmd_in, void *resp_out,
 				       size_t *resp_out_len)
@@ -3004,7 +3442,43 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_ETH_LINK_STATE_GET] = {
 		.req_size   = sizeof(struct cxi_eth_link_state_get_cmd),
 		.name       = "ETH_LINK_STATE_GET",
-		.handler    = cxi_user_eth_link_state_get, }
+		.handler    = cxi_user_eth_link_state_get, },
+	[CXI_OP_RMU_ETH_ALLOC] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_alloc_cmd),
+		.name       = "RMU_ETH_ALLOC",
+		.handler    = cxi_user_rmu_eth_alloc, },
+	[CXI_OP_RMU_ETH_FREE] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_free_cmd),
+		.name       = "RMU_ETH_FREE",
+		.handler    = cxi_user_rmu_eth_free, },
+	[CXI_OP_RMU_ETH_HASH_KEY_GET] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_hash_key_get_cmd),
+		.name       = "RMU_ETH_HASH_KEY_GET",
+		.handler    = cxi_user_rmu_eth_hash_key_get, },
+	[CXI_OP_RMU_ETH_ADD_MAC_FILTER] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_add_mac_filter_cmd),
+		.name       = "RMU_ETH_ADD_MAC_FILTER",
+		.handler    = cxi_user_rmu_eth_add_mac_filter, },
+	[CXI_OP_RMU_ETH_ADD_PROMISC_FILTER] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_add_promisc_filter_cmd),
+		.name       = "RMU_ETH_ADD_PROMISC_FILTER",
+		.handler    = cxi_user_rmu_eth_add_promisc_filter, },
+	[CXI_OP_RMU_ETH_ADD_ALL_MCAST_FILTER] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_add_all_mcast_filter_cmd),
+		.name       = "RMU_ETH_ADD_ALL_MCAST_FILTER",
+		.handler    = cxi_user_rmu_eth_add_all_mcast_filter, },
+	[CXI_OP_RMU_ETH_REMOVE_FILTER] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_remove_filter_cmd),
+		.name       = "RMU_ETH_REMOVE_FILTER",
+		.handler    = cxi_user_rmu_eth_remove_filter, },
+	[CXI_OP_RMU_ETH_SET_RSS_QUEUES] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_set_rss_queues_cmd),
+		.name       = "RMU_ETH_SET_RSS_QUEUES",
+		.handler    = cxi_user_rmu_eth_set_rss_queues, },
+	[CXI_OP_RMU_ETH_SET_INDIR_TABLE] = {
+		.req_size   = sizeof(struct cxi_rmu_eth_set_indir_table_cmd),
+		.name       = "RMU_ETH_SET_INDIR_TABLE",
+		.handler    = cxi_user_rmu_eth_set_indir_table, }
 };
 
 /* Read and process a command from userspace or from a Virtual
@@ -3185,6 +3659,7 @@ static struct user_client *alloc_client(struct ucxi *ucxi)
 	idr_init(&client->wait_idr);
 	idr_init(&client->ct_idr);
 	idr_init(&client->cp_idr);
+	idr_init(&client->rmu_eth_idr);
 
 	client->cntr_pool_id = 0;
 
@@ -3228,6 +3703,25 @@ static int ucxi_open(struct inode *inode, struct file *filp)
 /* Used to free all remaining objects when a user closes the device
  * file.
  */
+static int free_rmu_eth_obj(int id, void *obj_, void *data)
+{
+	struct user_client *client = data;
+	struct ucxi_obj *rmu_eth = obj_;
+	unsigned int i;
+
+	/* Dereference all RMU ETH PTE dependencies. */
+	for (i = 0; i < CXI_USER_RMU_ETH_TOTAL_PTE_REFS; i++) {
+		if (rmu_eth->deps[i])
+			atomic_dec(&rmu_eth->deps[i]->refs);
+	}
+
+	if (client->ucxi)
+		cxi_rmu_eth_free(rmu_eth->rmu_eth);
+	free_obj(rmu_eth);
+
+	return 0;
+}
+
 static int free_lni_obj(int id, void *obj_, void *data)
 {
 	struct user_client *client = data;
@@ -3393,6 +3887,9 @@ static void free_client(struct user_client *client)
 	/* Free existing resources that userspace didn't release. This
 	 * must be done in reverse order of dependencies.
 	 */
+	idr_for_each(&client->rmu_eth_idr, free_rmu_eth_obj, client);
+	idr_destroy(&client->rmu_eth_idr);
+
 	idr_for_each(&client->pte_map_idr, free_pte_map, client);
 	idr_destroy(&client->pte_map_idr);
 

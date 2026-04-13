@@ -133,6 +133,15 @@ enum cxi_command_opcode {
 		CXI_OP_ETH_PAUSE_GET,
 		CXI_OP_ETH_MAX_RXSIZE_GET,
 		CXI_OP_ETH_LINK_STATE_GET,
+		CXI_OP_RMU_ETH_ALLOC,
+		CXI_OP_RMU_ETH_FREE,
+		CXI_OP_RMU_ETH_HASH_KEY_GET,
+		CXI_OP_RMU_ETH_ADD_MAC_FILTER,
+		CXI_OP_RMU_ETH_REMOVE_FILTER,
+		CXI_OP_RMU_ETH_ADD_PROMISC_FILTER,
+		CXI_OP_RMU_ETH_SET_RSS_QUEUES,
+		CXI_OP_RMU_ETH_SET_INDIR_TABLE,
+		CXI_OP_RMU_ETH_ADD_ALL_MCAST_FILTER,
 
 		CXI_OP_MAX,
 };
@@ -155,6 +164,90 @@ struct cxi_lni_alloc_resp {
 struct cxi_lni_free_cmd {
 	enum cxi_command_opcode op;
 	unsigned int lni;
+};
+
+struct cxi_rmu_eth_alloc_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+};
+
+struct cxi_rmu_eth_alloc_resp {
+	unsigned int rmu_eth;
+	unsigned int id;
+};
+
+struct cxi_rmu_eth_free_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+};
+
+struct cxi_rmu_eth_hash_key_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+/* Size of RSS key in bytes, rounded up from 351 bits */
+#define CXI_ETH_HASH_KEY_SIZE 44
+
+struct cxi_rmu_eth_get_hash_key_resp {
+	__u8 key[CXI_ETH_HASH_KEY_SIZE];
+};
+
+struct cxi_rmu_eth_add_mac_filter_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int idx;
+	unsigned int pte;
+	__u64 mac_addr;
+	bool use_rss;
+};
+
+struct cxi_rmu_eth_add_promisc_filter_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int idx;
+	unsigned int pte;
+	bool use_rss;
+};
+
+struct cxi_rmu_eth_add_all_mcast_filter_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int idx;
+	unsigned int pte;
+	bool use_rss;
+};
+
+struct cxi_rmu_eth_remove_filter_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int idx;
+};
+
+#define CXI_ETH_MAX_RSS_QUEUES 64
+
+struct cxi_rmu_eth_set_rss_queues_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int num_queues;
+	unsigned int ptes[CXI_ETH_MAX_RSS_QUEUES];
+	__u32 hash_types;
+};
+
+#define CXI_ETH_MAX_INDIR_ENTRIES 64
+
+struct cxi_rmu_eth_set_indir_table_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	unsigned int rmu_eth;
+	unsigned int indir_size;
+	__u8 indir_table[CXI_ETH_MAX_INDIR_ENTRIES];
 };
 
 struct cxi_domain_reserve_cmd {

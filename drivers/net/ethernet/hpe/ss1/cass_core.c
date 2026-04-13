@@ -888,6 +888,10 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ida_init(&hw->tle_pool_ids);
 	mutex_init(&hw->msg_relay_lock);
 
+	/* Initialize RMU Ethernet resource management */
+	idr_init(&hw->rmu_eth_idr);
+	mutex_init(&hw->rmu_eth_lock);
+
 	mutex_init(&hw->err_flg_mutex);
 	INIT_LIST_HEAD(&hw->err_flg_list);
 	spin_lock_init(&hw->sfs_err_flg_lock);
@@ -1335,6 +1339,9 @@ static void cass_remove(struct pci_dev *pdev)
 
 	cancel_delayed_work_sync(&hw->lni_cleanups_work);
 	lni_cleanups(hw, true);
+
+	/* Destroy RMU Ethernet resource management */
+	idr_destroy(&hw->rmu_eth_idr);
 
 	cass_rgid_fini(hw);
 	cxi_configfs_cleanup(hw);

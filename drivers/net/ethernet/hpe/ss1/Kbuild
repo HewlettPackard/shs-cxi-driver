@@ -8,7 +8,7 @@ obj-m := cxi-ss1.o cxi-user.o cxi-eth.o
 cxi-ss1-objs := cxi_core.o cass_core.o cass_lni.o cass_rmu.o cass_eq.o \
 		 cass_cpt.o cass_cq.o cass_pt.o cass_atu.o cass_ct.o \
 		 cass_errors.o cass_sriov.o cass_nta.o cass_ptp.o \
-		 cass_hni.o cass_eth.o cass_ats.o cass_uc.o \
+		 cass_hni.o cass_eth.o cass_rmu_eth.o cass_ats.o cass_uc.o \
 		 cass_hmm.o cxi_qos_profiles.o cass_tc.o cass_svc.o cxi_config.o cass_telem.o \
 		 cxi_link.o cass_sbl.o cass_sl.o cass_sl_io.o \
 		 cass_sysfs.o cass_sbus.o cass_phy.o cass_dmac.o \
@@ -18,7 +18,7 @@ cxi-ss1-objs := cxi_core.o cass_core.o cass_lni.o cass_rmu.o cass_eq.o \
 		 cxi_ac_entry_list.o cass_dev_info.o \
 		 cxi_rxtx_profile_list.o cass_rx_tx_profile.o \
 		 cxi_rxtx_profile.o cxi_rx_profile.o cxi_tx_profile.o \
-		 cass_rgroup.o cxi_rgroup.o cass_rgid.o cass_vf_notif.o cass_vf.o
+		 cass_rgroup.o cxi_rgroup.o cass_rgid.o cass_vf.o cass_vf_notif.o
 #dma buf code
 cxi-ss1-y += cass_p2p.o cass_dma_buf.o
 cxi-ss1-$(CONFIG_DEBUG_FS) += cass_ss1_debugfs.o

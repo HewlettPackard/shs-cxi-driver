@@ -30,4 +30,8 @@ struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evt
 					 const struct cxi_cq_alloc_opts_buf *opts_b,
 					 int numa_node, dma_addr_t cmds_dma_addr,
 					 size_t cmds_len);
+
+struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
+					       u8 vf_num);
+
 #endif /* _CXI_INTERNAL_H */

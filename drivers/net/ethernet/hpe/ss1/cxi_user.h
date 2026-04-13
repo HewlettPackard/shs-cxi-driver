@@ -103,6 +103,7 @@ struct user_client {
 	struct idr pte_map_idr;
 	struct idr wait_idr;
 	struct idr ct_idr;
+	struct idr rmu_eth_idr;
 
 	/*
 	 * for now, max of one counter pool id per client.
@@ -131,6 +132,7 @@ struct ucxi_obj {
 		struct cxi_pte *pte;
 		struct ucxi_wait *wait;
 		struct cxi_ct *ct;
+		struct cxi_rmu_eth *rmu_eth;
 		unsigned int pte_index;
 	};
 
