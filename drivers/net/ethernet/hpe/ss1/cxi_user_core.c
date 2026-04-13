@@ -1159,9 +1159,13 @@ static int cxi_user_cq_ack_counter(struct user_client *client,
 		return -EINVAL;
 	}
 
-	resp.ack_counter = cxi_cq_ack_counter(cq->cq);
+	atomic_inc(&cq->refs);
 
 	read_unlock(&client->res_lock);
+
+	resp.ack_counter = cxi_cq_ack_counter(cq->cq);
+
+	atomic_dec(&cq->refs);
 
 	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
 	if (rc)
