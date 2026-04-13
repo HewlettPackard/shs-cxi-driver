@@ -279,6 +279,7 @@ static int cxi_user_rmu_eth_alloc(struct user_client *client,
 
 	resp.rmu_eth = rc;
 	resp.id = rmu_eth->id;
+	resp.max_filters = rmu_eth->max_filters;
 
 	rc = copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len);
 	if (rc)

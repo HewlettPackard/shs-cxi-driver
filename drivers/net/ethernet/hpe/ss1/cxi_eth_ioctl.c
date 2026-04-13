@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cray Cassini ethernet driver - ioctls handling.
- * © Copyright 2021 Hewlett Packard Enterprise Development LP
+ * © Copyright 2021, 2024-2026 Hewlett Packard Enterprise Development LP
  */
 
 #include <linux/netdevice.h>
@@ -50,4 +50,9 @@ int cxi_do_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd)
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+int cxi_do_ioctl_vf(struct net_device *ndev, struct ifreq *ifr, int cmd)
+{
+	return -EOPNOTSUPP;
 }

@@ -117,6 +117,7 @@ static struct cxi_rmu_eth *cxi_rmu_eth_alloc_vf(struct cxi_dev *cdev)
 
 	priv->dev = cdev;
 	priv->rmu_eth.id = resp.rmu_eth;
+	priv->rmu_eth.max_filters = resp.max_filters;
 
 	return &priv->rmu_eth;
 }
@@ -211,6 +212,7 @@ struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
 
 	priv->indir_size = indir_quota;
 	priv->set_list_quota = set_list_quota;
+	rmu_eth->max_filters = set_list_quota;
 
 	/* Allocate MAC filter slot tracking array */
 	priv->mac_filter_slots = kcalloc(set_list_quota, sizeof(u8), GFP_KERNEL);

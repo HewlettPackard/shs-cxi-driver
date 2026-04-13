@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2018 Hewlett Packard Enterprise Development LP */
+/* Copyright 2018, 2025-2026 Hewlett Packard Enterprise Development LP */
 
 /* cxi-eth debug fs*/
 #include <linux/netdevice.h>
@@ -123,12 +123,12 @@ static int dump_dev(struct seq_file *s, void *unused)
 	seq_printf(s, "shared TGT REQ CQ=%u\n",
 		   cxi_cq_get_cqn(dev->cq_tgt_req));
 
-	for (i = 0; i < dev->res.rss_queues; i++) {
+	for (i = 0; i < dev->rss_queues; i++) {
 		seq_printf(s, "RX queue %u\n", i);
 		dump_rx_queue(s, &dev->rxqs[i]);
 	}
 
-	if (dev->res.rss_queues) {
+	if (dev->rss_queues) {
 		seq_printf(s, "PTP RX queue %u\n", PTP_RX_Q);
 		dump_rx_queue(s, &dev->rxqs[PTP_RX_Q]);
 	}
@@ -142,7 +142,7 @@ static int dump_dev(struct seq_file *s, void *unused)
 	seq_puts(s, "\n");
 	seq_puts(s, "ALL buckets for RX napi_schedule\n");
 
-	for (i = 0; i < dev->res.rss_queues; i++) {
+	for (i = 0; i < dev->rss_queues; i++) {
 		const struct bucket *bucket = &dev->rxqs[i].eth_napi_schedule;
 
 		if (min_ts > bucket->min_ts)
@@ -160,7 +160,7 @@ static int dump_dev(struct seq_file *s, void *unused)
 	for (i = 0; i < NB_BUCKETS; i++) {
 		u64 nb = 0;
 
-		for (j = 0; j < dev->res.rss_queues; j++)
+		for (j = 0; j < dev->rss_queues; j++)
 			nb += dev->rxqs[j].eth_napi_schedule.b[i];
 
 		if (i < (NB_BUCKETS - 1))

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cassini ethernet driver
- * Copyright 2018,2022,2024,2026 Hewlett Packard Enterprise Development LP
+ * Copyright 2018, 2022, 2024-2026 Hewlett Packard Enterprise Development LP
  */
 
 #include <linux/netdevice.h>
@@ -176,7 +176,7 @@ static int cxi_grow_rx_channels(struct cxi_eth *dev,
 	int rc;
 	int i;
 
-	for (i = dev->res.rss_queues; i < num_rx_channels; i++) {
+	for (i = dev->rss_queues; i < num_rx_channels; i++) {
 		rc = alloc_rx_queue(dev, i);
 		if (rc)
 			goto err_free_rxqs;
@@ -191,13 +191,13 @@ static int cxi_grow_rx_channels(struct cxi_eth *dev,
 		}
 	}
 
-	for (i = dev->res.rss_queues; i < num_rx_channels; i++)
+	for (i = dev->rss_queues; i < num_rx_channels; i++)
 		enable_rx_queue(&dev->rxqs[i]);
 
 	return 0;
 
 err_free_rxqs:
-	for (i--; i >= dev->res.rss_queues; i--)
+	for (i--; i >= dev->rss_queues; i--)
 		free_rx_queue(&dev->rxqs[i]);
 
 	return rc;
@@ -208,10 +208,10 @@ static void cxi_shrink_rx_channels(struct cxi_eth *dev,
 {
 	int i;
 
-	for (i = dev->res.rss_queues - 1; i >= num_rx_channels; i--)
+	for (i = dev->rss_queues - 1; i >= num_rx_channels; i--)
 		disable_rx_queue(&dev->rxqs[i]);
 
-	for (i = dev->res.rss_queues - 1; i >= num_rx_channels; i--)
+	for (i = dev->rss_queues - 1; i >= num_rx_channels; i--)
 		free_rx_queue(&dev->rxqs[i]);
 }
 
@@ -225,52 +225,76 @@ static bool valid_rx_channel_count(unsigned int num_rx_channels)
 
 int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels)
 {
+	struct cxi_pte **rss_ptes = NULL;
+	u8 *indir_table = NULL;
 	int rc;
 	int i;
 
 	if (!valid_rx_channel_count(num_rx_channels))
 		return -EINVAL;
 
-	if (num_rx_channels == dev->res.rss_queues)
+	if (num_rx_channels == dev->rss_queues)
 		return 0;
 
-	/* Disable RSS support for all configure MAC addresses/set lists. This
-	 * will temporarily force all traffic to the RXQ 0 which is the
-	 * default/catch-all RX queue.
-	 */
-	cxi_eth_clear_indir_table(dev->cxi_dev, &dev->res);
-
-	if (num_rx_channels > dev->res.rss_queues) {
+	if (num_rx_channels > dev->rss_queues) {
 		rc = cxi_grow_rx_channels(dev, num_rx_channels);
-		if (rc) {
-			/* Number of channels have not changed. Re-enable RSS
-			 * and exit.
-			 */
-			cxi_eth_set_indir_table(dev->cxi_dev, &dev->res);
-			goto out;
-		}
+		if (rc)
+			return rc;
 	} else {
 		cxi_shrink_rx_channels(dev, num_rx_channels);
 	}
 
-	dev->res.rss_queues = num_rx_channels;
-	dev->res.rss_indir_size = num_rx_channels > 1 ? rss_indir_size : 0;
+	dev->rss_queues = num_rx_channels;
+	dev->rss_indir_size = num_rx_channels > 1 ? rss_indir_size : 0;
 
 	rc = netif_set_real_num_rx_queues(dev->ndev, num_rx_channels);
 	if (rc)
-		goto out;
+		return rc;
 
-	for (i = 0; i < dev->res.rss_queues; i++)
-		dev->res.ptn_rss[i] = dev->rxqs[i].pt->id;
+	/* Setup PTE pointer array and indirection table for RSS queues */
+	if (dev->rss_queues > 1) {
+		rss_ptes = kcalloc(dev->rss_queues, sizeof(*rss_ptes), GFP_KERNEL);
+		if (!rss_ptes) {
+			rc = -ENOMEM;
+			goto out_free;
+		}
 
-	for (i = 0; i < dev->res.rss_indir_size; i++)
-		dev->res.indir_table[i] =
-			ethtool_rxfh_indir_default(i, dev->res.rss_queues);
+		indir_table = kcalloc(dev->rss_indir_size, sizeof(*indir_table), GFP_KERNEL);
+		if (!indir_table) {
+			rc = -ENOMEM;
+			goto out_free;
+		}
 
-	/* Re-enable RSS if number of RX queues is successfully changed. */
-	cxi_eth_set_indir_table(dev->cxi_dev, &dev->res);
+		for (i = 0; i < dev->rss_queues; i++)
+			rss_ptes[i] = dev->rxqs[i].pt;
 
-out:
+		for (i = 0; i < dev->rss_indir_size; i++)
+			indir_table[i] = ethtool_rxfh_indir_default(i, dev->rss_queues);
+
+		/* Configure RSS with new queue count and indirection table */
+		rc = cxi_rmu_eth_set_rss_queues(dev->rmu_eth, dev->rss_queues,
+						rss_ptes, CXI_DEFAULT_RSS_HASH_TYPES);
+		if (rc)
+			goto out_free;
+
+		rc = cxi_rmu_eth_set_indir_table(dev->rmu_eth, indir_table,
+						 dev->rss_indir_size);
+		if (rc)
+			goto out_free;
+
+		/* Keep the shadow in sync with what was programmed */
+		memcpy(dev->indir_table, indir_table,
+		       dev->rss_indir_size * sizeof(*indir_table));
+
+		kfree(indir_table);
+		kfree(rss_ptes);
+	}
+
+	return 0;
+
+out_free:
+	kfree(indir_table);
+	kfree(rss_ptes);
 	return rc;
 }
 
@@ -314,7 +338,7 @@ static int cxi_get_rxnfc(struct net_device *ndev, struct ethtool_rxnfc *cmd,
 	switch (cmd->cmd) {
 	case ETHTOOL_GRXRINGS:
 		/* The catch-all queue is always present */
-		cmd->data = dev->res.rss_queues ? : 1;
+		cmd->data = dev->rss_queues ? : 1;
 		rc = 0;
 		break;
 
@@ -330,7 +354,7 @@ static u32 cxi_get_rxfh_indir_size(struct net_device *ndev)
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 
-	return dev->res.rss_indir_size;
+	return dev->rss_indir_size;
 }
 
 static u32 cxi_get_rxfh_key_size(struct net_device *ndev)
@@ -355,11 +379,14 @@ static int cxi_get_rxfh(struct net_device *ndev, u32 *indir, u8 *key, u8 *hfunc)
 		*hfunc = ETH_RSS_HASH_TOP;
 
 	if (key)
-		cxi_eth_get_hash_key(dev->cxi_dev, key);
+		cxi_rmu_eth_get_hash_key(dev->cxi_dev, key);
 
-	if (indir && dev->res.rss_queues)
-		memcpy(indir, dev->res.indir_table,
-		       dev->res.rss_indir_size * sizeof(u32));
+	if (indir && dev->rss_queues) {
+		int i;
+
+		for (i = 0; i < dev->rss_indir_size; i++)
+			indir[i] = dev->indir_table[i];
+	}
 
 	return 0;
 }
@@ -378,7 +405,9 @@ static int cxi_set_rxfh(struct net_device *ndev, const u32 *indir,
 {
 #endif
 	struct cxi_eth *dev = netdev_priv(ndev);
+	u8 *indir_u8 = NULL;
 	int i;
+	int rc = 0;
 
 	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EINVAL;
@@ -388,21 +417,32 @@ static int cxi_set_rxfh(struct net_device *ndev, const u32 *indir,
 
 	if (indir) {
 		/* Sanity check the table */
-		for (i = 0; i < dev->res.rss_indir_size; i++) {
-			if (indir[i] > dev->res.rss_queues) {
+		for (i = 0; i < dev->rss_indir_size; i++) {
+			if (indir[i] > dev->rss_queues) {
 				netdev_warn_once(ndev, "Bad new indirection - %d %d\n",
 						 indir[i],
-						 dev->res.rss_queues);
+						 dev->rss_queues);
 				return -EINVAL;
 			}
 		}
 
-		memcpy(dev->res.indir_table, indir,
-		       dev->res.rss_indir_size * sizeof(u32));
-		cxi_eth_set_indir_table(dev->cxi_dev, &dev->res);
+		/* Convert u32 array to u8 array */
+		indir_u8 = kmalloc(dev->rss_indir_size, GFP_KERNEL);
+		if (!indir_u8)
+			return -ENOMEM;
+
+		for (i = 0; i < dev->rss_indir_size; i++)
+			indir_u8[i] = indir[i];
+
+		rc = cxi_rmu_eth_set_indir_table(dev->rmu_eth, indir_u8,
+						 dev->rss_indir_size);
+		if (!rc)
+			memcpy(dev->indir_table, indir_u8,
+			       dev->rss_indir_size * sizeof(*indir_u8));
+		kfree(indir_u8);
 	}
 
-	return 0;
+	return rc;
 }
 
 static int cxi_get_module_info(struct net_device *ndev,

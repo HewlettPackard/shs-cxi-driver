@@ -78,6 +78,7 @@ struct cxi_domain {
 
 struct cxi_rmu_eth {
 	unsigned int id;
+	unsigned int max_filters;
 };
 
 struct cxi_ac {
@@ -97,37 +98,6 @@ enum cxi_async_event {
 	 * NID.
 	 */
 	CXI_EVENT_NID_CHANGED,
-};
-
-/* Resources used by an Ethernet device. */
-struct cxi_eth_res {
-	/* Track which Set List entries are used by this Ethernet
-	 * device. The size matches C_RMU_CFG_PTLTE_SET_LIST_ENTRIES.
-	 */
-	unsigned long sl[BITS_TO_LONGS(128)];
-
-	/* The default catch-all portal table entry. If a packet
-	 * doesn't hash, or no hash are defined, this is where it will
-	 * go to.
-	 */
-	unsigned int ptn_def;
-
-	/* Portal for ptp */
-	unsigned int ptn_ptp;
-
-	/* Number of RSS queues */
-	unsigned int rss_queues;
-
-	/* Number of entries in the indirection table */
-	unsigned int rss_indir_size;
-
-	/* Hashing function(s) used. The same hash is used for all Set
-	 * List entries for that device.
-	 */
-	unsigned int portal_index_indir_base;
-	u32 hash_types_enabled; /* or'ed C_RSS_HASH_TYPES_ENABLED_T */
-	unsigned int ptn_rss[CXI_ETH_MAX_RSS_QUEUES];
-	u32 indir_table[CXI_ETH_MAX_INDIR_ENTRIES];
 };
 
 #define PTP_L2_MAC 0x011B19000000ULL
@@ -477,15 +447,6 @@ int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 
 int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size);
 int cxi_get_max_eth_rxsize(struct cxi_dev *cdev);
-int cxi_eth_add_mac(struct cxi_dev *cdev, struct cxi_eth_res *res,
-		    u64 mac_addr, bool is_ptp);
-int cxi_eth_set_promiscuous(struct cxi_dev *cdev, struct cxi_eth_res *res);
-int cxi_eth_set_all_multi(struct cxi_dev *cdev, struct cxi_eth_res *res);
-void cxi_eth_set_list_invalidate_all(struct cxi_dev *cdev,
-				     struct cxi_eth_res *res);
-void cxi_eth_set_indir_table(struct cxi_dev *cdev, struct cxi_eth_res *res);
-void cxi_eth_clear_indir_table(struct cxi_dev *cdev, struct cxi_eth_res *res);
-void cxi_eth_get_hash_key(struct cxi_dev *cdev, u8 *key);
 
 /* RMU Ethernet API */
 struct cxi_rmu_eth *cxi_rmu_eth_alloc(struct cxi_dev *cdev);

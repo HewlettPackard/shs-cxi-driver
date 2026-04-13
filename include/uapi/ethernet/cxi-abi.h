@@ -174,6 +174,7 @@ struct cxi_rmu_eth_alloc_cmd {
 struct cxi_rmu_eth_alloc_resp {
 	unsigned int rmu_eth;
 	unsigned int id;
+	unsigned int max_filters;
 };
 
 struct cxi_rmu_eth_free_cmd {

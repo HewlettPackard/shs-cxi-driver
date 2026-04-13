@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Cassini ethernet driver
- * Copyright 2018-2020,2022 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2020, 2022, 2024-2026 Hewlett Packard Enterprise Development LP
  */
 
 #ifndef __CXI_ETH_H__
@@ -50,6 +50,18 @@
 
 /* Align max TX queues to max RX queues. */
 #define CXI_ETH_MAX_TX_QUEUES CXI_ETH_MAX_RSS_QUEUES
+
+/* RSS hash types enabled for Ethernet devices per hardware support.
+ * Bit position calculated as C_RSS_HASH_* enum value minus 1.
+ */
+#define RSS_HASH_BIT(hash_type) ((hash_type) - 1)
+#define CXI_DEFAULT_RSS_HASH_TYPES ( \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV4_TCP)) | \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV4_UDP)) | \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV4_PROTOCOL_UDP_ROCE)) | \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV6_TCP)) | \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV6_UDP)) | \
+	BIT(RSS_HASH_BIT(C_RSS_HASH_IPV6_PROTOCOL_UDP_ROCE)))
 
 /* 4.12 kernels do not define these.
  * TODO: remove eventually
@@ -258,7 +270,6 @@ struct cxi_eth {
 	 * timestamp, except for a very short window.
 	 */
 	bool ptp_ts_enabled;
-	u64 ptp_mac_addr;
 	struct sk_buff *tstamp_skb;
 
 	unsigned int phys_lac;
@@ -306,7 +317,9 @@ struct cxi_eth {
 	struct kernel_ethtool_ringparam kernel_ring;
 #endif
 
-	struct cxi_eth_res res;
+	struct cxi_rmu_eth *rmu_eth;
+	unsigned int rss_queues;
+	unsigned int rss_indir_size;
 	struct cxi_eth_info eth_info;
 
 	/* ethtool private flags (CXI_ETH_PF_...) */
@@ -314,6 +327,29 @@ struct cxi_eth {
 
 	/* Timestamp config copy */
 	struct hwtstamp_config tstamp_config;
+
+	/* Incremental UC/MC filter map.
+	 *
+	 * all_mcast_active tracks whether RMU_ETH_FILTER_ALL_MCAST is currently
+	 * installed in hardware.
+	 *
+	 * uc_mc_filters[] is indexed by dynamic slot number (index 0 corresponds
+	 * to hardware slot RMU_ETH_FILTER_UC_MC, index 1 to the next, etc.).
+	 * A zero entry means the slot is free; a non-zero entry holds the u64 MAC
+	 * address of the filter installed there.
+	 */
+	u64 *uc_mc_filters;
+	unsigned int num_uc_mc_filters;
+	bool all_mcast_active;
+	bool promisc_active;
+	bool bcast_active;
+
+	/* Shadow of the RSS indirection table last programmed into hardware.
+	 * Maintained by cxi_set_rx_channels() and cxi_set_rxfh() so that
+	 * cxi_get_rxfh() can return the actual programmed layout rather than
+	 * always computing the default.
+	 */
+	u8 indir_table[CXI_ETH_MAX_INDIR_ENTRIES];
 };
 
 extern unsigned int rss_indir_size;
@@ -347,9 +383,12 @@ int hw_setup(struct cxi_eth *dev);
 int cxi_eth_open(struct net_device *ndev);
 int cxi_eth_close(struct net_device *ndev);
 netdev_tx_t cxi_eth_start_xmit(struct sk_buff *skb, struct net_device *dev);
-int cxi_eth_mac_addr(struct net_device *dev, void *p);
+int cxi_eth_set_mac_addr(struct net_device *dev, void *p);
+int cxi_eth_set_mac_addr_vf(struct net_device *dev, void *p);
 void cxi_eth_set_rx_mode(struct net_device *dev);
+void cxi_eth_set_rx_mode_vf(struct net_device *dev);
 int cxi_change_mtu(struct net_device *netdev, int new_mtu);
+int cxi_change_mtu_vf(struct net_device *netdev, int new_mtu);
 void disable_rx_queue(struct rx_queue *rx);
 void free_rx_queue(struct rx_queue *rx);
 int alloc_rx_queue(struct cxi_eth *dev, unsigned int id);
@@ -362,6 +401,7 @@ void disable_tx_queue(struct tx_queue *tx);
 int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels);
 int cxi_set_tx_channels(struct cxi_eth *dev, unsigned int num_tx_channels);
 int cxi_do_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd);
+int cxi_do_ioctl_vf(struct net_device *ndev, struct ifreq *ifr, int cmd);
 
 extern const struct ethtool_ops cxi_eth_ethtool_ops;
 #endif

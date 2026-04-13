@@ -2,7 +2,7 @@
 /*
  * Cray Cassini ethernet driver
  * © Copyright 2018-2020 Cray Inc
- * © Copyright 2020-2021 Hewlett Packard Enterprise Development LP
+ * © Copyright 2018-2020, 2024-2026 Hewlett Packard Enterprise Development LP
  */
 
 /* TODO:
@@ -21,6 +21,7 @@
 
 #include "cxi_eth.h"
 #include "cxi_eth_debugfs.h"
+#include "cxi_user.h"
 
 unsigned int rss_indir_size = 64;
 module_param(rss_indir_size, int, 0444);
@@ -98,10 +99,20 @@ static const struct net_device_ops cxi_eth_netdev_ops = {
 	.ndo_open = cxi_eth_open,
 	.ndo_start_xmit = cxi_eth_start_xmit,
 	.ndo_stop = cxi_eth_close,
-	.ndo_set_mac_address = cxi_eth_mac_addr,
+	.ndo_set_mac_address = cxi_eth_set_mac_addr,
 	.ndo_set_rx_mode = cxi_eth_set_rx_mode,
 	.ndo_change_mtu = cxi_change_mtu,
 	.ndo_do_ioctl = cxi_do_ioctl,
+};
+
+static const struct net_device_ops cxi_eth_netdev_ops_vf = {
+	.ndo_open = cxi_eth_open,
+	.ndo_start_xmit = cxi_eth_start_xmit,
+	.ndo_stop = cxi_eth_close,
+	.ndo_set_mac_address = cxi_eth_set_mac_addr_vf,
+	.ndo_set_rx_mode = cxi_eth_set_rx_mode_vf,
+	.ndo_change_mtu = cxi_change_mtu_vf,
+	.ndo_do_ioctl = cxi_do_ioctl_vf,
 };
 
 /* Core is adding a new device */
@@ -110,10 +121,6 @@ static int add_device(struct cxi_dev *cxi_dev)
 	struct net_device *ndev;
 	struct cxi_eth *dev;
 	int rc;
-
-	/* Disable Ethernet devices on VF devices for now */
-	if (!cxi_dev->is_physfn)
-		return -ENODEV;
 
 	ndev = alloc_etherdev_mqs(sizeof(struct cxi_eth), max_tx_queues,
 				  max_rss_queues + 1);
@@ -146,12 +153,18 @@ static int add_device(struct cxi_dev *cxi_dev)
 	spin_lock_init(&dev->cq_tgt_req_lock);
 	dev->is_c2 = cassini_version(&dev->cxi_dev->prop, CASSINI_2);
 
-	ndev->netdev_ops = &cxi_eth_netdev_ops;
+	ndev->netdev_ops = cxi_dev->is_physfn ? &cxi_eth_netdev_ops : &cxi_eth_netdev_ops_vf;
 	ndev->ethtool_ops = &cxi_eth_ethtool_ops;
 	ndev->watchdog_timeo = CXI_ETH_TX_TIMEOUT;
 
-	//ndev->irq = cxi_dev->pdev->irq;
-	ndev->mtu = ETH_DATA_LEN;
+	/* The VF retrieves the initial MTU from the PF */
+	if (!cxi_dev->is_physfn) {
+		int mtu = cxi_get_max_eth_rxsize(cxi_dev);
+
+		ndev->mtu = mtu > 0 ? mtu : ETH_DATA_LEN;
+	} else {
+		ndev->mtu = ETH_DATA_LEN;
+	}
 	ndev->min_mtu = ETH_ZLEN;
 	ndev->max_mtu = CXI_ETH_MAX_MTU;
 	ndev->tx_queue_len = TX_QUEUE_LEN_DEFAULT;
@@ -192,19 +205,9 @@ static int add_device(struct cxi_dev *cxi_dev)
 	if (rc)
 		goto err_free_rxq;
 
-	/* If the SerDes are up, we must report the carrier as on here,
-	 * since we've already missed the link up event which was sent from
-	 * cxi-ss1
-	 */
-	if (cxi_is_link_up(cxi_dev)) {
-		/* Without the off->on transition, the ip link state will go to
-		 * UNKNOWN.
-		 */
-		netif_carrier_off(ndev);
+	netif_carrier_off(ndev);
+	if (cxi_is_link_up(cxi_dev))
 		netif_carrier_on(ndev);
-	} else {
-		netif_carrier_off(ndev);
-	}
 
 	device_debugfs_create(cxi_dev->name, dev, cxieth_debug_dir);
 
@@ -246,10 +249,6 @@ static struct cxi_eth *find_eth_device(const struct cxi_dev *cxi_dev)
 static void remove_device(struct cxi_dev *cxi_dev)
 {
 	struct cxi_eth *dev;
-
-	/* Ethernet devices on VF devices are not added for now, so not removed */
-	if (!cxi_dev->is_physfn)
-		return;
 
 	mutex_lock(&dev_list_mutex);
 	dev = find_eth_device(cxi_dev);
