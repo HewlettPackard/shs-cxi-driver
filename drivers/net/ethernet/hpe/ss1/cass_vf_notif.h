@@ -10,6 +10,7 @@
 enum cass_vf_notif_ops {
 	CASS_VF_NOTIF_OP_INVALID = 0,
 	CASS_VF_NOTIF_OP_PING,
+	CASS_VF_NOTIF_OP_ASYNC_EVENT,
 	CASS_VF_NOTIF_OP_MAX,
 };
 
@@ -19,6 +20,12 @@ struct cass_vf_notif_common {
 
 struct cass_vf_notif_ping {
 	enum cass_vf_notif_ops op;
+};
+
+/* Generic notification: forwards a cxi_async_event from the PF to the VF. */
+struct cass_vf_notif_async_event {
+	enum cass_vf_notif_ops op;
+	unsigned int event; /* enum cxi_async_event */
 };
 
 struct cass_vf_notif_info {

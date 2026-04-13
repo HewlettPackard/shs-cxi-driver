@@ -83,6 +83,12 @@ int cass_vf_get_token(struct cxi_dev *hw, int vf_idx, unsigned int *token)
 }
 EXPORT_SYMBOL(cass_vf_get_token);
 
+int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(cxi_notify_vfs_async_event);
+
 #else /* CXI_DISABLE_SRIOV */
 
 /* Size of pre-allocated VF message buffers; messages larger than this will have
@@ -116,7 +122,8 @@ EXPORT_SYMBOL(cass_vf_get_token);
 #define CXI_SRIOV_IRQ_TIMEOUT (CXI_SRIOV_PF_TIMEOUT / 4)
 
 static int write_message_to_vsock(struct socket *sock, const void *msg,
-				  size_t msg_len, int msg_rc, int seq)
+				  size_t msg_len, int msg_rc, int seq,
+				  unsigned int flags)
 {
 	struct vf_pf_msg_hdr hdr = {
 		.len = msg_len,
@@ -124,6 +131,7 @@ static int write_message_to_vsock(struct socket *sock, const void *msg,
 		.uid = __kuid_val(current_euid()),
 		.gid = __kgid_val(current_egid()),
 		.seq = seq,
+		.flags = flags,
 	};
 	struct msghdr msghdr = {};
 	struct kvec vec[] = {
@@ -185,7 +193,8 @@ static int read_vsock_payload(struct socket *sock, struct vf_pf_msg_hdr *hdr,
  */
 static int read_message_from_vsock(struct socket *sock, void *msg,
 				   size_t *msg_len, int *msg_rc,
-				   uid_t *uid, gid_t *gid, int *seq)
+				   uid_t *uid, gid_t *gid, int *seq,
+				   unsigned int *flags)
 {
 	struct vf_pf_msg_hdr hdr;
 	int rc;
@@ -211,6 +220,8 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
 		*gid = hdr.gid;
 	if (seq)
 		*seq = hdr.seq;
+	if (flags)
+		*flags = hdr.flags;
 	if (msg_len) {
 		rc = read_vsock_payload(sock, &hdr, msg, msg_len);
 		*msg_len = hdr.len;
@@ -231,7 +242,8 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
  */
 static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
 					 size_t *msg_len, int *msg_rc,
-					 uid_t *uid, gid_t *gid, int *seq)
+					 uid_t *uid, gid_t *gid, int *seq,
+					 unsigned int *flags)
 {
 	struct vf_pf_msg_hdr hdr;
 	size_t len;
@@ -250,6 +262,8 @@ static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
 		*gid = hdr.gid;
 	if (seq)
 		*seq = hdr.seq;
+	if (flags)
+		*flags = hdr.flags;
 
 	rc = 0;
 	if (hdr.len > 0) {
@@ -350,6 +364,7 @@ static int pf_vf_msghandler(void *data)
 	uid_t uid;
 	gid_t gid;
 	int seq;
+	unsigned int msg_flags;
 
 	if (!request_buf || !reply_buf) {
 		rc = -ENOMEM;
@@ -377,7 +392,8 @@ static int pf_vf_msghandler(void *data)
 
 		rc = read_message_from_vsock_large(vf->req_sock, &request,
 						   &request_len, NULL,
-						   &uid, &gid, &seq);
+						   &uid, &gid, &seq,
+						   &msg_flags);
 		if (rc == -EAGAIN) {
 			continue;
 		} else if (rc == -EINTR) {
@@ -424,17 +440,22 @@ static int pf_vf_msghandler(void *data)
 		if (request != request_buf)
 			kvfree(request);
 
-		cxidev_dbg(&hw->cdev, "vf %d: responding with %ld bytes, rc=%d",
-			   vf->vf_idx, reply_len, msg_rc);
-		rc = write_message_to_vsock(vf->req_sock, reply, reply_len,
-					    msg_rc, seq);
-		if (reply != reply_buf)
-			kvfree(reply);
+		if (!(msg_flags & VF_PF_MSG_F_NO_REPLY)) {
+			cxidev_dbg(&hw->cdev, "vf %d: responding with %ld bytes, rc=%d",
+				   vf->vf_idx, reply_len, msg_rc);
+			rc = write_message_to_vsock(vf->req_sock, reply, reply_len,
+						    msg_rc, seq, 0);
+			if (reply != reply_buf)
+				kvfree(reply);
 
-		if (rc < 0) {
-			cxidev_err(&hw->cdev, "vf %d: error sending response: %d",
-				   vf->vf_idx, rc);
-			break;
+			if (rc <= 0) {
+				cxidev_err(&hw->cdev, "vf %d: error sending response: %d",
+					   vf->vf_idx, rc);
+				break;
+			}
+		} else {
+			if (reply != reply_buf)
+				kvfree(reply);
 		}
 	}
 
@@ -482,7 +503,7 @@ static int handshake_send_cmd(struct cass_dev *hw, struct socket *sock,
 {
 	int rc;
 
-	rc = write_message_to_vsock(sock, &cmd, sizeof(cmd), 0, 0);
+	rc = write_message_to_vsock(sock, &cmd, sizeof(cmd), 0, 0, 0);
 	if (rc < 0)
 		cxidev_err(&hw->cdev, "VF handshake: could not send cmd %x: %d",
 			   cmd, rc);
@@ -497,7 +518,7 @@ static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
 
 	do {
 		rc = read_message_from_vsock(sock, &rsp, &msg_len, NULL,
-					     NULL, NULL, NULL);
+					     NULL, NULL, NULL, NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);
@@ -724,7 +745,8 @@ static void handle_vf_notif_conn(struct cass_dev *hw,
 	/* Read token to identify which VF this is */
 	msg_len = sizeof(token);
 	do {
-		rc = read_message_from_vsock(incoming, &token, &msg_len, NULL, NULL, NULL, NULL);
+		rc = read_message_from_vsock(incoming, &token, &msg_len, NULL, NULL, NULL, NULL,
+					     NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);
@@ -1018,6 +1040,7 @@ static int vf_notif_handler(void *data)
 	void *msg = NULL;
 	void *rsp = NULL;
 	size_t msg_len, rsp_len;
+	unsigned int msg_flags;
 
 	if (!msg_buf || !rsp_buf) {
 		rc = -ENOMEM;
@@ -1036,7 +1059,8 @@ static int vf_notif_handler(void *data)
 
 		rc = read_message_from_vsock_large(hw->vf_notif_sock, &msg,
 						   &msg_len, NULL,
-						   NULL, NULL, NULL);
+						   NULL, NULL, NULL,
+						   &msg_flags);
 		if (rc == -EAGAIN) {
 			continue;
 		} else if (rc == -EINTR) {
@@ -1060,18 +1084,23 @@ static int vf_notif_handler(void *data)
 			break;
 		}
 
-		rc = write_message_to_vsock(hw->vf_notif_sock, rsp, rsp_len, rc, 0);
-		if (rsp != rsp_buf)
-			kvfree(rsp);
+		if (!(msg_flags & VF_PF_MSG_F_NO_REPLY)) {
+			rc = write_message_to_vsock(hw->vf_notif_sock, rsp, rsp_len, rc, 0, 0);
+			if (rsp != rsp_buf)
+				kvfree(rsp);
 
-		if (rc < 0) {
-			cxidev_err(&hw->cdev, "failed to send notification response: %d", rc);
-			break;
-		} else if (rc < rsp_len) {
-			cxidev_err(&hw->cdev, "partial write of notification response: %d < %zu",
-				   rc, rsp_len);
-			rc = -EIO;
-			break;
+			if (rc <= 0) {
+				cxidev_err(&hw->cdev, "failed to send notification response: %d", rc);
+				break;
+			} else if (rc < rsp_len) {
+				cxidev_err(&hw->cdev, "partial write of notification response: %d < %zu",
+					   rc, rsp_len);
+				rc = -EIO;
+				break;
+			}
+		} else {
+			if (rsp != rsp_buf)
+				kvfree(rsp);
 		}
 	}
 
@@ -1098,7 +1127,7 @@ static int vf_handshake(struct cass_dev *hw)
 		do {
 			rc = read_message_from_vsock(hw->vf_req_sock, &cmd,
 						     &msg_len, NULL,
-						     NULL, NULL, NULL);
+						     NULL, NULL, NULL, NULL);
 			if (rc == -EINTR)
 				schedule();
 		} while (rc == -EINTR);
@@ -1121,7 +1150,7 @@ static int vf_handshake(struct cass_dev *hw)
 			reinit_completion(&hw->pf_to_vf_comp);
 			rsp = CXI_SRIOV_RSP_READY;
 			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
-						    sizeof(rsp), 0, 0);
+						    sizeof(rsp), 0, 0, 0);
 			if (rc < 0) {
 				cxidev_err(&hw->cdev,
 					   "VF handshake: error sending READY: %d",
@@ -1137,7 +1166,7 @@ static int vf_handshake(struct cass_dev *hw)
 							 CXI_SRIOV_IRQ_TIMEOUT);
 			rsp = rc ? CXI_SRIOV_RSP_HIT : CXI_SRIOV_RSP_MISS;
 			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
-						    sizeof(rsp), 0, 0);
+						    sizeof(rsp), 0, 0, 0);
 			if (rc < 0) {
 				cxidev_err(&hw->cdev,
 					   "VF handshake: error sending HIT/MISS: %d",
@@ -1240,7 +1269,7 @@ int cass_vf_init(struct cass_dev *hw)
 
 	/* Send token to identify this VF */
 	rc = write_message_to_vsock(hw->vf_notif_sock, &token_resp.token,
-				    sizeof(token_resp.token), 0, 0);
+				    sizeof(token_resp.token), 0, 0, 0);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "failed to send token to PF: %d", rc);
 		goto shutdown_notif_sock;
@@ -1298,13 +1327,39 @@ void cass_vf_fini(struct cass_dev *hw)
 }
 
 /**
+ * cxi_vsock_async_send() - Send a vsock message without waiting for a reply
+ *
+ * @cdev: the device
+ * @sock: connected vsock socket
+ * @req: message data
+ * @req_len: length of message
+ */
+static int cxi_vsock_async_send(struct cxi_dev *cdev, struct socket *sock,
+				const void *req, size_t req_len)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	int rc;
+
+	if (!sock)
+		return -ENOTCONN;
+
+	rc = write_message_to_vsock(sock, req, req_len, 0, 0, VF_PF_MSG_F_NO_REPLY);
+	if (rc <= 0) {
+		cxidev_err(&hw->cdev, "error sending async vsock message: %d", rc);
+		return rc < 0 ? rc : -EPROTO;
+	}
+
+	return 0;
+}
+
+/**
  * cxi_vsock_send() - Send a vsock message using a provided socket
  *
  * @cdev: the device
  * @sock: connected vsock socket
  * @req: message data
  * @req_len: length of message
- * @rsp: buffer for response
+ * @rsp: buffer for response (may be NULL to discard the response payload)
  * @rsp_len: length of response buffer (updated to reflect response length)
  * @seq: sequence number to include in message header and expect in response
  */
@@ -1320,14 +1375,15 @@ static int cxi_vsock_send(struct cxi_dev *cdev, struct socket *sock, const void 
 	if (!sock)
 		return -ENOTCONN;
 
-	rc = write_message_to_vsock(sock, req, req_len, 0, seq);
-	if (rc < 0) {
+	rc = write_message_to_vsock(sock, req, req_len, 0, seq, 0);
+	if (rc <= 0) {
 		cxidev_err(&hw->cdev, "error sending vsock message: %d", rc);
-		return -EPROTO;
+		return rc < 0 ? rc : -EPROTO;
 	}
+
 	do {
 		rc = read_message_from_vsock(sock, rsp, rsp_len, &msg_rc,
-					     NULL, NULL, &rsp_seq);
+					     NULL, NULL, &rsp_seq, NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);
@@ -1416,6 +1472,48 @@ int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 	return rc;
 }
 EXPORT_SYMBOL(cxi_send_msg_to_vf);
+
+/**
+ * cxi_notify_vfs_async_event() - Forward an async event to all connected VFs
+ *
+ * @cdev: the PF device
+ * @event: the event to forward
+ *
+ * Packages @event into a generic ASYNC_EVENT notification and sends it to
+ * every VF that has an active notification socket.  On the VF side the
+ * notification handler calls cxi_send_async_event() on the VF's cdev,
+ * dispatching it to all registered cxi_clients (e.g. cxi-eth).
+ */
+int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	const struct cass_vf_notif_async_event notif = {
+		.op    = CASS_VF_NOTIF_OP_ASYNC_EVENT,
+		.event = event,
+	};
+	int i;
+	int rc;
+	int first_error = 0;
+
+	if (!cdev->is_physfn)
+		return -EINVAL;
+
+	for (i = 0; i < hw->num_vfs; i++) {
+		mutex_lock(&hw->vfs[i].notif_lock);
+		if (hw->vfs[i].notif_sock) {
+			rc = cxi_vsock_async_send(cdev, hw->vfs[i].notif_sock,
+						  &notif, sizeof(notif));
+			if (rc) {
+				cxidev_dbg(cdev, "vf %d: async event send failed: %d\n", i, rc);
+				if (!first_error)
+					first_error = rc;
+			}
+		}
+		mutex_unlock(&hw->vfs[i].notif_lock);
+	}
+	return first_error;
+}
+EXPORT_SYMBOL(cxi_notify_vfs_async_event);
 
 /**
  * cxi_register_msg_relay() - Register a VF to PF message handler

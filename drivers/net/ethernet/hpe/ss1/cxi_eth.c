@@ -18,6 +18,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/pci.h>
+#include <linux/if_vlan.h>
 
 #include "cxi_eth.h"
 #include "cxi_eth_debugfs.h"
@@ -159,7 +160,7 @@ static int add_device(struct cxi_dev *cxi_dev)
 
 	/* The VF retrieves the initial MTU from the PF */
 	if (!cxi_dev->is_physfn) {
-		int mtu = cxi_get_max_eth_rxsize(cxi_dev);
+		int mtu = cxi_get_max_eth_rxsize(cxi_dev) - VLAN_ETH_HLEN;
 
 		ndev->mtu = mtu > 0 ? mtu : ETH_DATA_LEN;
 	} else {
@@ -297,9 +298,28 @@ static void async_event(struct cxi_dev *cxi_dev, enum cxi_async_event event)
 		netif_carrier_off(dev->ndev);
 		break;
 
+	case CXI_EVENT_MTU_CHANGE:
+		if (!cxi_dev->is_physfn) {
+			int mtu = cxi_get_max_eth_rxsize(cxi_dev) - VLAN_ETH_HLEN;
+
+			if (mtu < 0) {
+				netdev_err(dev->ndev,
+					   "MTU_CHANGE: failed to get MTU from PF: %d\n",
+					   mtu);
+				break;
+			}
+
+			dev->ndev->mtu = mtu;
+			netdev_dbg(dev->ndev, "MTU updated to %u by PF\n", mtu);
+		}
+		break;
+
 	default:
 		break;
 	}
+
+	if (cxi_dev->is_physfn)
+		cxi_notify_vfs_async_event(cxi_dev, event);
 }
 
 static int cxi_netdev_event(struct notifier_block *this, unsigned long event,

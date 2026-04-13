@@ -25,11 +25,26 @@ static int cass_vf_notif_ping_handler(struct cass_dev *hw,
 	return 0;
 }
 
+static int cass_vf_notif_async_event_handler(struct cass_dev *hw,
+					     const void *cmd_in, void **resp,
+					     size_t *resp_len)
+{
+	const struct cass_vf_notif_async_event *notif = cmd_in;
+
+	/* Dispatch the event to the VF ethernet driver. */
+	cxi_send_async_event(&hw->cdev, (enum cxi_async_event)notif->event);
+	return 0;
+}
+
 static const struct cass_vf_notif_info vf_notif_info[] = {
 	[CASS_VF_NOTIF_OP_PING] = {
 		.req_size   = sizeof(struct cass_vf_notif_ping),
 		.name       = "PING",
 		.handler    = cass_vf_notif_ping_handler, },
+	[CASS_VF_NOTIF_OP_ASYNC_EVENT] = {
+		.req_size   = sizeof(struct cass_vf_notif_async_event),
+		.name       = "ASYNC_EVENT",
+		.handler    = cass_vf_notif_async_event_handler, },
 };
 
 int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,

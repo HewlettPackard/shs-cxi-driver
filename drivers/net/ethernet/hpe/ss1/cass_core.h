@@ -382,6 +382,8 @@ struct sts_idle {
 	bool ib_wait;
 };
 
+#define VF_PF_MSG_F_NO_REPLY BIT(0)  /* sender does not expect a reply */
+
 /* A VF to PF message header */
 struct vf_pf_msg_hdr {
 	unsigned int len;	/* whole message length */
@@ -389,6 +391,7 @@ struct vf_pf_msg_hdr {
 	uid_t uid;
 	gid_t gid;
 	int seq;
+	unsigned int flags;
 };
 
 /* Traffic Class descriptions. */

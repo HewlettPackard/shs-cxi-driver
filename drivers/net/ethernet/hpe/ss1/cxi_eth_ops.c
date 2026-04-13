@@ -2560,5 +2560,9 @@ int cxi_change_mtu(struct net_device *ndev, int new_mtu)
 		}
 	}
 
+	if (!rc)
+		cxi_send_async_event(dev->cxi_dev, CXI_EVENT_MTU_CHANGE);
+
 	return rc;
 }
+

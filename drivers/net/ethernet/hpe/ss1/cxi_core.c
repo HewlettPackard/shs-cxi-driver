@@ -170,6 +170,7 @@ void cxi_send_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
 
 	mutex_unlock(&dev_list_mutex);
 }
+EXPORT_SYMBOL(cxi_send_async_event);
 
 void cxi_apply_for_all(void (*callback)(struct cxi_dev *dev, void *p), void *p)
 {
