@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2020 Hewlett Packard Enterprise Development LP */
+/* Copyright 2020, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Traffic Class (TC) Management */
 
@@ -68,6 +68,23 @@ static const char * const cxi_tc_strs_uc[] = {
 	[CXI_ETH_TC2]			= "ETHERNET2",
 };
 
+static int cxi_get_tc_req_pcp_vf(struct cxi_dev *cdev, unsigned int tc)
+{
+	struct cxi_eth_tc_req_pcp_get_cmd cmd = {
+		.op = CXI_OP_ETH_TC_REQ_PCP_GET,
+		.tc = tc,
+	};
+	struct cxi_get_tc_req_pcp_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.req_pcp;
+}
+
 /**
  * cxi_get_tc_req_pcp() - Get the request PCP associated with a TC.
  * If the TC is not enabled return -1.
@@ -78,6 +95,9 @@ static const char * const cxi_tc_strs_uc[] = {
 int cxi_get_tc_req_pcp(struct cxi_dev *dev, unsigned int tc)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+
+	if (!dev->is_physfn)
+		return cxi_get_tc_req_pcp_vf(dev, tc);
 
 	if (tc >= CXI_ETH_TC_MAX)
 		return -EINVAL;

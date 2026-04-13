@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2019-2022,2024 Hewlett Packard Enterprise Development LP */
+/* Copyright 2019-2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Cassini device handler */
 
 #include <linux/iopoll.h>
 
+#include <uapi/ethernet/cxi-abi.h>
 #include <linux/hpe/cxi/cxi.h>
 #include <linux/hpe/sbl/sbl.h>
 #include "cass_core.h"
@@ -325,3 +326,46 @@ int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size)
 	return 0;
 }
 EXPORT_SYMBOL(cxi_set_max_eth_rxsize);
+/**
+ * cxi_get_max_eth_rxsize_vf() - Fetch the current maximum Ethernet frame size from the PF
+ *
+ * @cdev: VF CXI device
+ *
+ * Returns the maximum Ethernet frame size as reported by the PF, or a negative
+ * errno on failure.
+ */
+static int cxi_get_max_eth_rxsize_vf(struct cxi_dev *cdev)
+{
+	const struct cxi_eth_max_rxsize_get_cmd cmd = {
+		.op = CXI_OP_ETH_MAX_RXSIZE_GET,
+	};
+	struct cxi_eth_get_max_rxsize_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.max_rxsize;
+}
+
+/**
+ * cxi_get_max_eth_rxsize() - Return the current maximum Ethernet frame size
+ *
+ * @cdev: CXI device
+ *
+ * Returns the maximum Ethernet frame size (including layer-2 headers)
+ * currently configured on the device, matching the units used by
+ * cxi_set_max_eth_rxsize().
+ */
+int cxi_get_max_eth_rxsize(struct cxi_dev *cdev)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return cxi_get_max_eth_rxsize_vf(cdev);
+
+	return hw->max_eth_rxsize;
+}
+EXPORT_SYMBOL(cxi_get_max_eth_rxsize);

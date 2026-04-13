@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cassini LINK
- * Copyright 2022,2024,2026 Hewlett Packard Enterprise Development LP
+ * Copyright 2022, 2024-2026 Hewlett Packard Enterprise Development LP
  */
 
 #include <linux/kernel.h>
 #include <linux/hpe/cxi/cxi.h>
+#include <uapi/ethernet/cxi-abi.h>
 
 #include "cass_core.h"
 #include "cass_sbl.h"
@@ -167,6 +168,29 @@ void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable)
 EXPORT_SYMBOL(cxi_link_los_lol_hide);
 
 /**
+ * cxi_is_link_up_vf() - Query the PF for the current link state
+ *
+ * @cdev: VF CXI device
+ *
+ * Return: true if the link is up, false otherwise or on error.
+ */
+static bool cxi_is_link_up_vf(struct cxi_dev *cdev)
+{
+	const struct cxi_eth_link_state_get_cmd cmd = {
+		.op = CXI_OP_ETH_LINK_STATE_GET,
+	};
+	struct cxi_eth_get_link_state_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return false;
+
+	return !!resp.link_up;
+}
+
+/**
  * cxi_is_link_up() - Returns whether the link is up or down
  *
  * @cdev: the device
@@ -176,6 +200,9 @@ EXPORT_SYMBOL(cxi_link_los_lol_hide);
 bool cxi_is_link_up(struct cxi_dev *cdev)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return cxi_is_link_up_vf(cdev);
 
 	return hw->link_ops->is_link_up(hw);
 }

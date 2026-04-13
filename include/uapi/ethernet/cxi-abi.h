@@ -128,6 +128,12 @@ enum cxi_command_opcode {
 		CXI_OP_PHYS_LAC_ALLOC,
 		CXI_OP_PHYS_LAC_FREE,
 		CXI_OP_ATU_MAP_SGT,
+		CXI_OP_ETH_DEV_INFO_GET,
+		CXI_OP_ETH_TC_REQ_PCP_GET,
+		CXI_OP_ETH_PAUSE_GET,
+		CXI_OP_ETH_MAX_RXSIZE_GET,
+		CXI_OP_ETH_LINK_STATE_GET,
+
 		CXI_OP_MAX,
 };
 
@@ -1353,6 +1359,50 @@ struct cxi_dev_info_get_cmd {
 
 struct cxi_dev_info_get_resp {
 	struct cxi_dev_info_use devinfo;
+};
+
+struct cxi_eth_dev_info_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	size_t buf_size;  /* Size of buffer provided by caller */
+};
+
+struct cxi_eth_tc_req_pcp_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int tc;  /* Traffic class to query */
+};
+
+struct cxi_get_tc_req_pcp_resp {
+	int req_pcp;  /* Request PCP for the TC, or -1 if not active */
+};
+
+struct cxi_eth_pause_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_eth_get_pause_resp {
+	__u32 tx_pause;  /* TX pause enabled */
+	__u32 rx_pause;  /* RX pause enabled */
+};
+
+struct cxi_eth_max_rxsize_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_eth_get_max_rxsize_resp {
+	__u32 max_rxsize;  /* Current max RX frame size, excluding headers */
+};
+
+struct cxi_eth_link_state_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_eth_get_link_state_resp {
+	__u8 link_up;  /* Non-zero if the link is up */
 };
 
 struct cxi_phys_lac_alloc_cmd {

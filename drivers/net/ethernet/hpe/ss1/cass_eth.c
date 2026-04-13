@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2019,2022 Hewlett Packard Enterprise Development LP */
+/* Copyright 2019, 2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* Core driver support for Ethernet devices */
 
@@ -278,6 +278,9 @@ void cxi_set_ethernet_threshold(struct cxi_dev *cdev, unsigned int threshold)
 		.threshold = threshold,
 	};
 
+	if (!cdev->is_physfn)
+		return;
+
 	cass_write(hw, C_LPE_CFG_ETHERNET_THRESHOLD, &eth_thr, sizeof(eth_thr));
 }
 EXPORT_SYMBOL(cxi_set_ethernet_threshold);
@@ -297,6 +300,9 @@ void cxi_set_roce_rcv_seg(struct cxi_dev *cdev, bool enable)
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	union c_ixe_cfg_roce cfg_roce;
 
+	if (!cdev->is_physfn)
+		return;
+
 	cass_read(hw, C_IXE_CFG_ROCE, &cfg_roce, sizeof(cfg_roce));
 	cfg_roce.enable_1k = enable;
 	cfg_roce.enable_2k = enable;
@@ -304,6 +310,31 @@ void cxi_set_roce_rcv_seg(struct cxi_dev *cdev, bool enable)
 	cass_write(hw, C_IXE_CFG_ROCE, &cfg_roce, sizeof(cfg_roce));
 }
 EXPORT_SYMBOL(cxi_set_roce_rcv_seg);
+
+static void cxi_eth_devinfo_vf(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
+{
+	const struct cxi_eth_dev_info_get_cmd cmd = {
+		.op = CXI_OP_ETH_DEV_INFO_GET,
+		.buf_size = sizeof(*eth_info),
+	};
+	size_t resp_len = sizeof(*eth_info);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), eth_info, &resp_len);
+	if (rc)
+		goto err;
+
+	if (resp_len != sizeof(*eth_info)) {
+		cxidev_err(cdev, "Invalid response length: %zu (expected %zu)\n",
+			   resp_len, sizeof(*eth_info));
+		goto err;
+	}
+
+	return;
+
+err:
+	memset(eth_info, 0, sizeof(*eth_info));
+}
 
 /**
  * cxi_eth_devinfo() - Get some current Ethernet related device information
@@ -315,6 +346,11 @@ void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	union c_ixe_cfg_parser cfg_parser;
+
+	if (!cdev->is_physfn) {
+		cxi_eth_devinfo_vf(cdev, eth_info);
+		return;
+	}
 
 	cass_read(hw, C_IXE_CFG_PARSER, &cfg_parser, sizeof(cfg_parser));
 	eth_info->max_segment_size = (cfg_parser.eth_segment + 1) * 128;
@@ -348,6 +384,9 @@ void cxi_set_led_beacon(struct cxi_dev *cdev, bool state)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 
+	if (!cdev->is_physfn)
+		return;
+
 	hw->qsfp_beacon_active = state;
 	cass_link_set_led(hw);
 }
@@ -367,14 +406,11 @@ void cxi_set_eth_name(struct cxi_dev *cdev, const char *name)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 
-	/* Only update for the main device. */
-	if (!cdev->is_physfn)
-		return;
-
 	strscpy(cdev->eth_name, name, sizeof(cdev->eth_name));
 
-	/* update name in sbl/sl */
-	hw->link_ops->eth_name_set(hw, cdev->eth_name);
+	/* Update name in sbl/sl (only in PF) */
+	if (cdev->is_physfn)
+		hw->link_ops->eth_name_set(hw, cdev->eth_name);
 }
 EXPORT_SYMBOL(cxi_set_eth_name);
 
@@ -393,6 +429,9 @@ int cxi_eth_cfg_timestamp(struct cxi_dev *cdev,
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	union c_hni_cfg_gen cfg_gen;
+
+	if (!cdev->is_physfn)
+		return -EOPNOTSUPP;
 
 	if (config->flags != 0)
 		return -EINVAL;
@@ -526,6 +565,9 @@ int cxi_eth_get_tx_timestamp(struct cxi_dev *cdev,
 	u64 curr_sec;
 	u64 diff_sec;
 
+	if (!cdev->is_physfn)
+		return -EOPNOTSUPP;
+
 	/* Note: union c_hni_pml_sts_tx_pcs and union
 	 * ss2_port_pml_sts_tx_pcs are identical structures.
 	 */
@@ -592,6 +634,27 @@ int cxi_eth_get_tx_timestamp(struct cxi_dev *cdev,
 }
 EXPORT_SYMBOL(cxi_eth_get_tx_timestamp);
 
+static void cxi_eth_get_pause_vf(struct cxi_dev *cdev, struct ethtool_pauseparam *pause)
+{
+	struct cxi_eth_pause_get_cmd cmd = {
+		.op = CXI_OP_ETH_PAUSE_GET,
+	};
+	struct cxi_eth_get_pause_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc) {
+		/* On error, set pause to disabled */
+		pause->tx_pause = false;
+		pause->rx_pause = false;
+		return;
+	}
+
+	pause->tx_pause = resp.tx_pause;
+	pause->rx_pause = resp.rx_pause;
+}
+
 /**
  * cxi_eth_get_pause() - Enable of disable the RX and TX pause packets
  *
@@ -603,6 +666,11 @@ void cxi_eth_get_pause(struct cxi_dev *cdev, struct ethtool_pauseparam *pause)
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	union c_hni_cfg_pause_tx_ctrl tx_ctrl_cfg;
 	union c_hni_cfg_pause_rx_ctrl rx_ctrl_cfg;
+
+	if (!cdev->is_physfn) {
+		cxi_eth_get_pause_vf(cdev, pause);
+		return;
+	}
 
 	cass_read(hw, C_HNI_CFG_PAUSE_TX_CTRL, &tx_ctrl_cfg,
 		  sizeof(tx_ctrl_cfg));
@@ -623,6 +691,9 @@ EXPORT_SYMBOL(cxi_eth_get_pause);
 void cxi_eth_set_pause(struct cxi_dev *cdev, const struct ethtool_pauseparam *pause)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return;
 
 	cass_tc_set_tx_pause_all(hw, pause->tx_pause);
 	cass_tc_set_rx_pause_all(hw, pause->rx_pause);

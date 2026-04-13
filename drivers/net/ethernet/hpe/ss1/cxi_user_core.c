@@ -2572,6 +2572,84 @@ static int cxi_user_dev_info_get(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_eth_dev_info_get(struct user_client *client,
+				     const void *cmd_in, void *resp_out,
+				     size_t *resp_out_len)
+{
+	const struct cxi_eth_dev_info_get_cmd *cmd = cmd_in;
+	struct cxi_eth_info eth_info;
+
+	if (cmd->buf_size < sizeof(struct cxi_eth_info))
+		return -EINVAL;
+
+	cxi_eth_devinfo(client->ucxi->dev, &eth_info);
+
+	if (copy_response(client, &eth_info, sizeof(eth_info), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int cxi_user_eth_tc_req_pcp_get(struct user_client *client,
+				       const void *cmd_in, void *resp_out,
+				       size_t *resp_out_len)
+{
+	const struct cxi_eth_tc_req_pcp_get_cmd *cmd = cmd_in;
+	struct cxi_get_tc_req_pcp_resp resp = {};
+
+	resp.req_pcp = cxi_get_tc_req_pcp(client->ucxi->dev, cmd->tc);
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int cxi_user_eth_pause_get(struct user_client *client,
+				  const void *cmd_in, void *resp_out,
+				  size_t *resp_out_len)
+{
+	struct cxi_eth_get_pause_resp resp = {};
+	struct ethtool_pauseparam pause = {};
+
+	cxi_eth_get_pause(client->ucxi->dev, &pause);
+
+	resp.tx_pause = pause.tx_pause;
+	resp.rx_pause = pause.rx_pause;
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int cxi_user_eth_max_rxsize_get(struct user_client *client,
+				       const void *cmd_in, void *resp_out,
+				       size_t *resp_out_len)
+{
+	const struct cxi_eth_get_max_rxsize_resp resp = {
+		.max_rxsize = cxi_get_max_eth_rxsize(client->ucxi->dev),
+	};
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int cxi_user_eth_link_state_get(struct user_client *client,
+				       const void *cmd_in, void *resp_out,
+				       size_t *resp_out_len)
+{
+	const struct cxi_eth_get_link_state_resp resp = {
+		.link_up = cxi_is_link_up(client->ucxi->dev) ? 1 : 0,
+	};
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
 
 static int cxi_user_phys_lac_alloc(struct user_client *client,
 				   const void *cmd_in,
@@ -2907,6 +2985,26 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_atu_map_sgt_cmd),
 		.name       = "ATU_MAP_SGT",
 		.handler    = cxi_user_atu_map_sgt, },
+	[CXI_OP_ETH_DEV_INFO_GET] = {
+		.req_size   = sizeof(struct cxi_eth_dev_info_get_cmd),
+		.name       = "ETH_DEV_INFO_GET",
+		.handler    = cxi_user_eth_dev_info_get, },
+	[CXI_OP_ETH_TC_REQ_PCP_GET] = {
+		.req_size   = sizeof(struct cxi_eth_tc_req_pcp_get_cmd),
+		.name       = "ETH_TC_REQ_PCP_GET",
+		.handler    = cxi_user_eth_tc_req_pcp_get, },
+	[CXI_OP_ETH_PAUSE_GET] = {
+		.req_size   = sizeof(struct cxi_eth_pause_get_cmd),
+		.name       = "ETH_PAUSE_GET",
+		.handler    = cxi_user_eth_pause_get, },
+	[CXI_OP_ETH_MAX_RXSIZE_GET] = {
+		.req_size   = sizeof(struct cxi_eth_max_rxsize_get_cmd),
+		.name       = "ETH_MAX_RXSIZE_GET",
+		.handler    = cxi_user_eth_max_rxsize_get, },
+	[CXI_OP_ETH_LINK_STATE_GET] = {
+		.req_size   = sizeof(struct cxi_eth_link_state_get_cmd),
+		.name       = "ETH_LINK_STATE_GET",
+		.handler    = cxi_user_eth_link_state_get, }
 };
 
 /* Read and process a command from userspace or from a Virtual

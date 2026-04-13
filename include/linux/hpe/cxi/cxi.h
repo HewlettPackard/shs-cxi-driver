@@ -481,6 +481,7 @@ int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 		       size_t req_len, void *rsp, size_t *rsp_len);
 
 int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size);
+int cxi_get_max_eth_rxsize(struct cxi_dev *cdev);
 int cxi_eth_add_mac(struct cxi_dev *cdev, struct cxi_eth_res *res,
 		    u64 mac_addr, bool is_ptp);
 int cxi_eth_set_promiscuous(struct cxi_dev *cdev, struct cxi_eth_res *res);
