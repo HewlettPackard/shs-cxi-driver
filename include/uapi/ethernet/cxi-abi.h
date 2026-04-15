@@ -128,6 +128,8 @@ enum cxi_command_opcode {
 		CXI_OP_PHYS_LAC_ALLOC,
 		CXI_OP_PHYS_LAC_FREE,
 		CXI_OP_ATU_MAP_SGT,
+		CXI_OP_ATU_UPDATE_SGT,
+		CXI_OP_ATU_CLEAR_MD,
 		CXI_OP_ETH_DEV_INFO_GET,
 		CXI_OP_ETH_TC_REQ_PCP_GET,
 		CXI_OP_ETH_PAUSE_GET,
@@ -721,6 +723,20 @@ struct cxi_atu_map_sgt_cmd {
 struct cxi_atu_map_sgt_resp {
 	unsigned int id;
 	struct cxi_md md;
+};
+
+struct cxi_atu_update_sgt_cmd {
+	enum cxi_command_opcode op;
+
+	unsigned int id;
+	__u32 nents;
+	struct cxi_sgt_entry sge[CXI_ATU_SGT_MAX_ENTRIES];
+};
+
+struct cxi_atu_clear_md_cmd {
+	enum cxi_command_opcode op;
+
+	unsigned int id;
 };
 
 struct cxi_atu_map_resp {

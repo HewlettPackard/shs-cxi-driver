@@ -50,6 +50,7 @@ struct cxi_md_priv_vf {
 	struct sg_table *sgt;        /* Scatter-gather table for DMA mapping */
 	struct page **pages;         /* Array of pinned pages */
 	u32 flags;                   /* Mapping flags */
+	size_t olen;                 /* Original allocation size (immutable after map) */
 	/* VF only fields */
 	int npages;                  /* Number of pinned pages */
 };

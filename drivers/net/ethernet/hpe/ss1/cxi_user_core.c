@@ -1910,11 +1910,22 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 	if (rc)
 		goto free_sgt;
 
+	/* The VF supplies raw DMA (bus) addresses that the PF writes directly
+	 * into the Cassini NTA page tables.  Validating these addresses on the
+	 * PF is not possible: they live in a different address space from the
+	 * Cassini IOVA and there is no mapping from one to the other that the
+	 * PF can consult.  Isolation between VFs relies on the system IOMMU;
+	 * each VF has its own IOMMU domain, so a fabricated DMA address will
+	 * fault at the IOMMU rather than silently accessing another VF's memory.
+	 */
 	sg = sgt->sgl;
 	for (i = 0; i < cmd->nents; i++) {
 		sg->dma_address = cmd->sge[i].dma_addr;
 		sg->dma_length = cmd->sge[i].dma_len;
 		sg->offset = cmd->sge[i].offset;
+		/* This sgt is synthetic; only cass_nta_mirror_sgt() consumes it
+		 * and it only reads DMA fields, so sg->length = dma_len is safe.
+		 */
 		sg->length = cmd->sge[i].dma_len;
 		sg = sg_next(sg);
 	}
@@ -1960,6 +1971,123 @@ free_sgt:
 	kfree(sgt);
 free_obj:
 	free_obj(md_obj);
+
+	return rc;
+}
+
+static int cxi_user_atu_update_sgt(struct user_client *client,
+				   const void *cmd_in, void *resp_out,
+				   size_t *resp_out_len)
+{
+	int rc;
+	struct ucxi_obj *md_obj;
+	const struct cxi_atu_update_sgt_cmd *cmd = cmd_in;
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	unsigned int i;
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	if (!cmd->nents || cmd->nents > CXI_ATU_SGT_MAX_ENTRIES)
+		return -EINVAL;
+
+	read_lock(&client->res_lock);
+
+	md_obj = idr_find(&client->md_idr, cmd->id);
+	if (!md_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	atomic_inc(&md_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt) {
+		rc = -ENOMEM;
+		goto dec_refs;
+	}
+
+	rc = sg_alloc_table(sgt, cmd->nents, GFP_KERNEL);
+	if (rc)
+		goto free_sgt;
+
+	sg = sgt->sgl;
+	for (i = 0; i < cmd->nents; i++) {
+		sg->dma_address = cmd->sge[i].dma_addr;
+		sg->dma_length = cmd->sge[i].dma_len;
+		sg->offset = cmd->sge[i].offset;
+		sg->length = cmd->sge[i].dma_len;
+		sg = sg_next(sg);
+	}
+
+	pr_debug("PF update_sgt: vf:%u md:%d nents:%u\n",
+		 client->vf_num, cmd->id, cmd->nents);
+
+	rc = cxi_update_sgtable(md_obj->md, sgt);
+	if (rc)
+		goto free_sgt_table;
+
+	/* Replace the tracked ext_sgt with the new one */
+	if (md_obj->ext_sgt) {
+		sg_free_table(md_obj->ext_sgt);
+		kfree(md_obj->ext_sgt);
+	}
+	md_obj->ext_sgt = sgt;
+
+	atomic_dec(&md_obj->refs);
+	return 0;
+
+free_sgt_table:
+	sg_free_table(sgt);
+free_sgt:
+	kfree(sgt);
+dec_refs:
+	atomic_dec(&md_obj->refs);
+
+	return rc;
+}
+
+static int cxi_user_atu_clear_md(struct user_client *client,
+				 const void *cmd_in, void *resp_out,
+				 size_t *resp_out_len)
+{
+	int rc;
+	struct ucxi_obj *md_obj;
+	const struct cxi_atu_clear_md_cmd *cmd = cmd_in;
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	read_lock(&client->res_lock);
+
+	md_obj = idr_find(&client->md_idr, cmd->id);
+	if (!md_obj) {
+		read_unlock(&client->res_lock);
+		return -EINVAL;
+	}
+
+	atomic_inc(&md_obj->refs);
+
+	read_unlock(&client->res_lock);
+
+	pr_debug("PF clear_md: vf:%u md:%d\n", client->vf_num, cmd->id);
+
+	rc = cxi_clear_md(md_obj->md);
+	if (rc)
+		goto dec_refs;
+
+	/* Free the PF's rebuilt copy of the sgt; it will be replaced on next update */
+	if (md_obj->ext_sgt) {
+		sg_free_table(md_obj->ext_sgt);
+		kfree(md_obj->ext_sgt);
+	}
+	md_obj->ext_sgt = NULL;
+
+dec_refs:
+	atomic_dec(&md_obj->refs);
 
 	return rc;
 }
@@ -3431,6 +3559,14 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_atu_map_sgt_cmd),
 		.name       = "ATU_MAP_SGT",
 		.handler    = cxi_user_atu_map_sgt, },
+	[CXI_OP_ATU_UPDATE_SGT] = {
+		.req_size   = sizeof(struct cxi_atu_update_sgt_cmd),
+		.name       = "ATU_UPDATE_SGT",
+		.handler    = cxi_user_atu_update_sgt, },
+	[CXI_OP_ATU_CLEAR_MD] = {
+		.req_size   = sizeof(struct cxi_atu_clear_md_cmd),
+		.name       = "ATU_CLEAR_MD",
+		.handler    = cxi_user_atu_clear_md, },
 	[CXI_OP_ETH_DEV_INFO_GET] = {
 		.req_size   = sizeof(struct cxi_eth_dev_info_get_cmd),
 		.name       = "ETH_DEV_INFO_GET",

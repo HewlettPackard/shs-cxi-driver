@@ -1133,6 +1133,56 @@ void cxi_phys_lac_free(struct cxi_lni *lni, int lac)
 EXPORT_SYMBOL(cxi_phys_lac_free);
 
 /**
+ * cxi_clear_md_vf() - Clear page tables for a VF-side MD without freeing the MD
+ *
+ * Sends CXI_OP_ATU_CLEAR_MD to the PF to zero NTA page tables, then releases
+ * any locally owned sgt and pages.  The MD IOVA and PF allocation remain intact
+ * so the MD can be repopulated later via cxi_update_iov / cxi_update_sgtable.
+ *
+ * @md: VF-side memory descriptor
+ */
+static int cxi_clear_md_vf(struct cxi_md *md)
+{
+	struct cxi_md_priv_vf *md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	const struct cxi_atu_clear_md_cmd cmd = {
+		.op = CXI_OP_ATU_CLEAR_MD,
+		.id = md_priv_vf->md.id,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc) {
+		cxidev_err(&hw->cdev, "VF ATU_CLEAR_MD failed md:%d rc:%d\n",
+			   md_priv_vf->md.id, rc);
+		return rc;
+	}
+
+	/* Free locally owned sgt+pages if this MD was created via cxi_map_vf */
+	if (md_priv_vf->pages && md_priv_vf->sgt) {
+		dma_unmap_sgtable(md_priv_vf->device, md_priv_vf->sgt,
+				  DMA_BIDIRECTIONAL, 0);
+		sg_free_table(md_priv_vf->sgt);
+		kfree(md_priv_vf->sgt);
+	}
+	if (md_priv_vf->pages) {
+		if (md_priv_vf->flags & CXI_MAP_PIN)
+			unpin_user_pages(md_priv_vf->pages, md_priv_vf->npages);
+		kvfree(md_priv_vf->pages);
+	}
+
+	md_priv_vf->sgt = NULL;
+	md_priv_vf->pages = NULL;
+	md_priv_vf->npages = 0;
+
+	pr_debug("VF clear_md: md:%d iova:%llx\n", md->id, md->iova);
+
+	return 0;
+}
+
+/**
  * cxi_clear_md() - Zero page table entries and invalidate a memory descriptor
  *
  * @md: Memory Descriptor used in network operations
@@ -1140,9 +1190,14 @@ EXPORT_SYMBOL(cxi_phys_lac_free);
 int cxi_clear_md(struct cxi_md *md)
 {
 	struct cxi_md_priv *md_priv;
+	struct cxi_dev *dev;
 
 	if (!md)
 		return -EINVAL;
+
+	dev = container_of(md, struct cxi_md_priv, md)->lni_priv->dev;
+	if (!dev->is_physfn)
+		return cxi_clear_md_vf(md);
 
 	md_priv = container_of(md, struct cxi_md_priv, md);
 
@@ -1156,6 +1211,8 @@ int cxi_clear_md(struct cxi_md *md)
 	return 0;
 }
 EXPORT_SYMBOL(cxi_clear_md);
+
+static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter);
 
 /**
  * cxi_update_iov() - Map a list of virtual address or pages in an IO
@@ -1181,6 +1238,10 @@ int cxi_update_iov(struct cxi_md *md, const struct iov_iter *iter)
 	md_priv = container_of(md, struct cxi_md_priv, md);
 	lni_priv = md_priv->lni_priv;
 	dev = lni_priv->dev;
+
+	if (!dev->is_physfn)
+		return cxi_update_iov_vf(md, iter);
+
 	hw = container_of(dev, struct cass_dev, cdev);
 
 	if (iov_iter_is_bvec(iter))
@@ -1395,7 +1456,7 @@ static int cxi_unmap_sgtable_vf(struct cxi_dev *dev,
 				struct cxi_md_priv_vf *md_priv_vf,
 				struct cass_dev *hw, int md_id)
 {
-	struct cxi_atu_unmap_cmd cmd = {
+	const struct cxi_atu_unmap_cmd cmd = {
 		.op = CXI_OP_ATU_UNMAP,
 		.id = md_priv_vf->md.id,
 	};
@@ -1505,6 +1566,64 @@ md_free:
 EXPORT_SYMBOL(cxi_map_sgtable);
 
 /**
+ * cxi_update_sgtable_vf() - Update an sg table mapped in a VF
+ *
+ * @md: Memory Descriptor used in network operations (VF side)
+ * @sgt: The sg_table object. It is expected to be dma mapped.
+ *
+ * @return: 0 on success or negative error value
+ */
+static int cxi_update_sgtable_vf(struct cxi_md *md, struct sg_table *sgt)
+{
+	struct cxi_md_priv_vf *md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_atu_update_sgt_cmd *cmd;
+	struct scatterlist *sg;
+	size_t sgt_len;
+	size_t resp_len = 0;
+	int i;
+	int rc;
+
+	if (!sgt)
+		return -EINVAL;
+
+	if (!cass_sgtable_is_valid(hw, sgt, &sgt_len))
+		return -EINVAL;
+
+	if (sgt->nents > CXI_ATU_SGT_MAX_ENTRIES) {
+		cxidev_err(&hw->cdev, "SGT has too many entries: %u\n", sgt->nents);
+		return -E2BIG;
+	}
+
+	if (sgt_len > md_priv_vf->olen) {
+		pr_debug("Address range not bounded by MD\n");
+		return -EINVAL;
+	}
+
+	cmd = kvzalloc(sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->op = CXI_OP_ATU_UPDATE_SGT;
+	cmd->id = md_priv_vf->md.id;
+	cmd->nents = sgt->nents;
+
+	pr_debug("Sending SGT update with %d entries to PF, pf_md:%d\n",
+		 sgt->nents, md_priv_vf->md.id);
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		cmd->sge[i].dma_addr = sg_dma_address(sg);
+		cmd->sge[i].dma_len = sg_dma_len(sg);
+		cmd->sge[i].offset = sg->offset;
+	}
+
+	rc = cxi_send_msg_to_pf(dev, cmd, sizeof(*cmd), NULL, &resp_len);
+	kvfree(cmd);
+
+	return rc;
+}
+
+/**
  * cxi_update_sgtable() - Update the specified address range contained in MD
  *
  * @md: Memory Descriptor used in network operations
@@ -1519,6 +1638,9 @@ int cxi_update_sgtable(struct cxi_md *md, struct sg_table *sgt)
 	struct cxi_md_priv *md_priv = container_of(md, struct cxi_md_priv, md);
 	struct cxi_dev *cdev = md_priv->lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return cxi_update_sgtable_vf(md, sgt);
 
 	if (!cass_sgtable_is_valid(hw, sgt, &len))
 		return -EINVAL;
@@ -1575,6 +1697,191 @@ static int cass_virt_to_pages(struct cass_dev *hw, uintptr_t va, int npages,
 	return 0;
 }
 
+/**
+ * cxi_update_iov_vf() - Update an iov-backed MD on a VF
+ *
+ * Rebuilds the sgt from the new iter, DMA-maps it, sends the updated
+ * page table entries to the PF via cxi_update_sgtable_vf, then tears
+ * down and replaces the previously owned sgt and pages.
+ *
+ * @md: Memory descriptor (VF side, created via cxi_map)
+ * @iter: New list of virtual addresses - supports ITER_KVEC and ITER_BVEC
+ *
+ * @return: 0 on success or negative error value
+ */
+static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
+{
+	struct cxi_md_priv_vf *md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct sg_table *new_sgt;
+	struct page **new_pages;
+	u64 va;
+	size_t len;
+	int npages;
+	int rc;
+
+	if (iov_iter_is_bvec(iter))
+		rc = cass_bvec(hw, iter, &len, &va);
+	else
+		rc = cass_kvec(hw, iter, &len, &va);
+
+	if (rc)
+		return rc;
+
+	/* md->len tracks the current mapping size; olen is the immutable
+	 * original reservation size set once in cxi_map_alloc_vf().
+	 */
+	if (len > md_priv_vf->olen) {
+		pr_debug("Address range not bounded by MD\n");
+		return -EINVAL;
+	}
+
+	npages = (PAGE_ALIGN(va + len) - (va & PAGE_MASK)) >> PAGE_SHIFT;
+
+	new_pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
+	if (!new_pages)
+		return -ENOMEM;
+
+	if (md_priv_vf->flags & CXI_MAP_PIN) {
+		rc = pin_user_pages_fast(va & PAGE_MASK, npages,
+					 FOLL_WRITE | FOLL_LONGTERM, new_pages);
+		if (rc != npages) {
+			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n",
+				   rc, npages);
+			if (rc > 0)
+				unpin_user_pages(new_pages, rc);
+			rc = rc < 0 ? rc : -EFAULT;
+			goto free_new_pages;
+		}
+	} else {
+		rc = cass_virt_to_pages(hw, va, npages, new_pages);
+		if (rc)
+			goto free_new_pages;
+	}
+
+	new_sgt = kzalloc(sizeof(*new_sgt), GFP_KERNEL);
+	if (!new_sgt) {
+		rc = -ENOMEM;
+		goto unpin_new_pages;
+	}
+
+	rc = sg_alloc_table_from_pages_segment(new_sgt, new_pages, npages,
+					       va & ~PAGE_MASK, len,
+					       UINT_MAX, GFP_KERNEL);
+	if (rc)
+		goto free_new_sgt;
+
+	rc = dma_map_sgtable(&hw->cdev.pdev->dev, new_sgt, DMA_BIDIRECTIONAL, 0);
+	if (rc) {
+		cxidev_err(&hw->cdev, "dma_map_sgtable failed\n");
+		goto free_new_sgt_table;
+	}
+
+	rc = cxi_update_sgtable_vf(md, new_sgt);
+	if (rc)
+		goto unmap_new_sgt;
+
+	/* old_pages is NULL when the MD was created with CXI_MAP_ALLOC_MD and
+	 * has not been populated yet; nothing to free in that case.
+	 */
+	if (md_priv_vf->pages && md_priv_vf->sgt) {
+		dma_unmap_sgtable(md_priv_vf->device, md_priv_vf->sgt, DMA_BIDIRECTIONAL, 0);
+		sg_free_table(md_priv_vf->sgt);
+		kfree(md_priv_vf->sgt);
+	}
+	if (md_priv_vf->pages) {
+		if (md_priv_vf->flags & CXI_MAP_PIN)
+			unpin_user_pages(md_priv_vf->pages, md_priv_vf->npages);
+		kvfree(md_priv_vf->pages);
+	}
+
+	md_priv_vf->sgt = new_sgt;
+	md_priv_vf->pages = new_pages;
+	md_priv_vf->npages = npages;
+	md->len = len;
+
+	pr_debug("VF update_iov: md:%d iova:%llx len:0x%lx nents:%u\n",
+		 md->id, md->iova, md->len, new_sgt->nents);
+
+	return 0;
+
+unmap_new_sgt:
+	dma_unmap_sgtable(&hw->cdev.pdev->dev, new_sgt, DMA_BIDIRECTIONAL, 0);
+free_new_sgt_table:
+	sg_free_table(new_sgt);
+free_new_sgt:
+	kfree(new_sgt);
+unpin_new_pages:
+	if (md_priv_vf->flags & CXI_MAP_PIN)
+		unpin_user_pages(new_pages, npages);
+free_new_pages:
+	kvfree(new_pages);
+	return rc;
+}
+
+/**
+ * cxi_map_alloc_vf() - Allocate an MD IOVA on the PF without mapping any pages
+ *
+ * VF equivalent of cxi_map(..., CXI_MAP_ALLOC_MD).  Sends CXI_OP_ATU_MAP
+ * with va=0 and CXI_MAP_ALLOC_MD set, reusing the same PF handler as regular
+ * cxi_map().  The returned MD has a valid IOVA, LAC and id but no backing
+ * pages.  A later call to cxi_update_iov() or cxi_update_sgtable() populates
+ * the page tables.
+ *
+ * @lni:   Logical Network Interface
+ * @len:   Allocation size in bytes
+ * @flags: Mapping flags (must include CXI_MAP_ALLOC_MD)
+ */
+static struct cxi_md *cxi_map_alloc_vf(struct cxi_lni *lni, size_t len,
+				       u32 flags)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	const struct cxi_atu_map_cmd cmd = {
+		.op    = CXI_OP_ATU_MAP,
+		.lni   = lni_priv_vf->lni.id,
+		.va    = 0,
+		.len   = len,
+		.flags = flags | CXI_MAP_ALLOC_MD,
+	};
+	struct cxi_atu_map_sgt_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	struct cxi_md_priv_vf *md_priv_vf;
+	int rc;
+
+	md_priv_vf = kzalloc(sizeof(*md_priv_vf), GFP_KERNEL);
+	if (!md_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	md_priv_vf->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	md_priv_vf->device   = &hw->cdev.pdev->dev;
+	md_priv_vf->md.len   = len;
+	md_priv_vf->olen     = len;
+	md_priv_vf->md.page_shift = PAGE_SHIFT;
+	md_priv_vf->md.huge_shift = PMD_SHIFT;
+	md_priv_vf->flags    = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
+	/* sgt/pages stay NULL; no backing pages until cxi_update_iov/sgtable */
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc) {
+		cxidev_err(&hw->cdev, "VF ATU_MAP_ALLOC failed rc:%d\n", rc);
+		kfree(md_priv_vf);
+		return ERR_PTR(rc);
+	}
+
+	md_priv_vf->md.iova = resp.md.iova;
+	md_priv_vf->md.lac = resp.md.lac;
+	md_priv_vf->md.id = resp.md.id;
+
+	pr_debug("VF map_alloc: md:%d iova:%llx lac:%u len:0x%lx flags:0x%x\n",
+		 md_priv_vf->md.id, md_priv_vf->md.iova,
+		 md_priv_vf->md.lac, len, flags);
+
+	return &md_priv_vf->md;
+}
+
 static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 				 u32 flags, const struct cxi_md_hints *hints)
 {
@@ -1592,6 +1899,10 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 	struct sg_table *sgt;
 	int rc;
 
+	/* Allocate-only path: no VA, no pages, just reserve an IOVA on the PF */
+	if (flags & CXI_MAP_ALLOC_MD)
+		return cxi_map_alloc_vf(lni, len, flags);
+
 	if (flags & CXI_MAP_USER_ADDR && !(flags & CXI_MAP_PIN)) {
 		cxidev_err(&hw->cdev, "VF does not support ODP\n");
 		return ERR_PTR(-EOPNOTSUPP);
@@ -1600,11 +1911,6 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 	if (flags & CXI_MAP_DEVICE) {
 		cxidev_err(&hw->cdev, "TODO: VF does not support device memory\n");
 		return ERR_PTR(-EOPNOTSUPP);
-	}
-
-	if (!va) {
-		cxidev_err(&hw->cdev, "NULL virtual address\n");
-		return ERR_PTR(-EINVAL);
 	}
 
 	pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
@@ -1968,12 +2274,17 @@ int cxi_update_md(struct cxi_md *md, uintptr_t va, size_t len, u32 flags)
 {
 	int ret;
 	struct cxi_md_priv *md_priv;
+	struct cxi_dev *dev;
 	struct cass_dev *hw;
 	int align_shift;
 	struct ac_map_opts m_opts = {};
 
 	if (!md || md->lac >= C_NUM_LACS)
 		return -EINVAL;
+
+	dev = container_of(md, struct cxi_md_priv, md)->lni_priv->dev;
+	if (!dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	if (va < md->va || (va + len) > (md->va + md->len)) {
 		pr_debug("Address range not bounded by MD\n");

@@ -305,6 +305,8 @@ struct cxi_md_priv {
 	struct page **pages;
 	struct sg_table *sgt;
 	u32 flags;
+	/* Original length of the MD */
+	size_t olen;
 
 	struct list_head md_entry; /* entry in a CAC md_list */
 	struct cass_ac *cac;
@@ -325,9 +327,6 @@ struct cxi_md_priv {
 
 	/* Users of this MD */
 	refcount_t refcount;
-
-	/* Original length of the MD */
-	size_t olen;
 
 	/* Need to lock when initially mirroring page tables */
 	bool need_lock;
