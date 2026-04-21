@@ -529,17 +529,44 @@ void cxi_cp_free(struct cxi_cp *cp)
 }
 EXPORT_SYMBOL(cxi_cp_free);
 
+static int cxi_cp_modify_vf(struct cxi_cp *cp, unsigned int vni_pcp)
+{
+	struct cxi_cp_priv_vf *cp_priv_vf =
+		container_of(cp, struct cxi_cp_priv_vf, cp);
+	struct cxi_dev *dev = cp_priv_vf->dev;
+	const struct cxi_cp_modify_cmd cmd = {
+		.op = CXI_OP_CP_MODIFY,
+		.cp_hndl = cp_priv_vf->cp_hndl,
+		.vni = vni_pcp,
+	};
+	size_t resp_len = 0;
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+	if (rc)
+		return rc;
+
+	cp_priv_vf->cp.vni_pcp = vni_pcp;
+
+	return 0;
+}
+
 int cxi_cp_modify(struct cxi_cp *cp, unsigned int vni_pcp)
 {
 	struct cxi_cp_priv *cp_priv = container_of(cp, struct cxi_cp_priv, cp);
 	struct cass_cp *cass_cp = cp_priv->cass_cp;
-	struct cass_dev *hw = cp_priv->cass_cp->hw;
+	struct cass_dev *hw;
 	int rc = 0;
 	struct cass_tc_cfg tc_cfg;
 	union c_cq_cfg_cp_table cp_cfg = {
 	      .valid = 1,
 	      .hrp_vld = cp->tc_type == CXI_TC_TYPE_HRP,
 	};
+
+	if (!cp_priv->dev->is_physfn)
+		return cxi_cp_modify_vf(cp, vni_pcp);
+
+	hw = cass_cp->hw;
 
 	if (!cass_cp->tx_profile->config.exclusive_cp)
 		return -EINVAL;

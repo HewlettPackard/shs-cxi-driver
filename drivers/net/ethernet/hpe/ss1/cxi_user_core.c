@@ -1239,10 +1239,11 @@ static int cxi_user_cp_modify(struct user_client *client,
 	read_lock(&client->res_lock);
 
 	cp_obj = idr_find(&client->cp_idr, cmd->cp_hndl);
-	if (cp_obj)
-		ret = cxi_cp_modify(cp_obj->cp, cmd->vni);
 
 	read_unlock(&client->res_lock);
+
+	if (cp_obj)
+		ret = cxi_cp_modify(cp_obj->cp, cmd->vni);
 
 	return ret;
 }
