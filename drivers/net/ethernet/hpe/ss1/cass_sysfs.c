@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright 2022 Hewlett Packard Enterprise Development LP */
+/* Copyright 2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 #include "cass_core.h"
 
@@ -386,6 +386,9 @@ static ssize_t rdzv_get_en_store(struct kobject *kobj,
 	struct cass_dev *hw = container_of(kobj, struct cass_dev,
 					   properties_kobj);
 
+	if (!hw->cdev.is_physfn)
+		return -EOPNOTSUPP;
+
 	mutex_lock(&hw->get_ctrl_mutex);
 	if (kstrtobool(buf, &hw->cdev.prop.rdzv_get_en) < 0) {
 		mutex_unlock(&hw->get_ctrl_mutex);
@@ -418,6 +421,9 @@ static ssize_t amo_remap_to_pcie_fadd_store(struct kobject *kobj,
 					   properties_kobj);
 	int amo_remap_to_pcie_fadd;
 	int ret;
+
+	if (!hw->cdev.is_physfn)
+		return -EOPNOTSUPP;
 
 	ret = kstrtoint(buf, 10, &amo_remap_to_pcie_fadd);
 	if (ret)
