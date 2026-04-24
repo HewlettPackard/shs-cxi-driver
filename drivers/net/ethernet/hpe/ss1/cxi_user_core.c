@@ -2699,6 +2699,7 @@ static int cxi_user_pte_status(struct user_client *client,
 			       void *resp_out, size_t *resp_out_len)
 {
 	const struct cxi_pte_status_cmd *cmd = cmd_in;
+	const struct cxi_pte_status_cmd_vf *cmd_vf = cmd_in;
 	struct cxi_pte_status_resp resp = {};
 	struct cxi_pte_status status = {};
 	struct ucxi_obj *pte_obj;
@@ -2715,8 +2716,12 @@ static int cxi_user_pte_status(struct user_client *client,
 	write_unlock(&client->res_lock);
 
 	/* Response fields are also used for input */
-	if (copy_from_user(&status, cmd->resp, sizeof(resp)))
-		return -EFAULT;
+	if (client->is_vf) {
+		status = cmd_vf->status;
+	} else {
+		if (copy_from_user(&status, cmd->resp, sizeof(status)))
+			return -EFAULT;
+	}
 
 	rc = cxi_pte_status(pte_obj->pte, &status);
 
@@ -3261,6 +3266,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.handler    = cxi_user_pte_le_invalidate, },
 	[CXI_OP_PTE_STATUS] = {
 		.req_size   = sizeof(struct cxi_pte_status_cmd),
+		.req_size_vf = sizeof(struct cxi_pte_status_cmd_vf),
 		.name       = "PTE_STATUS",
 		.handler    = cxi_user_pte_status, },
 	[CXI_OP_PTE_TRANSITION_SM] = {

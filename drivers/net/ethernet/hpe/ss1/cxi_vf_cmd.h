@@ -49,4 +49,9 @@ struct cxi_eq_resize_cmd_vf {
 	u64 dma_addr;
 };
 
+struct cxi_pte_status_cmd_vf {
+	struct cxi_pte_status_cmd base;
+	struct cxi_pte_status status;
+};
+
 #endif /* _CXI_VF_CMD_H */

@@ -12,6 +12,7 @@
 
 #include "cass_core.h"
 #include "cass_ss1_debugfs.h"
+#include "cxi_vf_cmd.h"
 
 /* Use the last logical endpoint for rendezvous offload. */
 #define RDZV_GET_IDX(pid_granule) ((pid_granule) - 1)
@@ -991,9 +992,12 @@ static int cxi_pte_status_vf(struct cxi_pte *pt,
 		container_of(pt, struct cxi_pte_priv, pte);
 	struct cxi_lni_priv *lni_priv = pt_priv->lni_priv;
 	struct cxi_dev *cdev = lni_priv->dev;
-	struct cxi_pte_status_cmd cmd = {
-		.op = CXI_OP_PTE_STATUS,
-		.pte_index = pt->id,
+	const struct cxi_pte_status_cmd_vf cmd = {
+		.base = {
+			.op = CXI_OP_PTE_STATUS,
+			.pte_index = pt->id
+		},
+		.status = *status,
 	};
 	struct cxi_pte_status_resp resp = {};
 	size_t resp_size = sizeof(resp);
