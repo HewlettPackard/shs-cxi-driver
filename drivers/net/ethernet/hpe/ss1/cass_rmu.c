@@ -43,6 +43,30 @@ static int insert_domain(struct rb_root *root,
 	return 0;
 }
 
+static int cxi_domain_reserve_vf(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
+				 unsigned int count)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	const struct cxi_domain_reserve_cmd cmd = {
+		.op = CXI_OP_DOMAIN_RESERVE,
+		.lni = lni_priv_vf->lni.id,
+		.vni = vni,
+		.pid = pid,
+		.count = count,
+	};
+	struct cxi_domain_reserve_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	return resp.pid;
+}
+
 /* Atomically reserve a contiguous range of VNI PIDs. On success, PIDs are
  * reserved to the LNI. Reserved PIDs are released when the LNI is destroyed.
  * cxi_domain_alloc() must be used to create a Domain using a reserved PID.
@@ -57,6 +81,9 @@ int cxi_domain_reserve(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
 	struct cxi_reserved_pids *pids;
 	int rc;
 	int i;
+
+	if (!cdev->is_physfn)
+		return cxi_domain_reserve_vf(lni, vni, pid, count);
 
 	/* Sanity checks. */
 	if (!is_vni_valid(vni))
