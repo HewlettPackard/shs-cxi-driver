@@ -1454,6 +1454,22 @@ void hw_unregister(void)
 	genl_unregister_family(&cxierr_genl_family);
 }
 
+static bool cxi_retry_handler_running_vf(struct cxi_dev *cdev)
+{
+	const struct cxi_retry_handler_running_cmd cmd = {
+		.op = CXI_OP_RETRY_HANDLER_RUNNING,
+	};
+	struct cxi_retry_handler_running_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return false;
+
+	return resp.running;
+}
+
 /**
  * cxi_retry_handler_running() - Check if retry handler is running.
  *
@@ -1464,6 +1480,9 @@ void hw_unregister(void)
 bool cxi_retry_handler_running(struct cxi_dev *cdev)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (!cdev->is_physfn)
+		return cxi_retry_handler_running_vf(cdev);
 
 	return hw->pct_eq_n != C_EQ_NONE;
 }

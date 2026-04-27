@@ -657,6 +657,23 @@ static int cxi_user_rmu_eth_set_indir_table(struct user_client *client,
 	return rc;
 }
 
+static int cxi_user_retry_handler_running(struct user_client *client,
+					  const void *cmd_in, void *resp_out,
+					  size_t *resp_out_len)
+{
+	struct cxi_retry_handler_running_resp resp = {};
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	resp.running = cxi_retry_handler_running(client->ucxi->dev);
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int cxi_user_lni_free(struct user_client *client,
 			     const void *cmd_in, void *resp_out,
 			     size_t *resp_out_len)
@@ -3622,7 +3639,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_RMU_ETH_SET_INDIR_TABLE] = {
 		.req_size   = sizeof(struct cxi_rmu_eth_set_indir_table_cmd),
 		.name       = "RMU_ETH_SET_INDIR_TABLE",
-		.handler    = cxi_user_rmu_eth_set_indir_table, }
+		.handler    = cxi_user_rmu_eth_set_indir_table, },
+	[CXI_OP_RETRY_HANDLER_RUNNING] = {
+		.req_size   = sizeof(struct cxi_retry_handler_running_cmd),
+		.name       = "RETRY_HANDLER_RUNNING",
+		.handler    = cxi_user_retry_handler_running, }
 };
 
 /* Read and process a command from userspace or from a Virtual

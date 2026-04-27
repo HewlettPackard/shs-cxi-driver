@@ -130,6 +130,7 @@ enum cxi_command_opcode {
 		CXI_OP_ATU_MAP_SGT,
 		CXI_OP_ATU_UPDATE_SGT,
 		CXI_OP_ATU_CLEAR_MD,
+		CXI_OP_RETRY_HANDLER_RUNNING,
 		CXI_OP_ETH_DEV_INFO_GET,
 		CXI_OP_ETH_TC_REQ_PCP_GET,
 		CXI_OP_ETH_PAUSE_GET,
@@ -1538,6 +1539,15 @@ struct cxi_vf_get_token_cmd {
 
 struct cxi_vf_get_token_resp {
 	unsigned int token;
+};
+
+struct cxi_retry_handler_running_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_retry_handler_running_resp {
+	bool running;
 };
 
 #define CXIERR_GENL_FAMILY_NAME "cxierr"
