@@ -34,7 +34,6 @@ void cxi_link_flags_set(struct cxi_dev *cxi_dev, u32 clr_flags, u32 set_flags);
 void cxi_link_use_unsupported_cable(struct cxi_dev *cxi_dev, bool use);
 void cxi_link_use_supported_ss200_cable(struct cxi_dev *cxi_dev, bool use);
 void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore);
-void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable);
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set);
 void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable);
 

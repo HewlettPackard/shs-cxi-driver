@@ -160,6 +160,31 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 	else
 		link_info->fec_type = ETHTOOL_FEC_OFF;
 
+	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_PML_REC_ENABLE)
+		link_info->flags |= CXI_ETH_PF_PML_REC;
+	else
+		link_info->flags &= ~CXI_ETH_PF_PML_REC;
+
+	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_ALD_ENABLE)
+		link_info->flags |= CXI_ETH_PF_ALD;
+	else
+		link_info->flags &= ~CXI_ETH_PF_ALD;
+
+	if (cass_dev->sl.link_policy.options & SL_LINK_POLICY_OPT_IGNORE_MEDIA_ERROR)
+		link_info->flags |= CXI_ETH_PF_IGNORE_MEDIA_ERROR;
+	else
+		link_info->flags &= ~CXI_ETH_PF_IGNORE_MEDIA_ERROR;
+
+	if (cass_dev->sl.link_policy.options & SL_LINK_POLICY_OPT_USE_UNSUPPORTED_CABLE)
+		link_info->flags |= CXI_ETH_PF_USE_UNSUPPORTED_CABLE;
+	else
+		link_info->flags &= ~CXI_ETH_PF_USE_UNSUPPORTED_CABLE;
+
+	if (cass_dev->sl.link_policy.options & SL_LINK_POLICY_OPT_USE_SUPPORTED_SS200_CABLE)
+		link_info->flags |= CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE;
+	else
+		link_info->flags &= ~CXI_ETH_PF_USE_SUPPORTED_SS200_CABLE;
+
 	cxidev_dbg(&cass_dev->cdev,
 		   "sl mode get (type = %u, AN = %u, speed = %u, llr = %lu, fec = %u, LB = %lu, R1 = %u)\n",
 		   link_info->port_type, link_info->autoneg, link_info->speed,
@@ -366,6 +391,25 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 			break;
 		cxidev_dbg(&cass_dev->cdev, "sl mode set r1_link_partner to yes\n");
 		lgrp_config->options |= SL_LGRP_CONFIG_OPT_R1;
+		is_mode_changed = true;
+		break;
+	}
+
+	cxidev_dbg(&cass_dev->cdev, "sl mode set (ald = %u)\n",
+		   !!(link_info->flags & CXI_ETH_PF_ALD));
+	switch (link_info->flags & CXI_ETH_PF_ALD) {
+	case 0:
+		if (!(link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE))
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set ald to no\n");
+		link_config->options &= ~SL_LINK_CONFIG_OPT_ALD_ENABLE;
+		is_mode_changed = true;
+		break;
+	case CXI_ETH_PF_ALD:
+		if (link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE)
+			break;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set ald to yes\n");
+		link_config->options |= SL_LINK_CONFIG_OPT_ALD_ENABLE;
 		is_mode_changed = true;
 		break;
 	}

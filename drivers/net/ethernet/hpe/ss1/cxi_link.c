@@ -132,19 +132,6 @@ void cxi_link_ignore_media_error(struct cxi_dev *cxi_dev, bool ignore)
 }
 EXPORT_SYMBOL(cxi_link_ignore_media_error);
 
-void cxi_link_auto_lane_degrade(struct cxi_dev *cxi_dev, bool enable)
-{
-       struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
-
-       cxidev_dbg(&hw->cdev, "auto lane degrade\n");
-
-       if (enable)
-               hw->sl.link_config.options |= SL_LINK_CONFIG_OPT_ALD_ENABLE;
-       else
-               hw->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_ALD_ENABLE;
-}
-EXPORT_SYMBOL(cxi_link_auto_lane_degrade);
-
 void cxi_pml_recovery_set(struct cxi_dev *cxi_dev, bool set)
 {
 	struct cass_dev *hw = container_of(cxi_dev, struct cass_dev, cdev);
