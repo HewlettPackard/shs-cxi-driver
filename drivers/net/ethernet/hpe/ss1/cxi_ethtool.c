@@ -679,14 +679,11 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
         }
 
        if (changes & CXI_ETH_PF_ALD) {
-                if (flags & CXI_ETH_PF_ALD) {
+                if (flags & CXI_ETH_PF_ALD)
                         dev->priv_flags |= CXI_ETH_PF_ALD;
-                        cxi_link_auto_lane_degrade(dev->cxi_dev, true);
-                } else {
-                        dev->priv_flags &= ~CXI_ETH_PF_ALD;
-                        cxi_link_auto_lane_degrade(dev->cxi_dev, false);
-                }
-        }
+                else
+			dev->priv_flags &= ~CXI_ETH_PF_ALD;
+       }
 
        if (changes & CXI_ETH_PF_LOS_LOL_HIDE) {
                 if (flags & CXI_ETH_PF_LOS_LOL_HIDE) {
