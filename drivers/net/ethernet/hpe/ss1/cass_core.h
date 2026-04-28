@@ -180,7 +180,8 @@ static inline void pci_disable_pcie_error_reporting(void *p) {}
 #endif
 
 /* SR-IOV requires VFIO with KVM support enabled and kernel >= 5.19 */
-#if !defined(CONFIG_KVM_VFIO) || LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0)
+#if !defined(CONFIG_KVM_VFIO) || LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0) && \
+	!(defined(CONFIG_SUSE_VERSION) && CONFIG_SUSE_VERSION >= 15 && CONFIG_SUSE_PATCHLEVEL >= 5)
 #define CXI_DISABLE_SRIOV
 #endif
 
