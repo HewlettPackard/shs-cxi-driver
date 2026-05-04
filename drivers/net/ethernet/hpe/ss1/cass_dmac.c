@@ -498,7 +498,9 @@ int cass_dmac_init(struct cass_dev *hw)
 	hw->dmac.cpl_desc = dma_alloc_coherent(dma_dev, sizeof(*hw->dmac.cpl_desc),
 					       &hw->dmac.cpl_desc_dma_addr,
 					       GFP_KERNEL);
-	memset(hw->dmac.cpl_desc, 0, sizeof(*hw->dmac.cpl_desc));
+	if (!hw->dmac.cpl_desc)
+		return -ENOMEM;
+
 	dmac_cpl.address = hw->dmac.cpl_desc_dma_addr >> 3;
 	cass_write(hw, C_PI_CFG_DMAC_CPL_ADDR, &dmac_cpl, sizeof(dmac_cpl));
 
@@ -545,6 +547,8 @@ __cass_dmac_init_0:
 	mutex_destroy(&hw->dmac.lock);
 	dmac_cpl.address = 0;
 	cass_write(hw, C_PI_CFG_DMAC_CPL_ADDR, &dmac_cpl, sizeof(dmac_cpl));
+	dma_free_coherent(dma_dev, sizeof(*hw->dmac.cpl_desc),
+			  hw->dmac.cpl_desc, hw->dmac.cpl_desc_dma_addr);
 
 	return retval;
 }
