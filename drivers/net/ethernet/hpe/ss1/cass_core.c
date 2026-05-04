@@ -1222,8 +1222,10 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 						     C_MST_DBG_MST_TABLE_SIZE,
 						     &hw->mst_entries_dma_addr,
 						     GFP_KERNEL);
-		if (!hw->mst_entries)
+		if (!hw->mst_entries) {
+			rc = -ENOMEM;
 			goto cass_dmac_fini;
+		}
 
 		rc = cxi_dmac_desc_set_add(&hw->cdev, hw->dmac_pt_id,
 					   hw->mst_entries_dma_addr,
