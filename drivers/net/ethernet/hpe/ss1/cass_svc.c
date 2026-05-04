@@ -1110,6 +1110,9 @@ static void add_rgroup_ac_entry_to_svc(struct cxi_svc_desc *desc,
 	if (rc && rc != -ENOSPC)
 		return;
 
+	if (!num_ids)
+		return;
+
 	ac_entry_ids = kmalloc_array(num_ids, sizeof(*ac_entry_ids),
 				     GFP_ATOMIC);
 	if (!ac_entry_ids)
