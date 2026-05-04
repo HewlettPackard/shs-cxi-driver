@@ -422,9 +422,9 @@ static void rgroup_init(struct cxi_dev *dev,
 	int i;
 
 	for (i = 0; i < C_PE_COUNT; i++)
-		rgroup->pools.le_pool_id[i] = -1;
+		rgroup->pools.le_pool_id[i] = DEFAULT_LE_POOL_ID;
 
-	rgroup->pools.tle_pool_id = -1;
+	rgroup->pools.tle_pool_id = DEFAULT_TLE_POOL_ID;
 	rgroup->attr.lnis_per_rgid = CXI_DEFAULT_LNIS_PER_RGID;
 
 	if (attr)
