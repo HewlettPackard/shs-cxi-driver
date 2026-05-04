@@ -1391,6 +1391,9 @@ void hw_cleanup(struct cxi_eth *dev)
 	kfree(dev->uc_mc_filters);
 	dev->uc_mc_filters = NULL;
 	dev->num_uc_mc_filters = 0;
+	dev->bcast_active = false;
+	dev->promisc_active = false;
+	dev->all_mcast_active = false;
 
 	for (i = 0; i < dev->cur_txqs; i++)
 		free_tx_queue(&dev->txqs[i]);
