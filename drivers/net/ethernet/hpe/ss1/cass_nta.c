@@ -1515,7 +1515,7 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 	int npages = m_opts->va_len >> PAGE_SHIFT;
 	struct scatterlist *sg;
 
-	pages = kvmalloc_array(npages, sizeof(pages), GFP_KERNEL);
+	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
