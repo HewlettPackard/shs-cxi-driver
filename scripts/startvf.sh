@@ -1,16 +1,30 @@
 #!/bin/bash
 
-# Start a VM bound to a VF.
+# Start a VM on the first available VF.
 #
-# Environment variables CXI_DEVICE and CXI_VF control the PF device, and VF
-# index to use. Defaults are cxi0 and 0.
+# Scans VFs on CXI_DEVICE and claims the first one not already bound to
+# vfio-pci (i.e. not yet passed to a VM). A lock file serializes concurrent
+# invocations so that two instances cannot claim the same VF.
+#
+# Usage: start_vm.sh [vf_index]
+#
+# Arguments:
+#   vf_index        Optional VF index to use. If omitted, the first available
+#                   VF is selected automatically.
+#
+# Environment variables:
+#   CXI_DEVICE      PF device to use. Default: cxi0
+#   VM_INIT_SCRIPT  Init script to run inside the VM. Default: ./startvf-setup.sh
+#   KDIR            If set, boot the kernel from this directory instead of the
+#                   installed kernel.
+#   TESTING         Set to 1 to mount the tests/tmptests directory into the VM.
 
-DIR=$(dirname $(realpath "$0"))
-cd $DIR
+DIR=$(dirname "$(realpath "$0")")
+cd "$DIR"
 
-VM_INIT_SCRIPT=${VM_INIT_SCRIPT:='./startvm-setup.sh'}
+REQUESTED_VF=${1:-}
+VM_INIT_SCRIPT=${VM_INIT_SCRIPT:='./startvf-setup.sh'}
 CXI_DEVICE=${CXI_DEVICE:='cxi0'}
-CXI_VF=${CXI_VF:=0}
 
 . ../tests/framework.sh
 
@@ -23,28 +37,12 @@ modprobe vhost_vsock 2>/dev/null || echo "Warning: Could not load vhost_vsock mo
 # w/ Intel IOMMU. Intremap on requires kernel-irqchip=off OR kernel-irqchip=split
 QEMU_OPTS="--qemu-opts -machine q35,kernel-irqchip=split -global q35-pcihost.pci-hole64-size=40G -device intel-iommu,intremap=on,caching-mode=on $CCN_OPTS"
 
-# Example to create a VM with 2 numa nodes with one cpu each
-# QEMU_OPTS="$QEMU_OPTS -smp cpus=2 -object memory-backend-ram,size=512M,id=m0 -object memory-backend-ram,size=512M,id=m1 -numa node,memdev=m0,cpus=0,nodeid=0 -numa node,memdev=m1,cpus=1,nodeid=1"
-
-# Example to add a VM with 9 numa nodes, including 7 without a cpu.
-#QEMU_OPTS="$QEMU_OPTS -smp cpus=2
-#	-object memory-backend-ram,size=1G,id=m0 -numa node,memdev=m0,cpus=0,nodeid=0
-#	-object memory-backend-ram,size=128M,id=m1 -numa node,memdev=m1,nodeid=1
-#	-object memory-backend-ram,size=128M,id=m2 -numa node,memdev=m2,nodeid=2
-#	-object memory-backend-ram,size=128M,id=m3 -numa node,memdev=m3,nodeid=3
-#	-object memory-backend-ram,size=128M,id=m4 -numa node,memdev=m4,nodeid=4
-#	-object memory-backend-ram,size=128M,id=m5 -numa node,memdev=m5,nodeid=5
-#	-object memory-backend-ram,size=128M,id=m6 -numa node,memdev=m6,cpus=1,nodeid=6
-#	-object memory-backend-ram,size=128M,id=m7 -numa node,memdev=m7,nodeid=7
-#	-object memory-backend-ram,size=128M,id=m8 -numa node,memdev=m8,nodeid=8"
-
 KERN_OPTS="--kopt iommu=pt --kopt intel_iommu=on --kopt iomem=relaxed"
 KERN_OPTS="$KERN_OPTS --kopt transparent_hugepage=never --kopt hugepagesz=1g --kopt default_hugepagesz=1g --kopt hugepages=1"
 
 # For some reason the euler image needs a ton of RAM to boot
 QEMU_OPTS="$QEMU_OPTS -m 10G"
 
-# Make sure we have enough VFs to satisfy the request
 if [ ! -d "/sys/class/cxi/${CXI_DEVICE}" ]; then
 	echo "Error: Device ${CXI_DEVICE} not found" >&2
 	exit 1
@@ -58,16 +56,72 @@ fi
 
 NUM_VFS=$(cat "/sys/class/cxi/${CXI_DEVICE}/device/sriov_numvfs")
 if [[ $NUM_VFS -eq 0 ]]; then
-	echo $(($CXI_VF + 1)) > "/sys/class/cxi/${CXI_DEVICE}/device/sriov_numvfs"
-	NUM_VFS=$(cat "/sys/class/cxi/${CXI_DEVICE}/device/sriov_numvfs")
-fi
-if [[ $NUM_VFS -le $CXI_VF ]]; then
-	echo "Error: Requested VF $CXI_VF but only $NUM_VFS VFs available" >&2
+	echo "Error: No VFs provisioned on ${CXI_DEVICE}. Run setup_vfs.sh first." >&2
 	exit 1
 fi
 
+# Use a lock file to serialise concurrent invocations so two instances cannot
+# claim the same VF.
+LOCK_FILE="/tmp/cxi_vf_${CXI_DEVICE}.lock"
+exec 9>"$LOCK_FILE"
+flock 9
+
+# Find the VF to use: explicit index if provided, else first available.
+CXI_VF=-1
+if [[ -n "$REQUESTED_VF" ]]; then
+	if ! [[ "$REQUESTED_VF" =~ ^[0-9]+$ ]]; then
+		echo "Error: vf_index must be a non-negative integer" >&2
+		exit 1
+	fi
+	if [[ $REQUESTED_VF -ge $NUM_VFS ]]; then
+		echo "Error: Requested VF $REQUESTED_VF but only $NUM_VFS VFs available" >&2
+		exit 1
+	fi
+	VF_PATH="/sys/class/cxi/${CXI_DEVICE}/device/virtfn${REQUESTED_VF}"
+	if [ ! -e "$VF_PATH" ]; then
+		echo "Error: VF $REQUESTED_VF symlink not found at $VF_PATH" >&2
+		exit 1
+	fi
+	if [ -d "${VF_PATH}/driver" ]; then
+		DRIVER=$(basename "$(readlink "${VF_PATH}/driver")")
+		if [ "$DRIVER" = "vfio-pci" ]; then
+			echo "Error: Requested VF $REQUESTED_VF is already in use (vfio-pci)" >&2
+			exit 1
+		fi
+	fi
+	CXI_VF=$REQUESTED_VF
+else
+	# Find the first VF not already bound to vfio-pci.
+	for ((i=0; i<NUM_VFS; i++)); do
+		VF_PATH="/sys/class/cxi/${CXI_DEVICE}/device/virtfn${i}"
+		if [ ! -e "$VF_PATH" ]; then
+			echo "  VF $i: symlink not found at $VF_PATH" >&2
+			continue
+		fi
+		if [ -d "${VF_PATH}/driver" ]; then
+			DRIVER=$(basename "$(readlink "${VF_PATH}/driver")")
+			if [ "$DRIVER" = "vfio-pci" ]; then
+				echo "  VF $i: in use (vfio-pci)" >&2
+				continue
+			fi
+			echo "  VF $i: available (driver=$DRIVER)" >&2
+		else
+			echo "  VF $i: available (no driver)" >&2
+		fi
+		CXI_VF=$i
+		break
+	done
+fi
+
+if [[ $CXI_VF -eq -1 ]]; then
+	echo "Error: No available VFs on ${CXI_DEVICE} (all $NUM_VFS are in use or missing)" >&2
+	exit 1
+fi
+
+echo "Claiming VF $CXI_VF on ${CXI_DEVICE}" >&2
+
 # Get VF info
-PCIFN=$(basename $(readlink "/sys/class/cxi/${CXI_DEVICE}/device/virtfn${CXI_VF}"))
+PCIFN=$(basename "$(readlink "/sys/class/cxi/${CXI_DEVICE}/device/virtfn${CXI_VF}")")
 VENDOR=$(cat "/sys/class/cxi/${CXI_DEVICE}/device/virtfn${CXI_VF}/vendor")
 DEVICE=$(cat "/sys/class/cxi/${CXI_DEVICE}/device/virtfn${CXI_VF}/device")
 if [ -d "/sys/class/cxi/${CXI_DEVICE}/device/virtfn${CXI_VF}/driver" ]; then
@@ -77,19 +131,21 @@ else
 fi
 
 # Unbind VF from cxi core driver.
-if [ ! -z "$DRIVER" ]; then
-	if [ $(basename "$DRIVER") != "cxi_ss1" ]; then
+if [ -n "$DRIVER" ]; then
+	if [ "$(basename "$DRIVER")" != "cxi_ss1" ]; then
 		echo "WARNING: VF $CXI_VF was bound to $(basename "$DRIVER") and not cxi_ss1" >&2
 	fi
 	echo "$PCIFN" > "$DRIVER/unbind"
 fi
 
-# Bind the VF to vfio driver
+# Bind the VF to vfio driver. Registering the device ID may fail silently if
+# already registered.
 modprobe vfio_pci
-# No way to tell if the device ID is already registered; suppress stderr so that
-# the command fails silently if that's the case.
 echo "${VENDOR##*x}" "${DEVICE##*x}" > /sys/bus/pci/drivers/vfio-pci/new_id 2>/dev/null
 echo "$PCIFN" > /sys/bus/pci/drivers/vfio-pci/bind 2>/dev/null
+
+# VF is now claimed — release the lock so other instances can claim a different VF.
+flock -u 9
 
 # Tell qemu to bind the VF
 QEMU_OPTS="$QEMU_OPTS -device vfio-pci,host=$PCIFN"
@@ -102,25 +158,19 @@ PATH=$QEMU_DIR:$VIRTME_DIR:/sbin:$PATH
 VIRTME_OPTS="--rodir=/lib/firmware=$(pwd)/../../hms-artifacts"
 
 if [[ $TESTING -eq 1 ]]; then
-	# Put additional options here...
 	VIRTME_OPTS="--rwdir=$(pwd)/../tests/tmptests ${VIRTME_OPTS}"
 fi
 
 if [[ -v KDIR ]]; then
-    KERNEL="--kdir $KDIR --mods=auto"
+	KERNEL="--kdir $KDIR --mods=auto"
 else
-    KERNEL="--installed-kernel"
+	KERNEL="--installed-kernel"
 fi
 
 # Preserve terminal settings in case the VM or qemu is killed.
-# Otherwise the terminal is irresponsive
 TTY_STATE=$(stty -g 2>/dev/null || true)
 trap 'if [[ -n "$TTY_STATE" ]]; then stty "$TTY_STATE" 2>/dev/null || true; fi' EXIT
 
-# Start the VM, execute the script inside, and exit ...
-#virtme-run --installed-kernel --pwd --script-sh $VM_INIT_SCRIPT $KERN_OPTS $QEMU_OPTS
-
-# ... or start a VM and execute the script but don't exit
 virtme-run $KERNEL --pwd --init-sh $VM_INIT_SCRIPT $VIRTME_OPTS $KERN_OPTS $QEMU_OPTS
 VM_EXIT=$?
 
@@ -129,9 +179,6 @@ if [[ $VM_EXIT -ge 128 ]]; then
 	echo "Info: VM terminated by signal $((VM_EXIT - 128))" >&2
 	exit $VM_EXIT
 fi
-
-# ... or just start a clean VM
-#virtme-run --installed-kernel --pwd $KERN_OPTS $QEMU_OPTS
 
 # Restore VF to host
 if [ -e /sys/bus/pci/drivers/vfio-pci/unbind ]; then
