@@ -376,6 +376,10 @@ nospace:
 		if (!lim.reserved && !lim.max)
 			continue;
 
+		/* Do not reserve an LE pool if reserved is 0 */
+		if (!lim.reserved && i == CXI_RSRC_TYPE_LE)
+			continue;
+
 		rc = add_resource(rgroup, i, &lim);
 		if (rc) {
 			pr_debug("resource %s add_resource failed %d\n",

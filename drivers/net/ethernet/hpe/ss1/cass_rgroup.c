@@ -108,8 +108,12 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		int le_pool_id;
 		int pe = resource->type - CXI_RESOURCE_PE0_LE;
 
+		/* DEFAULT_LE_POOL_ID is set up for the default service
+		 * but is shared by any process with a service that does
+		 * not explicitly reserve LEs (res=0).
+		 */
 		le_pool_id = ida_alloc_range(&hw->le_pool_ids[pe],
-					     DEFAULT_LE_POOL_ID,
+					     DEFAULT_LE_POOL_ID + 1,
 					     CASS_NUM_LE_POOLS - 1, GFP_NOWAIT);
 		if (le_pool_id < 0) {
 			pr_debug("%s pool unavailable.\n",
@@ -117,6 +121,9 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 			rc = -EBADR;
 			goto unlock;
 		}
+
+		if (!pe)
+			pr_debug("allocated le pool %d\n", le_pool_id);
 
 		rgroup->pools.le_pool_id[pe] = le_pool_id;
 	} else if (resource->type == CXI_RESOURCE_TLE) {
@@ -133,6 +140,7 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 			goto unlock;
 		}
 
+		pr_debug("allocated tle pool %d\n", tle_pool_id);
 		rgroup->pools.tle_pool_id = tle_pool_id;
 	}
 
