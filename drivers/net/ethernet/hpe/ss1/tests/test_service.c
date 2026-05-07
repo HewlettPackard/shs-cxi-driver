@@ -665,8 +665,8 @@ static int test_le_full(struct cxi_dev *dev)
 	};
 
 	/* get the next le pool id */
-	rc = ida_simple_get(&hw->le_pool_ids[0], DEFAULT_LE_POOL_ID,
-			    CASS_NUM_LE_POOLS, GFP_NOWAIT);
+	rc = ida_alloc_range(&hw->le_pool_ids[0], DEFAULT_LE_POOL_ID + 1,
+			     CASS_NUM_LE_POOLS - 1, GFP_NOWAIT);
 	if (rc < 0) {
 		test_err("ida_simple_get failed %d\n", rc);
 		goto err;
