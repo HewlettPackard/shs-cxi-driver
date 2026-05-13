@@ -1215,9 +1215,11 @@ int cass_sl_link_config(struct cass_dev *cass_dev)
 
 bool cass_sl_is_link_up(struct cass_dev *cass_dev)
 {
-	cxidev_dbg(&cass_dev->cdev, "%s NOT IMPLEMENTED!\n", __func__);
+	enum cass_link_status state = cass_link_get_state(cass_dev);
 
-	return 0;
+	cxidev_dbg(&cass_dev->cdev, "sl is link up (state = %u)\n", state);
+
+	return state == CASS_LINK_STATUS_UP;
 }
 
 int cass_sl_link_up(struct cass_dev *cass_dev)
