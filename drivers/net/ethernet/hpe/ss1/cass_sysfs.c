@@ -35,6 +35,9 @@ static ssize_t nid_store(struct kobject *kobj, struct kobj_attribute *attr,
 					   properties_kobj);
 	u32 nid;
 
+	if (!hw->cdev.is_physfn)
+		return -EPERM;
+
 	if (kstrtoint(buf, 0, &nid) < 0)
 		return -EINVAL;
 
@@ -805,23 +808,21 @@ int create_sysfs_properties(struct cass_dev *hw)
 {
 	int rc;
 
-	if (!hw->cdev.is_physfn)
-		return 0;
-
 	rc = kobject_init_and_add(&hw->properties_kobj, &properties_info,
 				  &hw->cdev.pdev->dev.kobj,
 				  "properties");
 	if (rc)
 		goto put_properties;
 
+	/* VFs only expose properties; destroy_sysfs_properties() always puts it. */
+	if (!hw->cdev.is_physfn)
+		return 0;
+
 	rc = kobject_init_and_add(&hw->link_restarts_kobj, &link_restarts_info,
 				  &hw->cdev.pdev->dev.kobj,
 				  "link_restarts");
 	if (rc)
 		goto put_link_restarts;
-
-	if (!hw->cdev.is_physfn)
-		return 0;
 
 	rc = kobject_init_and_add(&hw->fru_kobj, &fru_info,
 				  &hw->cdev.pdev->dev.kobj,
@@ -860,13 +861,13 @@ put_properties:
 
 void destroy_sysfs_properties(struct cass_dev *hw)
 {
-	if (!hw->cdev.is_physfn)
-		return;
+	if (hw->cdev.is_physfn) {
+		delete_sensors(hw);
+		cass_destroy_tc_sysfs(hw);
+		sysfs_remove_group(&hw->cdev.pdev->dev.kobj, &cxi_dev_settings_group);
+		kobject_put(&hw->fru_kobj);
+		kobject_put(&hw->link_restarts_kobj);
+	}
 
-	delete_sensors(hw);
-	cass_destroy_tc_sysfs(hw);
-	sysfs_remove_group(&hw->cdev.pdev->dev.kobj, &cxi_dev_settings_group);
-	kobject_put(&hw->fru_kobj);
-	kobject_put(&hw->link_restarts_kobj);
 	kobject_put(&hw->properties_kobj);
 }

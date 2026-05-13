@@ -480,6 +480,51 @@ static void program_nid(struct cass_dev *hw, u32 nid)
 	cxi_send_async_event(cdev, CXI_EVENT_NID_CHANGED);
 }
 
+/**
+ * cxi_get_properties_vf - Retrieve device properties from the PF.
+ * @cdev: CXI device
+ * @prop: Properties output pointer
+ */
+static int cxi_get_properties_vf(struct cxi_dev *cdev,
+				 struct cxi_properties_info *prop)
+{
+	const struct cxi_get_dev_properties_cmd cmd = {
+		.op = CXI_OP_GET_DEV_PROPERTIES,
+	};
+	size_t reply_len = sizeof(*prop);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), prop, &reply_len);
+	if (rc != 0) {
+		cxidev_err(cdev, "failed to get dev properties from PF: %d\n", rc);
+		return rc;
+	}
+
+	if (reply_len != sizeof(*prop)) {
+		cxidev_err(cdev, "unexpected reply length from PF: %zu (expected %zu)\n",
+			   reply_len, sizeof(*prop));
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/**
+ * cxi_get_dev_properties - Get current device properties.
+ * @cdev: CXI device
+ * @prop: Properties output pointer
+ */
+int cxi_get_dev_properties(struct cxi_dev *cdev, struct cxi_properties_info *prop)
+{
+	if (!cdev->is_physfn)
+		return cxi_get_properties_vf(cdev, prop);
+
+	*prop = cdev->prop;
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_get_dev_properties);
+
 void cxi_set_nid(struct cxi_dev *cdev, u32 nid)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
@@ -1214,32 +1259,13 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	if (!is_physfn) {
-		struct cxi_get_dev_properties_cmd cmd = {
-			.op = CXI_OP_GET_DEV_PROPERTIES,
-		};
-		struct cxi_properties_info resp;
-		size_t reply_len = sizeof(resp);
-
 		rc = cass_vf_init(hw);
 		if (rc)
 			goto configfs_fini;
 
-		/* Retrieve the device properties */
-		rc = cxi_send_msg_to_pf(&hw->cdev, &cmd, sizeof(cmd),
-					&resp, &reply_len);
-		if (rc != 0) {
-			cxidev_err(&hw->cdev, "BAD: Reply has return code %d\n", rc);
+		rc = cxi_get_properties_vf(&hw->cdev, &hw->cdev.prop);
+		if (rc)
 			goto vf_fini;
-		} else if (reply_len != sizeof(resp)) {
-			cxidev_err(&hw->cdev,
-				   "BAD: Reply has unexpected length %zu\n",
-				   reply_len);
-			goto vf_fini;
-		} else {
-			cxidev_dbg(&hw->cdev, "Reply is valid\n");
-
-			hw->cdev.prop = resp;
-		}
 	}
 
 	/* Export device information. */

@@ -3223,14 +3223,19 @@ static int cxi_user_serdes_op(struct user_client *client,
 	return rc;
 }
 
-static int cxi_get_dev_properties(struct user_client *client,
+static int cxi_user_get_dev_properties(struct user_client *client,
 				  const void *cmd_in, size_t cmd_len,
 				  void **resp_out, size_t resp_buf_size,
 				  size_t *resp_out_len)
 {
-	const struct cxi_properties_info *info = &client->ucxi->dev->prop;
+	struct cxi_properties_info info;
+	int rc;
 
-	return copy_response(client, info, sizeof(*info), resp_out, resp_buf_size,
+	rc = cxi_get_dev_properties(client->ucxi->dev, &info);
+	if (rc)
+		return rc;
+
+	return copy_response(client, &info, sizeof(info), resp_out, resp_buf_size,
 			     resp_out_len);
 }
 
@@ -3660,7 +3665,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_GET_DEV_PROPERTIES] = {
 		.req_size   = sizeof(struct cxi_get_dev_properties_cmd),
 		.name       = "GET_DEV_PROPERTIES",
-		.handler    = cxi_get_dev_properties, },
+		.handler    = cxi_user_get_dev_properties, },
 	[CXI_OP_EQ_ADJUST_RESERVED_FC] = {
 		.req_size   = sizeof(struct cxi_eq_adjust_reserved_fc_cmd),
 		.name       = "EQ_ADJUST_RESERVED_FC",

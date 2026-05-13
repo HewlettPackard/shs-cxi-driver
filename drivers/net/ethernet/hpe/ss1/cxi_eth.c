@@ -279,6 +279,8 @@ static void remove_device(struct cxi_dev *cxi_dev)
 static void async_event(struct cxi_dev *cxi_dev, enum cxi_async_event event)
 {
 	struct cxi_eth *dev;
+	int mtu;
+	int rc;
 
 	mutex_lock(&dev_list_mutex);
 	dev = find_eth_device(cxi_dev);
@@ -298,10 +300,19 @@ static void async_event(struct cxi_dev *cxi_dev, enum cxi_async_event event)
 		netif_carrier_off(dev->ndev);
 		break;
 
+	case CXI_EVENT_NID_CHANGED:
+		if (!cxi_dev->is_physfn) {
+			rc = cxi_get_dev_properties(cxi_dev, &cxi_dev->prop);
+			if (rc)
+				netdev_err(dev->ndev,
+					   "NID_CHANGED: failed to update properties from PF: %d\n",
+					   rc);
+		}
+		break;
+
 	case CXI_EVENT_MTU_CHANGE:
 		if (!cxi_dev->is_physfn) {
-			int mtu = cxi_get_max_eth_rxsize(cxi_dev) - VLAN_ETH_HLEN;
-
+			mtu = cxi_get_max_eth_rxsize(cxi_dev) - VLAN_ETH_HLEN;
 			if (mtu < 0) {
 				netdev_err(dev->ndev,
 					   "MTU_CHANGE: failed to get MTU from PF: %d\n",
