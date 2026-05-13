@@ -997,8 +997,7 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.link_config.pml_rec_rate_limit_max_time_ms    = cass_sl_pml_rec_rate_limit_max_time_ms;
 	cass_dev->sl.link_config.pml_rec_rate_limit_window_size_ms = cass_sl_pml_rec_rate_limit_win_size_ms;
 	cass_dev->sl.link_config.pause_map                         = 0;
-	cass_dev->sl.link_config.options                           = SL_LINK_CONFIG_OPT_PML_REC_ENABLE |
-								     SL_LINK_CONFIG_OPT_ALD_ENABLE;
+	cass_dev->sl.link_config.options                           = 0;
 	cass_dev->sl.link_config.hpe_map                           = SL_LINK_CONFIG_HPE_C2;
 	cass_dev->sl.link_config.hpe_map                          |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 	if (cass_dev->sl.enable_llr)
