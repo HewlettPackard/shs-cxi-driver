@@ -945,6 +945,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		hw->vf_eth_cfg[i].trusted    = false;
 		hw->vf_eth_cfg[i].own_mac    = 0;
 		hw->vf_eth_cfg[i].spoof_chk  = true;
+		hw->vf_eth_cfg[i].link_state = IFLA_VF_LINK_STATE_AUTO;
 	}
 
 	mutex_init(&hw->err_flg_mutex);

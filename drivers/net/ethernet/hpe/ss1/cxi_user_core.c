@@ -3402,7 +3402,9 @@ static int cxi_user_eth_link_state_get(struct user_client *client,
 	struct cxi_eth_get_link_state_resp resp = {};
 	int rc;
 
-	rc = cxi_link_state_get(client->ucxi->dev, &link_up);
+	rc = cxi_link_state_get_internal(client->ucxi->dev, &link_up,
+					 client->is_vf, client->vf_num);
+
 	resp.link_up = link_up;
 
 	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,

@@ -11,6 +11,7 @@
 #include "cass_core.h"
 #include "cass_sbl.h"
 #include "cass_sl.h"
+#include "cxi_internal.h"
 
 static const struct cxi_link_ops cxi_link_ops_sbl = {
 	.init = cass_sbl_init,
@@ -202,3 +203,78 @@ int cxi_link_state_get(struct cxi_dev *cdev, bool *up)
 	return 0;
 }
 EXPORT_SYMBOL(cxi_link_state_get);
+
+/**
+ * cxi_link_state_get_internal() - Query the current link state
+ *
+ * When @vf_en is true, applies the per-VF link-state override (set via
+ * ndo_set_vf_link_state) on top of the physical link state.
+ *
+ * @cdev: the device
+ * @up: set to true if the (effective) link is up, false otherwise
+ * @vf_en: true if a per-VF override should be considered
+ * @vf_num: VF index (0-based); ignored when @vf_en is false
+ *
+ * Return: 0 on success, negative error code on failure.
+ */
+int cxi_link_state_get_internal(struct cxi_dev *cdev, bool *up,
+				bool vf_en, u8 vf_num)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	u32 link_state;
+	int rc;
+
+	rc = cxi_link_state_get(cdev, up);
+	if (rc || !vf_en)
+		return rc;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	link_state = hw->vf_eth_cfg[vf_num].link_state;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	if (link_state == IFLA_VF_LINK_STATE_ENABLE)
+		*up = true;
+	else if (link_state == IFLA_VF_LINK_STATE_DISABLE)
+		*up = false;
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_link_state_get_internal);
+
+/**
+ * cxi_notify_vfs_link_event() - Forward a link-state event to connected VFs
+ *
+ * @cdev: the PF device
+ * @event: CXI_EVENT_LINK_UP or CXI_EVENT_LINK_DOWN
+ *
+ * Skips VFs whose effective link state is fixed by a non-AUTO override, since
+ * their carrier state is unaffected by physical link changes.
+ */
+int cxi_notify_vfs_link_event(struct cxi_dev *cdev, enum cxi_async_event event)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	int i;
+	int rc;
+	int first_error = 0;
+
+	if (!cdev->is_physfn)
+		return -EINVAL;
+
+	for (i = 0; i < hw->num_vfs; i++) {
+		u32 override;
+
+		mutex_lock(&hw->rmu_eth_lock);
+		override = hw->vf_eth_cfg[i].link_state;
+		mutex_unlock(&hw->rmu_eth_lock);
+
+		if (override != IFLA_VF_LINK_STATE_AUTO)
+			continue;
+
+		rc = cxi_notify_vf_async_event(cdev, i, event);
+		if (rc && !first_error)
+			first_error = rc;
+	}
+
+	return first_error;
+}
+EXPORT_SYMBOL(cxi_notify_vfs_link_event);

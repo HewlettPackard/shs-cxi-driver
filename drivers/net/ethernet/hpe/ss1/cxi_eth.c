@@ -108,6 +108,7 @@ static const struct net_device_ops cxi_eth_netdev_ops = {
 	.ndo_get_vf_config = cxi_eth_ndo_get_vf_config,
 	.ndo_set_vf_trust = cxi_eth_ndo_set_vf_trust,
 	.ndo_set_vf_spoofchk = cxi_eth_ndo_set_vf_spoofchk,
+	.ndo_set_vf_link_state = cxi_eth_ndo_set_vf_link_state,
 };
 
 static const struct net_device_ops cxi_eth_netdev_ops_vf = {
@@ -314,11 +315,15 @@ static void async_event(struct cxi_dev *cxi_dev, enum cxi_async_event event)
 	switch (event) {
 	case CXI_EVENT_LINK_UP:
 		netif_carrier_on(dev->ndev);
-		break;
+		if (cxi_dev->is_physfn)
+			cxi_notify_vfs_link_event(cxi_dev, event);
+		return;
 
 	case CXI_EVENT_LINK_DOWN:
 		netif_carrier_off(dev->ndev);
-		break;
+		if (cxi_dev->is_physfn)
+			cxi_notify_vfs_link_event(cxi_dev, event);
+		return;
 
 	case CXI_EVENT_NID_CHANGED:
 		if (!cxi_dev->is_physfn) {

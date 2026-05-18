@@ -83,6 +83,13 @@ int cass_vf_get_token(struct cxi_dev *hw, int vf_idx, unsigned int *token)
 }
 EXPORT_SYMBOL(cass_vf_get_token);
 
+int cxi_notify_vf_async_event(struct cxi_dev *cdev, int vf_idx,
+			      enum cxi_async_event event)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(cxi_notify_vf_async_event);
+
 int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
 {
 	return -EOPNOTSUPP;
@@ -1490,23 +1497,49 @@ int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 EXPORT_SYMBOL(cxi_send_msg_to_vf);
 
 /**
- * cxi_notify_vfs_async_event() - Forward an async event to all connected VFs
+ * cxi_notify_vf_async_event() - Forward an async event to a single VF
  *
  * @cdev: the PF device
+ * @vf_idx: VF index (0-based)
  * @event: the event to forward
- *
- * Packages @event into a generic ASYNC_EVENT notification and sends it to
- * every VF that has an active notification socket.  On the VF side the
- * notification handler calls cxi_send_async_event() on the VF's cdev,
- * dispatching it to all registered cxi_clients (e.g. cxi-eth).
  */
-int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
+int cxi_notify_vf_async_event(struct cxi_dev *cdev, int vf_idx,
+			      enum cxi_async_event event)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	const struct cass_vf_notif_async_event notif = {
 		.op    = CASS_VF_NOTIF_OP_ASYNC_EVENT,
 		.event = event,
 	};
+	int rc = 0;
+
+	mutex_lock(&hw->vfs[vf_idx].notif_lock);
+	if (hw->vfs[vf_idx].notif_sock) {
+		rc = cxi_vsock_async_send(cdev, hw->vfs[vf_idx].notif_sock,
+					  &notif, sizeof(notif));
+		if (rc)
+			cxidev_dbg(cdev, "vf %d: async event send failed: %d\n",
+				   vf_idx, rc);
+	}
+	mutex_unlock(&hw->vfs[vf_idx].notif_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(cxi_notify_vf_async_event);
+
+/**
+ * cxi_notify_vfs_async_event() - Forward an async event to all connected VFs
+ *
+ * @cdev: the PF device
+ * @event: the event to forward
+ *
+ * Sends @event to every VF that has an active notification socket, with no
+ * per-VF filtering.  Callers that need per-VF policy (e.g. link-state
+ * override) should use a dedicated helper instead.
+ */
+int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	int i;
 	int rc;
 	int first_error = 0;
@@ -1515,18 +1548,11 @@ int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event)
 		return -EINVAL;
 
 	for (i = 0; i < hw->num_vfs; i++) {
-		mutex_lock(&hw->vfs[i].notif_lock);
-		if (hw->vfs[i].notif_sock) {
-			rc = cxi_vsock_async_send(cdev, hw->vfs[i].notif_sock,
-						  &notif, sizeof(notif));
-			if (rc) {
-				cxidev_dbg(cdev, "vf %d: async event send failed: %d\n", i, rc);
-				if (!first_error)
-					first_error = rc;
-			}
-		}
-		mutex_unlock(&hw->vfs[i].notif_lock);
+		rc = cxi_notify_vf_async_event(cdev, i, event);
+		if (rc && !first_error)
+			first_error = rc;
 	}
+
 	return first_error;
 }
 EXPORT_SYMBOL(cxi_notify_vfs_async_event);

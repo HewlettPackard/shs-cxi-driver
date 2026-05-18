@@ -599,6 +599,8 @@ struct cxi_eth_vf_cfg {
 	bool trusted;
 	u64  own_mac;
 	bool spoof_chk;
+	/* Link state override: IFLA_VF_LINK_STATE_{AUTO,ENABLE,DISABLE} */
+	u32  link_state;
 };
 
 /* Private hardware data for Cassini. This is not seen by clients. */

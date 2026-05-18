@@ -411,6 +411,7 @@ int cxi_eth_ndo_get_vf_config(struct net_device *ndev, int vf,
 			      struct ifla_vf_info *ivi);
 int cxi_eth_ndo_set_vf_trust(struct net_device *ndev, int vf, bool setting);
 int cxi_eth_ndo_set_vf_spoofchk(struct net_device *ndev, int vf, bool setting);
+int cxi_eth_ndo_set_vf_link_state(struct net_device *ndev, int vf, int link_state);
 int cxi_eth_vf_set_trusted(struct cass_dev *hw, unsigned int vf_num, bool trusted);
 
 extern const struct ethtool_ops cxi_eth_ethtool_ops;

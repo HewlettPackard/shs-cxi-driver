@@ -459,7 +459,10 @@ int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req,
 int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 		       size_t req_len, void *rsp, size_t *rsp_len);
 int cxi_get_dev_properties(struct cxi_dev *cdev, struct cxi_properties_info *prop);
+int cxi_notify_vf_async_event(struct cxi_dev *cdev, int vf_idx,
+			      enum cxi_async_event event);
 int cxi_notify_vfs_async_event(struct cxi_dev *cdev, enum cxi_async_event event);
+int cxi_notify_vfs_link_event(struct cxi_dev *cdev, enum cxi_async_event event);
 
 int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size);
 int cxi_get_max_eth_rxsize(struct cxi_dev *cdev);

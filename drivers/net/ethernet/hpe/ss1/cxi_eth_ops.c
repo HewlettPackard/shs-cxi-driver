@@ -2615,6 +2615,7 @@ int cxi_eth_ndo_get_vf_config(struct net_device *ndev, int vf,
 	u64_to_ether_addr(hw->vf_eth_cfg[vf].own_mac, ivi->mac);
 	ivi->trusted = hw->vf_eth_cfg[vf].trusted;
 	ivi->spoofchk = hw->vf_eth_cfg[vf].spoof_chk;
+	ivi->linkstate = hw->vf_eth_cfg[vf].link_state;
 	mutex_unlock(&hw->rmu_eth_lock);
 
 	return 0;
@@ -2648,6 +2649,48 @@ int cxi_eth_ndo_set_vf_trust(struct net_device *ndev, int vf, bool setting)
 	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
 
 	return cxi_eth_vf_set_trusted(hw, vf, setting);
+}
+
+/**
+ * cxi_eth_ndo_set_vf_link_state() - Override link state seen by a VF
+ * @ndev:       PF net device
+ * @vf:         VF index (0-based)
+ * @link_state: IFLA_VF_LINK_STATE_{AUTO,ENABLE,DISABLE}
+ *
+ * Stores the per-VF link-state policy and notifies the VF (if connected)
+ * so it can update its carrier state.
+ *
+ * Return: 0 on success, -EINVAL if vf or link_state is out of range.
+ */
+int cxi_eth_ndo_set_vf_link_state(struct net_device *ndev, int vf, int link_state)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
+	enum cxi_async_event event;
+
+	if ((unsigned int)vf >= C_NUM_VFS)
+		return -EINVAL;
+
+	switch (link_state) {
+	case IFLA_VF_LINK_STATE_ENABLE:
+		event = CXI_EVENT_LINK_UP;
+		break;
+	case IFLA_VF_LINK_STATE_DISABLE:
+		event = CXI_EVENT_LINK_DOWN;
+		break;
+	case IFLA_VF_LINK_STATE_AUTO:
+		event = hw->link_ops->is_link_up(hw) ? CXI_EVENT_LINK_UP
+						      : CXI_EVENT_LINK_DOWN;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&hw->rmu_eth_lock);
+	hw->vf_eth_cfg[vf].link_state = link_state;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	return cxi_notify_vf_async_event(&hw->cdev, vf, event);
 }
 
 /**
