@@ -612,6 +612,7 @@ struct cass_dev {
 	struct socket *vf_notif_sock;
 	struct task_struct *vf_listener;
 	struct task_struct *vf_notif_handler;
+	struct completion vf_notif_ready;
 	struct cass_vf vfs[C_NUM_VFS];
 	cxi_msg_relay_t msg_relay;
 	void *msg_relay_data;

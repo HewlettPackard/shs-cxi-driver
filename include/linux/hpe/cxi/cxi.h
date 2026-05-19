@@ -521,7 +521,7 @@ int cxi_sbus_op_reset(struct cxi_dev *cdev);
 int cxi_serdes_op(struct cxi_dev *cdev, u64 serdes_sel, u64 op, u64 data,
 		  int timeout, unsigned int flags, u16 *result);
 
-bool cxi_is_link_up(struct cxi_dev *cdev);
+int cxi_link_state_get(struct cxi_dev *cdev, bool *up);
 void cxi_sbl_disable_pml_recovery(struct cxi_dev *cdev, bool disable);
 
 int cxi_dmac_desc_set_alloc(struct cxi_dev *cdev, u16 num_descs,

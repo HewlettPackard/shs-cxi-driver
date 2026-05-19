@@ -155,13 +155,14 @@ void cxi_link_los_lol_hide(struct cxi_dev *cxi_dev, bool enable)
 EXPORT_SYMBOL(cxi_link_los_lol_hide);
 
 /**
- * cxi_is_link_up_vf() - Query the PF for the current link state
+ * cxi_link_state_get_vf() - Query the PF for the current link state (VF)
  *
  * @cdev: VF CXI device
+ * @up: set to true if the link is up, false otherwise
  *
- * Return: true if the link is up, false otherwise or on error.
+ * Return: 0 on success, negative error code on failure.
  */
-static bool cxi_is_link_up_vf(struct cxi_dev *cdev)
+static int cxi_link_state_get_vf(struct cxi_dev *cdev, bool *up)
 {
 	const struct cxi_eth_link_state_get_cmd cmd = {
 		.op = CXI_OP_ETH_LINK_STATE_GET,
@@ -171,26 +172,33 @@ static bool cxi_is_link_up_vf(struct cxi_dev *cdev)
 	int rc;
 
 	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
-	if (rc)
-		return false;
+	if (rc) {
+		cxidev_warn(cdev, "failed to query link state from PF: %d\n", rc);
+		return rc;
+	}
 
-	return !!resp.link_up;
+	*up = resp.link_up;
+
+	return 0;
 }
 
 /**
- * cxi_is_link_up() - Returns whether the link is up or down
+ * cxi_link_state_get() - Query the current link state
  *
  * @cdev: the device
+ * @up: set to true if the link is up, false otherwise
  *
- * Return: true if the link is up, false otherwise.
+ * Return: 0 on success, negative error code on failure.
  */
-bool cxi_is_link_up(struct cxi_dev *cdev)
+int cxi_link_state_get(struct cxi_dev *cdev, bool *up)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 
 	if (!cdev->is_physfn)
-		return cxi_is_link_up_vf(cdev);
+		return cxi_link_state_get_vf(cdev, up);
 
-	return hw->link_ops->is_link_up(hw);
+	*up = hw->link_ops->is_link_up(hw);
+
+	return 0;
 }
-EXPORT_SYMBOL(cxi_is_link_up);
+EXPORT_SYMBOL(cxi_link_state_get);

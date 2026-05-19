@@ -1276,12 +1276,28 @@ int cass_vf_init(struct cass_dev *hw)
 	}
 
 	/* Start notification handler thread */
+	init_completion(&hw->vf_notif_ready);
 	hw->vf_notif_handler = kthread_run(vf_notif_handler, hw, "cxi_vf_notif");
 	if (IS_ERR(hw->vf_notif_handler)) {
 		cxidev_err(&hw->cdev, "failed to start notification handler");
 		rc = PTR_ERR(hw->vf_notif_handler);
 		hw->vf_notif_handler = NULL;
 		goto shutdown_notif_sock;
+	}
+
+	/* Block until the PF's PING is received, which guarantees vf->notif_sock
+	 * is set on the PF before cass_vf_init() so that we make sure that we
+	 * do not miss any notification event */
+	rc = wait_for_completion_timeout(&hw->vf_notif_ready,
+					 CXI_SRIOV_VF_TIMEOUT);
+	if (!rc) {
+		cxidev_err(&hw->cdev,
+			   "timed out waiting for notification channel PING from PF");
+		kernel_sock_shutdown(hw->vf_notif_sock, SHUT_RDWR);
+		kthread_stop(hw->vf_notif_handler);
+		hw->vf_notif_handler = NULL;
+		rc = -ETIMEDOUT;
+		goto release_notif_sock;
 	}
 
 	return 0;

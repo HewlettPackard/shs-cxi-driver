@@ -3397,15 +3397,18 @@ static int cxi_user_eth_link_state_get(struct user_client *client,
 				       void **resp_out, size_t resp_buf_size,
 				       size_t *resp_out_len)
 {
-	const struct cxi_eth_get_link_state_resp resp = {
-		.link_up = cxi_is_link_up(client->ucxi->dev) ? 1 : 0,
-	};
+	bool link_up = false;
+	struct cxi_eth_get_link_state_resp resp = {};
+	int rc;
+
+	rc = cxi_link_state_get(client->ucxi->dev, &link_up);
+	resp.link_up = link_up;
 
 	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
 			  resp_out_len))
 		return -EFAULT;
 
-	return 0;
+	return rc;
 }
 
 static int cxi_user_phys_lac_alloc(struct user_client *client,

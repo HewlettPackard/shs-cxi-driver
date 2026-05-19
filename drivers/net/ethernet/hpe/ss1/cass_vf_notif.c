@@ -22,6 +22,7 @@ static int cass_vf_notif_ping_handler(struct cass_dev *hw,
 				      size_t *resp_len)
 {
 	*resp_len = 0;
+	complete(&hw->vf_notif_ready);
 	return 0;
 }
 

@@ -1512,7 +1512,7 @@ struct cxi_eth_link_state_get_cmd {
 };
 
 struct cxi_eth_get_link_state_resp {
-	__u8 link_up;  /* Non-zero if the link is up */
+	bool link_up;
 };
 
 struct cxi_phys_lac_alloc_cmd {

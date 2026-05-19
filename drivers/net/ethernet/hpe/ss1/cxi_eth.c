@@ -121,6 +121,7 @@ static int add_device(struct cxi_dev *cxi_dev)
 {
 	struct net_device *ndev;
 	struct cxi_eth *dev;
+	bool link_up;
 	int rc;
 
 	ndev = alloc_etherdev_mqs(sizeof(struct cxi_eth), max_tx_queues,
@@ -207,7 +208,11 @@ static int add_device(struct cxi_dev *cxi_dev)
 		goto err_free_rxq;
 
 	netif_carrier_off(ndev);
-	if (cxi_is_link_up(cxi_dev))
+	rc = cxi_link_state_get(cxi_dev, &link_up);
+	if (rc)
+		goto err_unregister_netdev;
+
+	if (link_up)
 		netif_carrier_on(ndev);
 
 	device_debugfs_create(cxi_dev->name, dev, cxieth_debug_dir);
@@ -221,6 +226,8 @@ static int add_device(struct cxi_dev *cxi_dev)
 
 	return 0;
 
+err_unregister_netdev:
+	unregister_netdev(ndev);
 err_free_rxq:
 	kfree(dev->rxqs);
 err_free_txq:
