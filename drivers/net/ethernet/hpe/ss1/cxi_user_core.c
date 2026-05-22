@@ -5,6 +5,7 @@
 
 #include <linux/hpe/cxi/cxi.h>
 #include <linux/device.h>
+#include <linux/etherdevice.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
 #include <linux/module.h>
@@ -3411,6 +3412,44 @@ static int cxi_user_eth_link_state_get(struct user_client *client,
 	return rc;
 }
 
+static int cxi_user_eth_vf_mac_get(struct user_client *client,
+				   const void *cmd_in, size_t cmd_len,
+				   void **resp_out, size_t resp_buf_size,
+				   size_t *resp_out_len)
+{
+	struct cxi_eth_vf_mac_get_resp resp = {};
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	if (cxi_eth_vf_get_assigned_mac_internal(client->ucxi->dev, client->vf_num,
+						 &resp.mac))
+		return -EINVAL;
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size, resp_out_len))
+		return -EFAULT;
+
+	return 0;
+}
+
+
+static int cxi_user_eth_vf_mac_validate(struct user_client *client,
+					const void *cmd_in, size_t cmd_len,
+					void **resp_out, size_t resp_buf_size,
+					size_t *resp_out_len)
+{
+	const struct cxi_eth_vf_mac_validate_cmd *cmd = cmd_in;
+	u64 mac_addr;
+
+	if (!client->is_vf)
+		return -EOPNOTSUPP;
+
+	mac_addr = cmd->mac;
+
+	return cxi_rmu_eth_check_mac_policy(client->ucxi->dev, client->vf_num,
+					    mac_addr);
+}
+
 static int cxi_user_phys_lac_alloc(struct user_client *client,
 				   const void *cmd_in, size_t cmd_len,
 				   void **resp_out, size_t resp_buf_size,
@@ -3777,6 +3816,14 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_eth_link_state_get_cmd),
 		.name       = "ETH_LINK_STATE_GET",
 		.handler    = cxi_user_eth_link_state_get, },
+	[CXI_OP_ETH_VF_MAC_GET] = {
+		.req_size   = sizeof(struct cxi_eth_vf_mac_get_cmd),
+		.name       = "ETH_VF_MAC_GET",
+		.handler    = cxi_user_eth_vf_mac_get, },
+	[CXI_OP_ETH_VF_MAC_VALIDATE] = {
+		.req_size   = sizeof(struct cxi_eth_vf_mac_validate_cmd),
+		.name       = "ETH_VF_MAC_VALIDATE",
+		.handler    = cxi_user_eth_vf_mac_validate, },
 	[CXI_OP_RMU_ETH_ALLOC] = {
 		.req_size   = sizeof(struct cxi_rmu_eth_alloc_cmd),
 		.name       = "RMU_ETH_ALLOC",

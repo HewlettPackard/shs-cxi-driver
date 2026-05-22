@@ -344,6 +344,9 @@ struct cxi_eth {
 	bool promisc_active;
 	bool bcast_active;
 
+	/* VF TX source-MAC spoof check; always false on PFs */
+	bool spoof_chk;
+
 	/* Shadow of the RSS indirection table last programmed into hardware.
 	 * Maintained by cxi_set_rx_channels() and cxi_set_rxfh() so that
 	 * cxi_get_rxfh() can return the actual programmed layout rather than
@@ -383,6 +386,7 @@ int hw_setup(struct cxi_eth *dev);
 int cxi_eth_open(struct net_device *ndev);
 int cxi_eth_close(struct net_device *ndev);
 netdev_tx_t cxi_eth_start_xmit(struct sk_buff *skb, struct net_device *dev);
+netdev_tx_t cxi_eth_start_xmit_vf(struct sk_buff *skb, struct net_device *dev);
 int cxi_eth_set_mac_addr(struct net_device *dev, void *p);
 int cxi_eth_set_mac_addr_vf(struct net_device *dev, void *p);
 void cxi_eth_set_rx_mode(struct net_device *dev);
@@ -402,6 +406,12 @@ int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels);
 int cxi_set_tx_channels(struct cxi_eth *dev, unsigned int num_tx_channels);
 int cxi_do_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd);
 int cxi_do_ioctl_vf(struct net_device *ndev, struct ifreq *ifr, int cmd);
+int cxi_eth_vf_set_mac(struct net_device *ndev, int vf, u8 *mac);
+int cxi_eth_ndo_get_vf_config(struct net_device *ndev, int vf,
+			      struct ifla_vf_info *ivi);
+int cxi_eth_ndo_set_vf_trust(struct net_device *ndev, int vf, bool setting);
+int cxi_eth_ndo_set_vf_spoofchk(struct net_device *ndev, int vf, bool setting);
+int cxi_eth_vf_set_trusted(struct cass_dev *hw, unsigned int vf_num, bool trusted);
 
 extern const struct ethtool_ops cxi_eth_ethtool_ops;
 #endif

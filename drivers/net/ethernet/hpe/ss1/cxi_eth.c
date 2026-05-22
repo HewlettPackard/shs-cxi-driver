@@ -104,11 +104,15 @@ static const struct net_device_ops cxi_eth_netdev_ops = {
 	.ndo_set_rx_mode = cxi_eth_set_rx_mode,
 	.ndo_change_mtu = cxi_change_mtu,
 	.ndo_do_ioctl = cxi_do_ioctl,
+	.ndo_set_vf_mac = cxi_eth_vf_set_mac,
+	.ndo_get_vf_config = cxi_eth_ndo_get_vf_config,
+	.ndo_set_vf_trust = cxi_eth_ndo_set_vf_trust,
+	.ndo_set_vf_spoofchk = cxi_eth_ndo_set_vf_spoofchk,
 };
 
 static const struct net_device_ops cxi_eth_netdev_ops_vf = {
 	.ndo_open = cxi_eth_open,
-	.ndo_start_xmit = cxi_eth_start_xmit,
+	.ndo_start_xmit = cxi_eth_start_xmit_vf,
 	.ndo_stop = cxi_eth_close,
 	.ndo_set_mac_address = cxi_eth_set_mac_addr_vf,
 	.ndo_set_rx_mode = cxi_eth_set_rx_mode_vf,
@@ -172,6 +176,15 @@ static int add_device(struct cxi_dev *cxi_dev)
 	ndev->tx_queue_len = TX_QUEUE_LEN_DEFAULT;
 
 	cxi_eth_devinfo(cxi_dev, &dev->eth_info);
+
+	if (!cxi_dev->is_physfn)
+		cxi_eth_vf_get_assigned_mac(cxi_dev, dev->eth_info.default_mac_addr);
+
+	/* VF starts with spoof check enabled; the PF admin can disable it
+	 * via 'ip link set <pf> vf <n> spoofchk off'.
+	 */
+	if (!cxi_dev->is_physfn)
+		dev->spoof_chk = true;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
 	eth_hw_addr_set(ndev, dev->eth_info.default_mac_addr);
@@ -329,6 +342,36 @@ static void async_event(struct cxi_dev *cxi_dev, enum cxi_async_event event)
 
 			dev->ndev->mtu = mtu;
 			netdev_dbg(dev->ndev, "MTU updated to %u by PF\n", mtu);
+		}
+		break;
+
+	case CXI_EVENT_MAC_ADDR_CHANGE:
+		if (!cxi_dev->is_physfn) {
+			struct sockaddr sa = {
+				.sa_family = dev->ndev->type,
+			};
+			int rc;
+
+			rc = cxi_eth_vf_get_assigned_mac(cxi_dev, sa.sa_data);
+			if (rc) {
+				netdev_err(dev->ndev,
+					   "MAC_ADDR_CHANGE: failed to get MAC from PF: %d\n",
+					   rc);
+				break;
+			}
+			rc = cxi_eth_set_mac_addr_vf(dev->ndev, &sa);
+			if (rc)
+				netdev_err(dev->ndev,
+					   "MAC_ADDR_CHANGE: failed to apply PF-assigned MAC: %d\n",
+					   rc);
+		}
+		break;
+
+	case CXI_EVENT_SPOOF_CHK_CHANGE:
+		if (!cxi_dev->is_physfn) {
+			dev->spoof_chk = cxi_dev->spoof_chk;
+			netdev_dbg(dev->ndev, "spoof check %s by PF\n",
+				   dev->spoof_chk ? "enabled" : "disabled");
 		}
 		break;
 

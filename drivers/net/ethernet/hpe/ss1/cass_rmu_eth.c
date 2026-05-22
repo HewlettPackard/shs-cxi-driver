@@ -65,22 +65,75 @@ MODULE_PARM_DESC(rmu_pf_client_max_rss_indir_size,
 		 "Maximum size of RSS indirection table for each PF client");
 
 /**
- * validate_mac_vf() - Validate MAC address for VF use
- * @mac_addr: MAC address to validate
+ * validate_mac_vf() - Check that a MAC address is a valid unicast address
+ * @mac_addr: MAC address to validate (48-bit, host-endian)
  *
- * VFs can only use valid unicast MAC addresses (not multicast, broadcast, or zero).
- * This also includes the reserved MAC addresses for PTP and multicast base,
- * which should not be used by VFs.
- *
- * Return: 0 if valid, -EINVAL if invalid
+ * Return: 0 if valid, -EINVAL if multicast, broadcast, or all-zero
  */
 static int validate_mac_vf(u64 mac_addr)
 {
 	u8 addr[ETH_ALEN];
 
 	u64_to_ether_addr(mac_addr, addr);
+	if (!is_valid_ether_addr(addr))
+		return -EINVAL;
 
-	return is_valid_ether_addr(addr) ? 0 : -EINVAL;
+	return 0;
+}
+
+/**
+ * check_vf_mac_policy() - Enforce PF-admin MAC policy for a VF
+ * @hw:      Cassini device (PF)
+ * @vf_num:  VF index
+ * @mac_addr: Proposed MAC address (48-bit, host-endian)
+ *
+ * Validates the MAC format and checks it against the PF-admin assigned MAC
+ * unless the VF is trusted.  Caller must NOT hold rmu_eth_lock.
+ *
+ * Return: 0 if allowed, -EINVAL for bad format, -EPERM if denied by policy
+ */
+static int check_vf_mac_policy(struct cass_dev *hw, unsigned int vf_num,
+			       u64 mac_addr)
+{
+	u8 mac_bytes[ETH_ALEN];
+	u64 assigned_mac;
+	bool trusted;
+	int rc;
+
+	u64_to_ether_addr(mac_addr, mac_bytes);
+
+	rc = validate_mac_vf(mac_addr);
+	if (rc) {
+		cxidev_err(&hw->cdev, "VF%u MAC %pM has invalid format\n",
+			   vf_num, mac_bytes);
+		return rc;
+	}
+
+	mutex_lock(&hw->rmu_eth_lock);
+	trusted = hw->vf_eth_cfg[vf_num].trusted;
+	assigned_mac = hw->vf_eth_cfg[vf_num].own_mac;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	if (trusted)
+		return 0;
+
+	if (!assigned_mac) {
+		cxidev_err(&hw->cdev, "VF%u has no MAC assigned by PF admin\n",
+			   vf_num);
+		return -EPERM;
+	}
+
+	if (mac_addr != assigned_mac) {
+		u8 allowed[ETH_ALEN];
+
+		u64_to_ether_addr(assigned_mac, allowed);
+		cxidev_err(&hw->cdev,
+			   "VF%u MAC %pM not allowed (assigned: %pM)\n",
+			   vf_num, mac_bytes, allowed);
+		return -EPERM;
+	}
+
+	return 0;
 }
 
 /**
@@ -162,7 +215,6 @@ struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
 	priv->dev = cdev;
 	priv->is_vf = vf_en;
 	priv->vf_num = vf_num;
-	priv->admin = vf_en ? false : true; /* Only PF client has admin privileges */
 
 	/* Store allocation in device structure (needed before ID allocation) */
 	rmu_eth = &priv->rmu_eth;
@@ -500,13 +552,25 @@ int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx, u6
 	cxidev_dbg(priv->dev, "Adding MAC RMU filter %pM at idx=%d (hw_idx=%u) use_rss=%d pte id %u\n",
 		   mac_bytes, idx, priv->set_list_base + idx, use_rss, pte->id);
 
-	/* VFs must use valid unicast MACs only */
-	if (!priv->admin) {
-		rc = validate_mac_vf(mac_addr);
-		if (rc) {
-			cxidev_err(priv->dev, "VF cannot use MAC %pM\n", mac_bytes);
+	/* VFs must use valid unicast MACs and comply with PF-admin policy */
+	if (priv->is_vf) {
+		struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
+		bool trusted;
+
+		mutex_lock(&hw->rmu_eth_lock);
+		trusted = hw->vf_eth_cfg[priv->vf_num].trusted;
+		mutex_unlock(&hw->rmu_eth_lock);
+
+		/* Trusted VFs may install multiple MAC filters at any valid index.
+		 * Untrusted VFs are limited to one MAC filter and it must be at
+		 * index 0 (own MAC).
+		 */
+		if (!trusted && idx != 0)
+			return -EPERM;
+
+		rc = check_vf_mac_policy(hw, priv->vf_num, mac_addr);
+		if (rc)
 			return rc;
-		}
 	}
 
 	/* Prepare set_list entry for MAC match */
@@ -530,6 +594,34 @@ int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx, u6
 	return add_rmu_set_list_filter(priv, idx, pte, use_rss, &set_list, &set_list_mask);
 }
 EXPORT_SYMBOL(cxi_rmu_eth_add_mac_filter);
+
+/**
+ * cxi_rmu_eth_check_mac_policy() - Validate a MAC address against PF-admin policy
+ * @cdev:    PF CXI device
+ * @vf_num:  VF index (0-based)
+ * @mac_addr: Proposed MAC address (48-bit, host-endian)
+ *
+ * Checks that @mac_addr passes format validation and is permitted by the
+ * PF-admin assignment for @vf_num.  Trusted VFs always pass.
+ *
+ * Return: 0 if allowed, -EINVAL for bad format, -EPERM if denied
+ */
+int cxi_rmu_eth_check_mac_policy(struct cxi_dev *cdev, unsigned int vf_num,
+				 u64 mac_addr)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	int rc;
+
+	if (vf_num >= C_NUM_VFS)
+		return -EINVAL;
+
+	rc = check_vf_mac_policy(hw, vf_num, mac_addr);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_rmu_eth_check_mac_policy);
 
 /**
  * cxi_rmu_eth_add_all_mcast_filter() - Add all-multicast filter with portal and RSS control
@@ -685,7 +777,7 @@ int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth, unsigned int
 	priv = container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
 
 	/* VF cannot enable promiscuous mode */
-	if (!priv->admin)
+	if (priv->is_vf)
 		return -EPERM;
 
 	cxidev_dbg(priv->dev, "Add promiscuous RMU filter at idx=%u (hw_idx=%u) use_rss=%d\n",

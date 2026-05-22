@@ -937,6 +937,16 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	idr_init(&hw->rmu_eth_idr);
 	mutex_init(&hw->rmu_eth_lock);
 
+	/* Initialize per-VF Ethernet policy to defaults:
+	 *   trusted   = false  (we do not allow VF to choose)
+	 *   own_mac   = 0      (no MAC assigned yet)
+	 */
+	for (i = 0; i < C_NUM_VFS; i++) {
+		hw->vf_eth_cfg[i].trusted    = false;
+		hw->vf_eth_cfg[i].own_mac    = 0;
+		hw->vf_eth_cfg[i].spoof_chk  = true;
+	}
+
 	mutex_init(&hw->err_flg_mutex);
 	INIT_LIST_HEAD(&hw->err_flg_list);
 	spin_lock_init(&hw->sfs_err_flg_lock);
@@ -993,6 +1003,9 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -EOPNOTSUPP;
 	}
 	hw->cdev.is_physfn = is_physfn;
+	/* VF devices prevent TX SMAC spoofing by default */
+	if (!is_physfn)
+		hw->cdev.spoof_chk = true;
 
 	hw->pci_disabled = false;
 

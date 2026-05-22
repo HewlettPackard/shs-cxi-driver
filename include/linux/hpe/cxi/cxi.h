@@ -41,6 +41,11 @@ struct cxi_dev {
 	/* MAC address assigned to the device */
 	u8 mac_addr[ETH_ALEN];
 
+	/* VF TX source-MAC spoofing check. Always false on PFs.
+	 * Updated by cass_vf_notif when the PF admin changes the setting.
+	 */
+	bool spoof_chk;
+
 	/* PCP to be used for untagged Ethernet frames. */
 	u8 untagged_eth_pcp;
 
@@ -101,6 +106,12 @@ enum cxi_async_event {
 
 	/* The MTU was changed */
 	CXI_EVENT_MTU_CHANGE,
+
+	/* The PF admin assigned a new MAC address to this VF */
+	CXI_EVENT_MAC_ADDR_CHANGE,
+
+	/* The PF admin changed the TX source-MAC spoof-check setting for this VF */
+	CXI_EVENT_SPOOF_CHK_CHANGE,
 };
 
 #define PTP_L2_MAC 0x011B19000000ULL
@@ -511,6 +522,10 @@ struct cxi_eth_info {
 	int ptp_clock_index;
 };
 void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info);
+int cxi_eth_vf_get_assigned_mac(struct cxi_dev *cdev, u8 *mac);
+int cxi_eth_validate_vf_mac(struct cxi_dev *cdev, const u8 *mac);
+int cxi_rmu_eth_check_mac_policy(struct cxi_dev *cdev, unsigned int vf_num,
+				 u64 mac_addr);
 int cxi_get_qsfp_data(struct cxi_dev *cdev, u32 offset, u32 len, u32 page, u8 *data);
 
 int cxi_program_firmware(struct cxi_dev *cdev, const struct firmware *fw);

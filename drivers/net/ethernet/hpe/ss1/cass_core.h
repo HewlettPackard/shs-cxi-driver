@@ -558,7 +558,6 @@ struct cxi_rmu_eth_priv {
 	struct cxi_dev *dev;            /* Device this allocation belongs to */
 	bool is_vf;                     /* True if this is a VF allocation */
 	unsigned int vf_num;            /* VF number (if is_vf=true) */
-	bool admin;                     /* True if it has admin privileges */
 
 	/* Resource allocation */
 	unsigned int indir_base;        /* Absolute offset in HW indirection table */
@@ -574,6 +573,28 @@ struct cxi_rmu_eth_priv {
 
 	/* Filter tracking [0..quota-1]: enum cxi_rmu_eth_filter_mode values */
 	u8 *mac_filter_slots;
+};
+
+/**
+ * struct cxi_eth_vf_cfg - Per-VF Ethernet policy, owned and set by PF admin.
+ *
+ * Lives in cass_dev (outside rmu_eth_priv) so it persists across
+ * rmu_eth alloc/free cycles.  Protected by rmu_eth_lock.
+ *
+ * @trusted:   If true the VF may program any valid unicast MAC address
+ *             (admin takes responsibility for uniqueness).  If false only
+ *             @own_mac is accepted.
+ * @own_mac:   MAC address the PF admin has assigned to this VF.
+ *             0 means no MAC has been assigned; non-trusted VFs are then
+ *             rejected for all MAC filter adds.
+ * @spoof_chk: If true, the VF is not allowed to transmit with a source MAC
+ *             address that does not match @own_mac or the MACs programmed in
+ *             the hardware.
+ */
+struct cxi_eth_vf_cfg {
+	bool trusted;
+	u64  own_mac;
+	bool spoof_chk;
 };
 
 /* Private hardware data for Cassini. This is not seen by clients. */
@@ -835,6 +856,11 @@ struct cass_dev {
 	/* Ethernet Set List */
 	struct ida set_list_table;
 	struct cxi_tx_profile eth_tx_profile;
+
+	/* Per-VF Ethernet policy, set by the PF admin.
+	 * Protected by rmu_eth_lock.
+	 */
+	struct cxi_eth_vf_cfg vf_eth_cfg[C_NUM_VFS];
 
 	/* RMU Ethernet resource management */
 	struct idr rmu_eth_idr;

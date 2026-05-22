@@ -7,6 +7,7 @@
 #include <linux/etherdevice.h>
 
 #include "cass_core.h"
+#include "cxi_internal.h"
 
 /**
  * cxi_set_ethernet_threshold() - Configure the Ethernet buffer threshold
@@ -74,8 +75,10 @@ static void cxi_eth_devinfo_vf(struct cxi_dev *cdev, struct cxi_eth_info *eth_in
 		goto err;
 	}
 
-	return;
+	/* Do not expose the PF MAC address to VFs */
+	memset(eth_info->default_mac_addr, 0, sizeof(eth_info->default_mac_addr));
 
+	return;
 err:
 	memset(eth_info, 0, sizeof(*eth_info));
 }
@@ -85,6 +88,9 @@ err:
  *
  * @cdev: CXI device
  * @eth_info: structure to return the information
+ *
+ * When called on the PF, default_mac_addr is filled with the PF hardware
+ * address. When called on a VF, default_mac_addr is filled with zeroes.
  */
 void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
 {
@@ -117,6 +123,82 @@ void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
 	eth_info->min_free_shift = cdev->prop.min_free_shift;
 }
 EXPORT_SYMBOL(cxi_eth_devinfo);
+
+/**
+ * cxi_eth_vf_get_assigned_mac_internal() - Retrieve the PF-admin-assigned MAC for a VF
+ * @cdev:   PF CXI device
+ * @vf_num: VF index (0-based)
+ * @mac:    output; set to the assigned MAC, or 0 if no MAC has been set
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+int cxi_eth_vf_get_assigned_mac_internal(struct cxi_dev *cdev, unsigned int vf_num,
+					u64 *mac)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+
+	if (vf_num >= hw->num_vfs)
+		return -EINVAL;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	*mac = hw->vf_eth_cfg[vf_num].own_mac;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_eth_vf_get_assigned_mac_internal);
+
+/**
+ * cxi_eth_vf_get_assigned_mac() - Get this VF's admin-assigned MAC address
+ * @cdev: VF CXI device
+ * @mac:  output buffer (ETH_ALEN bytes)
+ *
+ * Returns 0 on success (mac filled), negative errno on failure.
+ */
+int cxi_eth_vf_get_assigned_mac(struct cxi_dev *cdev, u8 *mac)
+{
+	const struct cxi_eth_vf_mac_get_cmd cmd = {
+		.op = CXI_OP_ETH_VF_MAC_GET,
+	};
+	struct cxi_eth_vf_mac_get_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	if (cdev->is_physfn)
+		return -EOPNOTSUPP;
+
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc)
+		return rc;
+
+	u64_to_ether_addr(resp.mac, mac);
+	return 0;
+}
+EXPORT_SYMBOL(cxi_eth_vf_get_assigned_mac);
+
+/**
+ * cxi_eth_validate_vf_mac() - Ask the PF whether a MAC address is permitted for this VF
+ * @cdev: VF CXI device
+ * @mac:  Proposed MAC address (ETH_ALEN bytes)
+ *
+ * Returns 0 if the PF allows the address, -EPERM if denied by policy,
+ * -EINVAL for an invalid address, or another negative errno on comms failure.
+ */
+int cxi_eth_validate_vf_mac(struct cxi_dev *cdev, const u8 *mac)
+{
+	struct cxi_eth_vf_mac_validate_cmd cmd = {
+		.op = CXI_OP_ETH_VF_MAC_VALIDATE,
+	};
+	size_t resp_len = 0;
+
+	if (cdev->is_physfn)
+		return -EOPNOTSUPP;
+
+	cmd.mac = ether_addr_to_u64(mac);
+
+	return cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+EXPORT_SYMBOL(cxi_eth_validate_vf_mac);
 
 /**
  * cxi_set_led_beacon() - Activate or deactivate LED beacon

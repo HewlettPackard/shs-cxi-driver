@@ -37,6 +37,26 @@ static int cass_vf_notif_async_event_handler(struct cass_dev *hw,
 	return 0;
 }
 
+static int cass_vf_notif_mac_addr_change_handler(struct cass_dev *hw,
+					     const void *cmd_in, void **resp,
+					     size_t *resp_len)
+{
+	/* Notify registered cxi_clients about the MAC change. */
+	cxi_send_async_event(&hw->cdev, CXI_EVENT_MAC_ADDR_CHANGE);
+	return 0;
+}
+
+static int cass_vf_notif_spoof_chk_handler(struct cass_dev *hw,
+					   const void *cmd_in, void **resp,
+					   size_t *resp_len)
+{
+	const struct cass_vf_notif_spoof_chk_change *notif = cmd_in;
+
+	hw->cdev.spoof_chk = notif->spoof_chk;
+	cxi_send_async_event(&hw->cdev, CXI_EVENT_SPOOF_CHK_CHANGE);
+	return 0;
+}
+
 static const struct cass_vf_notif_info vf_notif_info[] = {
 	[CASS_VF_NOTIF_OP_PING] = {
 		.req_size   = sizeof(struct cass_vf_notif_ping),
@@ -46,6 +66,14 @@ static const struct cass_vf_notif_info vf_notif_info[] = {
 		.req_size   = sizeof(struct cass_vf_notif_async_event),
 		.name       = "ASYNC_EVENT",
 		.handler    = cass_vf_notif_async_event_handler, },
+	[CASS_VF_NOTIF_OP_MAC_ADDR_CHANGE] = {
+		.req_size   = sizeof(struct cass_vf_notif_mac_addr_change),
+		.name       = "MAC_ADDR_CHANGE",
+		.handler    = cass_vf_notif_mac_addr_change_handler, },
+	[CASS_VF_NOTIF_OP_SPOOF_CHK_CHANGE] = {
+		.req_size   = sizeof(struct cass_vf_notif_spoof_chk_change),
+		.name       = "SPOOF_CHK_CHANGE",
+		.handler    = cass_vf_notif_spoof_chk_handler, },
 };
 
 int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,

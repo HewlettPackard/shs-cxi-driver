@@ -145,6 +145,8 @@ enum cxi_command_opcode {
 		CXI_OP_RMU_ETH_SET_RSS_QUEUES,
 		CXI_OP_RMU_ETH_SET_INDIR_TABLE,
 		CXI_OP_RMU_ETH_ADD_ALL_MCAST_FILTER,
+		CXI_OP_ETH_VF_MAC_GET,
+		CXI_OP_ETH_VF_MAC_VALIDATE,
 
 		CXI_OP_MAX,
 };
@@ -1513,6 +1515,24 @@ struct cxi_eth_link_state_get_cmd {
 
 struct cxi_eth_get_link_state_resp {
 	bool link_up;
+};
+
+struct cxi_eth_vf_mac_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_eth_vf_mac_get_resp {
+	__u64 mac;
+};
+
+/* Validate that a proposed MAC address is allowed for this VF.
+ * Returns 0 (via cxi_send_msg_to_pf return code) if allowed, -EPERM if denied.
+ */
+struct cxi_eth_vf_mac_validate_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	__u64 mac;
 };
 
 struct cxi_phys_lac_alloc_cmd {

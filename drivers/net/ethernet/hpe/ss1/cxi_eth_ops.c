@@ -20,6 +20,8 @@
 
 #include "cxi_eth.h"
 #include "cxi_core.h"
+#include "cass_core.h"
+#include "cass_vf_notif.h"
 
 static unsigned int tx_eq_count;
 module_param(tx_eq_count, uint, 0444);
@@ -2266,6 +2268,33 @@ netdev_tx_t cxi_eth_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	return tx_status;
 }
 
+/**
+ * cxi_eth_start_xmit_vf() - VF TX entry point
+ *
+ * Enforces the TX source-MAC spoof check when enabled by the PF admin
+ * ('ip link set <pf> vf <n> spoofchk on'), then calls the common transmit
+ * body.  The PF hot path is completely unaffected.
+ *
+ * @skb:  socket buffer to transmit
+ * @ndev: VF net device
+ */
+netdev_tx_t cxi_eth_start_xmit_vf(struct sk_buff *skb, struct net_device *ndev)
+{
+	const struct cxi_eth *dev = netdev_priv(ndev);
+
+	if (unlikely(dev->spoof_chk)) {
+		const struct ethhdr *eth = (const struct ethhdr *)skb->data;
+
+		if (unlikely(!ether_addr_equal(eth->h_source, ndev->dev_addr))) {
+			dev_kfree_skb_any(skb);
+			ndev->stats.tx_dropped++;
+			return NETDEV_TX_OK;
+		}
+	}
+
+	return cxi_eth_start_xmit(skb, ndev);
+}
+
 int cxi_eth_set_mac_addr_vf(struct net_device *ndev, void *p)
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
@@ -2278,9 +2307,14 @@ int cxi_eth_set_mac_addr_vf(struct net_device *ndev, void *p)
 	if (rc)
 		return rc;
 
-	/* If interface is up, program hardware via PF. If it is down,
-	 * just update the MAC address in the driver, and it will be programmed on interface up.
-	 */
+	/* Validate policy before touching hardware. */
+	rc = cxi_eth_validate_vf_mac(dev->cxi_dev, addr->sa_data);
+	if (rc) {
+		netdev_err(ndev, "MAC address not allowed: %d\n", rc);
+		return rc;
+	}
+
+	/* Program the MAC filter if the interface is up. */
 	if (dev->is_active) {
 		pte_def = dev->rxqs[0].pt;
 		mac_addr = ether_addr_to_u64(addr->sa_data);
@@ -2525,6 +2559,127 @@ void cxi_eth_set_rx_mode(struct net_device *ndev)
 	for (i = 0; i < dev->num_uc_mc_filters; i++)
 		if (dev->uc_mc_filters[i] && !(bm & BIT_ULL(i)))
 			uc_mc_filter_remove(dev, dev->uc_mc_filters[i]);
+}
+
+/**
+ * cxi_eth_vf_set_mac() - Assign the allowed MAC address for a VF
+ * @ndev:  PF net device
+ * @vf:    VF index (0-based, must be < C_NUM_VFS)
+ * @mac:   MAC address to allow; pass a zero address to clear the assignment
+ *
+ * Sets the MAC address that a non-trusted VF is permitted to program.
+ * A trusted VF ignores this field and may use any valid unicast MAC.
+ * If the VF is currently connected, a MAC_ADDR_CHANGE notification is
+ * sent to it so it can reprogram the RMU filter immediately.
+ *
+ * Return: 0 on success, -EINVAL if vf is out of range
+ */
+int cxi_eth_vf_set_mac(struct net_device *ndev, int vf, u8 *mac)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
+	const struct cass_vf_notif_mac_addr_change notif = {
+		.op  = CASS_VF_NOTIF_OP_MAC_ADDR_CHANGE,
+		.mac = ether_addr_to_u64(mac),
+	};
+
+	if ((unsigned int)vf >= C_NUM_VFS)
+		return -EINVAL;
+
+	/* Reject multicast and broadcast addresses; allow zero to clear. */
+	if (!is_zero_ether_addr(mac) && !is_valid_ether_addr(mac))
+		return -EINVAL;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	hw->vf_eth_cfg[vf].own_mac = ether_addr_to_u64(mac);
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	cxi_send_msg_to_vf(&hw->cdev, vf, &notif, sizeof(notif), NULL, NULL);
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_eth_vf_set_mac);
+
+int cxi_eth_ndo_get_vf_config(struct net_device *ndev, int vf,
+			      struct ifla_vf_info *ivi)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
+
+	if ((unsigned int)vf >= C_NUM_VFS)
+		return -EINVAL;
+
+	ivi->vf = vf;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	u64_to_ether_addr(hw->vf_eth_cfg[vf].own_mac, ivi->mac);
+	ivi->trusted = hw->vf_eth_cfg[vf].trusted;
+	ivi->spoofchk = hw->vf_eth_cfg[vf].spoof_chk;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	return 0;
+}
+
+/**
+ * cxi_eth_vf_set_trusted() - Set or clear the trusted flag for a VF
+ * @hw:      Cassini device (PF)
+ * @vf_num:  VF index (0-based, must be < C_NUM_VFS)
+ * @trusted: true = VF may use any valid unicast MAC
+ *           false = VF is restricted to its assigned @own_mac
+ *
+ * Return: 0 on success, -EINVAL if vf_num is out of range
+ */
+int cxi_eth_vf_set_trusted(struct cass_dev *hw, unsigned int vf_num, bool trusted)
+{
+	if (vf_num >= C_NUM_VFS)
+		return -EINVAL;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	hw->vf_eth_cfg[vf_num].trusted = trusted;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_eth_vf_set_trusted);
+
+int cxi_eth_ndo_set_vf_trust(struct net_device *ndev, int vf, bool setting)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
+
+	return cxi_eth_vf_set_trusted(hw, vf, setting);
+}
+
+/**
+ * cxi_eth_ndo_set_vf_spoofchk() - Enable or disable TX source-MAC spoof check
+ * @ndev:    PF net device
+ * @vf:      VF index (0-based)
+ * @setting: true = enforce SMAC == assigned MAC on TX; false = allow any SMAC
+ *
+ * Stores the flag in the PF's per-VF config and notifies the VF so it
+ * can update its TX enforcement immediately.
+ *
+ * Return: 0 on success, -EINVAL if vf is out of range
+ */
+int cxi_eth_ndo_set_vf_spoofchk(struct net_device *ndev, int vf, bool setting)
+{
+	struct cxi_eth *dev = netdev_priv(ndev);
+	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
+	const struct cass_vf_notif_spoof_chk_change notif = {
+		.op        = CASS_VF_NOTIF_OP_SPOOF_CHK_CHANGE,
+		.spoof_chk = setting,
+	};
+
+	if ((unsigned int)vf >= C_NUM_VFS)
+		return -EINVAL;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	hw->vf_eth_cfg[vf].spoof_chk = setting;
+	mutex_unlock(&hw->rmu_eth_lock);
+
+	cxi_send_msg_to_vf(&hw->cdev, vf, &notif, sizeof(notif), NULL, NULL);
+
+	return 0;
 }
 
 int cxi_change_mtu_vf(struct net_device *ndev, int new_mtu)

@@ -11,6 +11,8 @@ enum cass_vf_notif_ops {
 	CASS_VF_NOTIF_OP_INVALID = 0,
 	CASS_VF_NOTIF_OP_PING,
 	CASS_VF_NOTIF_OP_ASYNC_EVENT,
+	CASS_VF_NOTIF_OP_MAC_ADDR_CHANGE,
+	CASS_VF_NOTIF_OP_SPOOF_CHK_CHANGE,
 	CASS_VF_NOTIF_OP_MAX,
 };
 
@@ -26,6 +28,18 @@ struct cass_vf_notif_ping {
 struct cass_vf_notif_async_event {
 	enum cass_vf_notif_ops op;
 	unsigned int event; /* enum cxi_async_event */
+};
+
+/* Notification: PF admin assigned a new MAC address to the VF. */
+struct cass_vf_notif_mac_addr_change {
+	enum cass_vf_notif_ops op;
+	u64 mac; /* new assigned MAC, host-endian 48-bit */
+};
+
+/* Notification: PF admin changed the TX source-MAC spoof-check setting. */
+struct cass_vf_notif_spoof_chk_change {
+	enum cass_vf_notif_ops op;
+	bool spoof_chk; /* true = enforce SMAC == ndev->dev_addr on TX */
 };
 
 struct cass_vf_notif_info {
