@@ -857,6 +857,14 @@ static int eq_mmio_map(struct cass_dev *hw, void __iomem **eq_mmio, int eq_idx)
 	return 0;
 }
 
+static void eq_mmio_unmap(struct cxi_eq_priv *eq)
+{
+	if (eq->eq_mmio) {
+		iounmap(eq->eq_mmio);
+		eq->eq_mmio = NULL;
+	}
+}
+
 /**
  * cass_eq_attach_irqs() - Attach event and status interrupt handlers to an EQ.
  *
@@ -1242,7 +1250,7 @@ status_irq_detach:
 		cass_comp_irq_detach(hw, eq->event_msi_irq, &eq->event_nb);
 eq_unmap:
 	if (!is_user)
-		iounmap(eq->eq_mmio);
+		eq_mmio_unmap(eq);
 id_remove:
 	pf_put_eq_id(eq);
 
@@ -1319,7 +1327,7 @@ static int cxi_eq_free_vf(struct cxi_eq *evtq)
 
 	/* Unmap EQ MMIO if not for user */
 	if (!is_user)
-		iounmap(eq->eq_mmio);
+		eq_mmio_unmap(eq);
 
 	/* Unmap EQ buffer if passthrough */
 	if (passthrough) {
@@ -1456,8 +1464,8 @@ int cxi_eq_free(struct cxi_eq *evtq)
 		}
 	}
 
-	if (!is_user)
-		iounmap(eq->eq_mmio);
+	if (!is_user && !is_vf)
+		eq_mmio_unmap(eq);
 
 	/* Hang the EQ on the LNI pending deletion list, to be
 	 * released later

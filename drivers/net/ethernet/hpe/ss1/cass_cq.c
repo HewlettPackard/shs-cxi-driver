@@ -72,6 +72,14 @@ cq_mmio_phys_addr(const struct cass_dev *hw, int cq_id)
 		C_CQ_LAUNCH_PAGE_SIZE * cq_id;
 }
 
+static void cq_mmio_unmap(struct cxi_cq_priv *cq)
+{
+	if (cq->cq_mmio) {
+		iounmap(cq->cq_mmio);
+		cq->cq_mmio = NULL;
+	}
+}
+
 /* Write TX CQ configuration to hardware */
 static int setup_hw_tx_cq(struct cass_dev *hw, unsigned int cq_n,
 			  const struct cxi_cq_alloc_opts *opts,
@@ -319,8 +327,10 @@ static void cxi_cq_free_vf(struct cxi_cq *cmdq)
 	if (rc)
 		return;
 
-	if (cq_priv_vf->cq_mmio)
+	if (cq_priv_vf->cq_mmio) {
 		iounmap(cq_priv_vf->cq_mmio);
+		cq_priv_vf->cq_mmio = NULL;
+	}
 
 	dma_unmap_page(&hw->cdev.pdev->dev, cq_priv_vf->cmds_dma_addr,
 		       cq_priv_vf->cmds_len, DMA_BIDIRECTIONAL);
@@ -877,8 +887,8 @@ struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evt
 	return &cq->cass_cq;
 
 cq_unmap:
-	if (!is_user)
-		iounmap(cq->cq_mmio);
+	if (!is_user && !lni_priv->is_vf)
+		cq_mmio_unmap(cq);
 cq_release:
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
@@ -1063,7 +1073,7 @@ void cxi_cq_free(struct cxi_cq *cmdq)
 
 	if (!lni_priv->is_vf) {
 		if (!(cq->flags & CXI_CQ_USER))
-			iounmap(cq->cq_mmio);
+			cq_mmio_unmap(cq);
 
 		dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 			       cq->cmds_len, DMA_BIDIRECTIONAL);
