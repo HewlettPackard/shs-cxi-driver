@@ -433,12 +433,20 @@ void cass_sl_flags_set(struct cass_dev *cass_dev, u32 clr_flags, u32 set_flags)
 
 void cass_sl_pml_recovery_set(struct cass_dev *cass_dev, bool set)
 {
-	cxidev_dbg(&cass_dev->cdev, "pml recovery set\n");
+	cxidev_dbg(&cass_dev->cdev, "pml recovery set (set = %s)\n", set ? "enable" : "disable");
 
-	if (set)
-		cass_dev->sl.link_config.options |= SL_LINK_CONFIG_OPT_PML_REC_ENABLE;
-	else
+	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_PML_REC_ENABLE) {
+		if (set)
+			return;
 		cass_dev->sl.link_config.options &= ~SL_LINK_CONFIG_OPT_PML_REC_ENABLE;
+		cass_phy_bounce(cass_dev);
+		return;
+	}
+
+	if (set) {
+		cass_dev->sl.link_config.options |= SL_LINK_CONFIG_OPT_PML_REC_ENABLE;
+		cass_phy_bounce(cass_dev);
+	}
 }
 
 struct cass_sl_intr_entry {
