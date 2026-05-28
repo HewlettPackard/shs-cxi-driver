@@ -1399,6 +1399,7 @@ int cass_nta_init(struct cxi_lni_priv *lni_priv, struct ac_map_opts *m_opts,
 int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock);
 int cass_nta_mirror_kern(struct cxi_md_priv *md_priv,
 			 const struct iov_iter *iter, bool need_lock);
+struct page *cass_virt_to_page(u64 addr);
 int cass_pin(const struct cass_ac *cac, struct page **pages, int npages,
 	     u64 addr, bool write);
 int cass_mirror_hp(const struct ac_map_opts *m_opts, struct cxi_md_priv *md_priv);

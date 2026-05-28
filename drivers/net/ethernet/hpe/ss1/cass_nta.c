@@ -1285,7 +1285,7 @@ mirror_error:
 	return ret;
 }
 
-static struct page *cass_virt_to_page(u64 addr)
+struct page *cass_virt_to_page(u64 addr)
 {
 	if (is_vmalloc_addr((void *)addr))
 		return vmalloc_to_page((void *)addr);

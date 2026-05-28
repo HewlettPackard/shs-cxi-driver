@@ -1150,11 +1150,9 @@ static int cxi_clear_md_vf(struct cxi_md *md)
 	int rc;
 
 	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
-	if (rc) {
+	if (rc)
 		cxidev_err(&hw->cdev, "VF ATU_CLEAR_MD failed md:%d rc:%d\n",
 			   md_priv_vf->md.id, rc);
-		return rc;
-	}
 
 	/* Free locally owned sgt+pages if this MD was created via cxi_map_vf */
 	if (md_priv_vf->pages && md_priv_vf->sgt) {
@@ -1175,7 +1173,7 @@ static int cxi_clear_md_vf(struct cxi_md *md)
 
 	pr_debug("VF clear_md: md:%d iova:%llx\n", md->id, md->iova);
 
-	return 0;
+	return rc;
 }
 
 /**
@@ -1209,6 +1207,424 @@ int cxi_clear_md(struct cxi_md *md)
 EXPORT_SYMBOL(cxi_clear_md);
 
 static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter);
+
+/**
+ * cass_virt_to_pages() - Get page structures for kernel virtual addresses
+ *
+ * @hw: Cassini device for error reporting
+ * @va: Starting virtual address (will be page-aligned)
+ * @npages: Number of pages to get
+ * @pages: Array to store page pointers
+ *
+ * @return: 0 on success, negative error code on failure
+ */
+static int cass_virt_to_pages(struct cass_dev *hw, uintptr_t va, int npages,
+			      struct page **pages)
+{
+	int i;
+	uintptr_t addr = va & PAGE_MASK;
+
+	for (i = 0; i < npages; i++, addr += PAGE_SIZE) {
+		pages[i] = cass_virt_to_page(addr);
+		if (!pages[i]) {
+			cxidev_err(&hw->cdev, "Failed to get page for addr 0x%lx\n", addr);
+			return -EFAULT;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * cass_iov_to_pages() - Collect the backing pages of a kernel iov_iter
+ *
+ * Unlike cass_virt_to_pages(), which assumes a single virtually-contiguous
+ * range, this walks each segment of a multi-segment ITER_BVEC/ITER_KVEC and
+ * records the actual page backing every page-sized chunk.  This is required
+ * because the segments of an iov_iter are not necessarily contiguous in the
+ * kernel linear map - reconstructing them from a single base address maps the
+ * wrong physical pages.
+ *
+ * cass_bvec()/cass_kvec() must have validated @iter first; this relies on
+ * their guarantees (one page per bvec segment, only the first kvec segment
+ * may be unaligned, no interior holes).
+ *
+ * @hw:     Cassini device for error reporting
+ * @iter:   Kernel iov_iter (ITER_BVEC or ITER_KVEC)
+ * @pages:  Array to fill, sized for @npages entries
+ * @npages: Expected number of pages
+ *
+ * @return: 0 on success, negative error code on failure
+ */
+static int cass_iov_to_pages(struct cass_dev *hw, const struct iov_iter *iter,
+			     struct page **pages, int npages)
+{
+	int p = 0;
+	int i;
+
+	if (iov_iter_is_bvec(iter)) {
+		const struct bio_vec *bvec = iter->bvec;
+
+		/* cass_bvec() enforces one page per bvec segment */
+		for (i = 0; i < iter->nr_segs; i++, bvec++) {
+			if (p >= npages)
+				return -EINVAL;
+			pages[p++] = bvec->bv_page;
+		}
+	} else if (iov_iter_is_kvec(iter)) {
+		const struct kvec *kvec = iter->kvec;
+
+		for (i = 0; i < iter->nr_segs; i++, kvec++) {
+			uintptr_t addr = (uintptr_t)kvec->iov_base & PAGE_MASK;
+			uintptr_t end = (uintptr_t)kvec->iov_base + kvec->iov_len;
+			int seg_pages = (PAGE_ALIGN(end) - addr) >> PAGE_SHIFT;
+			int j;
+
+			/* Each kvec segment is virtually contiguous, so walking
+			 * page by page within a segment is safe.
+			 */
+			for (j = 0; j < seg_pages; j++, addr += PAGE_SIZE) {
+				if (p >= npages)
+					return -EINVAL;
+
+				pages[p] = cass_virt_to_page(addr);
+				if (!pages[p]) {
+					cxidev_err(&hw->cdev,
+						   "Failed to get page for addr 0x%lx\n",
+						   addr);
+					return -EFAULT;
+				}
+				p++;
+			}
+		}
+	} else {
+		return -EINVAL;
+	}
+
+	if (p != npages) {
+		cxidev_err(&hw->cdev,
+			   "iov page count mismatch: got %d expected %d\n",
+			   p, npages);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/**
+ * cass_alloc_pages_sgt_vf() - Allocate pages and build a DMA-mapped sgt for a VF
+ *
+ * Common helper shared by cass_map_pages_vf() and cxi_update_iov_vf().
+ * Allocates a page array, pins or looks up kernel-virt pages, builds an sgt,
+ * and DMA-maps it.  On success all three output parameters are set and
+ * ownership passes to the caller; on failure they are left untouched.
+ *
+ * @hw:         Cassini device
+ * @va:         Starting virtual address
+ * @len:        Mapping length in bytes
+ * @flags:      Mapping flags (CXI_MAP_PIN selects pinning over virt lookup)
+ * @iter:       Optional kernel iov_iter (ITER_BVEC/ITER_KVEC).  When supplied
+ *              (and not pinning), backing pages are taken directly from the
+ *              iterator segments rather than reconstructed from @va.
+ * @pages_out:  Receives the allocated page array
+ * @sgt_out:    Receives the allocated and DMA-mapped sg_table
+ * @npages_out: Receives the page count
+ *
+ * @return: 0 on success or negative error code
+ */
+static int cass_alloc_pages_sgt_vf(struct cass_dev *hw, u64 va, size_t len,
+				   u32 flags, const struct iov_iter *iter,
+				   struct page ***pages_out,
+				   struct sg_table **sgt_out, int *npages_out)
+{
+	struct page **pages;
+	struct sg_table *sgt;
+	int npages;
+	int rc;
+
+	npages = (round_up(va + len, PAGE_SIZE) -
+		  round_down(va, PAGE_SIZE)) >> PAGE_SHIFT;
+
+	pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	if (flags & CXI_MAP_PIN) {
+		unsigned int gup_flags = FOLL_LONGTERM;
+
+		if (flags & CXI_MAP_WRITE)
+			gup_flags |= FOLL_WRITE;
+
+		rc = pin_user_pages_fast(va & PAGE_MASK, npages,
+					 gup_flags, pages);
+		if (rc != npages) {
+			cxidev_err(&hw->cdev,
+				   "pin_user_pages_fast failed: %d/%d\n",
+				   rc, npages);
+			if (rc > 0)
+				unpin_user_pages(pages, rc);
+			rc = rc < 0 ? rc : -EFAULT;
+			goto free_pages;
+		}
+	} else if (iter) {
+		rc = cass_iov_to_pages(hw, iter, pages, npages);
+		if (rc)
+			goto free_pages;
+	} else {
+		rc = cass_virt_to_pages(hw, va, npages, pages);
+		if (rc)
+			goto free_pages;
+	}
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt) {
+		rc = -ENOMEM;
+		goto unpin_pages;
+	}
+
+	rc = sg_alloc_table_from_pages_segment(sgt, pages, npages,
+					       va & ~PAGE_MASK, len,
+					       UINT_MAX, GFP_KERNEL);
+	if (rc)
+		goto free_sgt;
+
+	rc = dma_map_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
+	if (rc) {
+		cxidev_err(&hw->cdev, "dma_map_sgtable failed\n");
+		goto free_sgt_table;
+	}
+
+	*pages_out = pages;
+	*sgt_out = sgt;
+	*npages_out = npages;
+	return 0;
+
+free_sgt_table:
+	sg_free_table(sgt);
+free_sgt:
+	kfree(sgt);
+unpin_pages:
+	if (flags & CXI_MAP_PIN)
+		unpin_user_pages(pages, npages);
+free_pages:
+	kvfree(pages);
+	return rc;
+}
+
+/**
+ * cxi_map_sgtable_vf() - Map an sg table to an IO virtual address space for a VF
+ *
+ * @lni: The Logical Network Interface
+ * @sgt: The sg_table object. It is expected to be dma mapped.
+ * @flags: Various options affecting the map
+ *
+ * @return: memory descriptor or error code
+ */
+static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
+					 struct sg_table *sgt, u32 flags)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_md_priv_vf *md_priv_vf;
+	struct cxi_atu_map_sgt_cmd *cmd;
+	struct cxi_atu_map_sgt_resp resp = {};
+	size_t cmd_len;
+	size_t resp_len = sizeof(resp);
+	struct scatterlist *sg;
+	int i;
+	int rc;
+	size_t sgt_len;
+
+	if (!sgt)
+		return ERR_PTR(-EINVAL);
+
+	if (!cass_sgtable_is_valid(hw, sgt, &sgt_len))
+		return ERR_PTR(-EINVAL);
+
+	sg = sgt->sgl;
+
+	md_priv_vf = kzalloc(sizeof(*md_priv_vf), GFP_KERNEL);
+	if (!md_priv_vf)
+		return ERR_PTR(-ENOMEM);
+
+	md_priv_vf->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	md_priv_vf->device = &hw->cdev.pdev->dev;
+	md_priv_vf->md.va = 0;
+	md_priv_vf->md.len = sgt_len;
+	md_priv_vf->olen = sgt_len;
+	md_priv_vf->md.page_shift = PAGE_SHIFT;
+	md_priv_vf->md.huge_shift = PMD_SHIFT;
+	md_priv_vf->flags = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
+	md_priv_vf->sgt = sgt;
+	md_priv_vf->pages = NULL;
+	md_priv_vf->npages = 0;
+
+	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
+		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid, sgt->nents, sgt_len,
+		 flags);
+
+	cmd_len = struct_size(cmd, sge, sgt->nents);
+	if (cmd_len > MAX_VFMSG_SIZE) {
+		rc = -E2BIG;
+		goto free_md_priv;
+	}
+	cmd = kvzalloc(cmd_len, GFP_KERNEL);
+	if (!cmd) {
+		rc = -ENOMEM;
+		goto free_md_priv;
+	}
+
+	cmd->op = CXI_OP_ATU_MAP_SGT;
+	cmd->lni = lni_priv_vf->lni.id;
+	cmd->flags = flags;
+	cmd->nents = sgt->nents;
+
+	pr_debug("Sending SGT with %d entries to PF\n", sgt->nents);
+	for (i = 0; i < sgt->nents; i++) {
+		cmd->sge[i].dma_addr = sg_dma_address(sg);
+		cmd->sge[i].dma_len = sg_dma_len(sg);
+		cmd->sge[i].offset = sg->offset;
+
+		sg = sg_next(sg);
+	}
+
+	rc = cxi_send_msg_to_pf(dev, cmd, cmd_len, &resp, &resp_len);
+	kvfree(cmd);
+	if (rc)
+		goto free_md_priv;
+
+	/* Set the iova and the lac retrieved from the PF */
+	md_priv_vf->md.iova = resp.md.iova;
+	md_priv_vf->md.lac = resp.md.lac;
+	md_priv_vf->md.id = resp.md.id;
+	pr_debug("VF map resp: md:%d iova:%llx lac:%u resp_len:%zu\n",
+		 md_priv_vf->md.id, md_priv_vf->md.iova,
+		 md_priv_vf->md.lac, resp_len);
+
+	return &md_priv_vf->md;
+
+free_md_priv:
+	kfree(md_priv_vf);
+	return ERR_PTR(rc);
+}
+
+/**
+ * cass_map_pages_vf() - Allocate pages, build an sgt, DMA-map, and register an
+ * MD with the PF for a VF
+ *
+ * Common helper shared by cxi_map_vf() and cxi_map_iov_vf().  Handles the
+ * full page-to-MD pipeline: page array allocation, pinning or kernel-virt
+ * lookup, sgt construction, DMA mapping, PF registration, and md field setup.
+ *
+ * @lni:   Logical Network Interface
+ * @va:    Starting virtual address
+ * @len:   Mapping length in bytes
+ * @flags: Mapping flags
+ * @iter:  Optional kernel iov_iter backing the mapping.  When supplied, pages
+ *         are taken from the iterator segments (multi-segment safe); when NULL
+ *         the mapping is treated as a single contiguous @va range.
+ *
+ * @return: memory descriptor or error pointer
+ */
+static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
+					u32 flags, const struct iov_iter *iter)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_md *md;
+	struct cxi_md_priv_vf *md_priv_vf;
+	struct sg_table *sgt;
+	struct page **pages;
+	int npages;
+	int rc;
+
+	rc = cass_alloc_pages_sgt_vf(hw, va, len, flags, iter, &pages, &sgt,
+				     &npages);
+
+	if (rc)
+		return ERR_PTR(rc);
+
+	md = cxi_map_sgtable_vf(lni, sgt, flags);
+	if (IS_ERR(md)) {
+		rc = PTR_ERR(md);
+		goto cleanup;
+	}
+
+	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	md_priv_vf->md.va = va & PAGE_MASK;
+	md_priv_vf->sgt = sgt;
+	md_priv_vf->pages = pages;
+	md_priv_vf->npages = npages;
+	/* md.iova, md.len and olen are already set to page-aligned values by
+	 * cxi_map_sgtable_vf()
+	 */
+
+	pr_debug("VF map_pages: md:%d iova:%llx lac:%u va:0x%llx len:0x%lx nents:%u\n",
+		 md->id, md->iova, md->lac, va, len, sgt->nents);
+
+	return md;
+
+cleanup:
+	dma_unmap_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
+	sg_free_table(sgt);
+	kfree(sgt);
+	if (flags & CXI_MAP_PIN)
+		unpin_user_pages(pages, npages);
+	kvfree(pages);
+
+	return ERR_PTR(rc);
+}
+
+/**
+ * cxi_map_iov_vf() - Map a bvec/kvec iov_iter into IO virtual address space for a VF
+ *
+ * VF equivalent of the iov_iter path in cxi_map_iov().  Extracts the starting
+ * VA and length from the iter, obtains the backing pages, DMA-maps them as a
+ * scatter-gather table, and registers the mapping with the PF via
+ * CXI_OP_ATU_MAP_SGT.
+ *
+ * @lni:   Logical Network Interface
+ * @iter:  Input iov_iter (ITER_BVEC or ITER_KVEC)
+ * @flags: Mapping flags
+ *
+ * @return: memory descriptor or error pointer
+ */
+static struct cxi_md *cxi_map_iov_vf(struct cxi_lni *lni,
+				     const struct iov_iter *iter, u32 flags)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	u64 va;
+	size_t len;
+	int rc;
+
+	if (flags & CXI_MAP_USER_ADDR && !(flags & CXI_MAP_PIN)) {
+		cxidev_err(&hw->cdev, "VF does not support ODP\n");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
+	if (flags & CXI_MAP_DEVICE) {
+		cxidev_err(&hw->cdev,
+			   "cxi_map_iov in VF does not support device memory\n");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
+	if (iov_iter_is_bvec(iter))
+		rc = cass_bvec(hw, iter, &len, &va);
+	else if (iov_iter_is_kvec(iter))
+		rc = cass_kvec(hw, iter, &len, &va);
+	else
+		return ERR_PTR(-EINVAL);
+
+	if (rc)
+		return ERR_PTR(rc);
+
+	return cass_map_pages_vf(lni, va, len, flags, iter);
+}
 
 /**
  * cxi_update_iov() - Map a list of virtual address or pages in an IO
@@ -1293,6 +1709,9 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 	if (flags & CXI_MAP_ATS)
 		return ERR_PTR(-EINVAL);
 
+	if (!cdev->is_physfn)
+		return cxi_map_iov_vf(lni, iter, flags);
+
 	if (iov_iter_is_bvec(iter))
 		ret = cass_bvec(hw, iter, &m_opts.va_len, &va);
 	else if (iov_iter_is_kvec(iter))
@@ -1359,106 +1778,8 @@ iova_free:
 }
 EXPORT_SYMBOL(cxi_map_iov);
 
-/**
- * cxi_map_sgtable_vf() - Map an sg table to an IO virtual address space for a VF
- *
- * @lni: The Logical Network Interface
- * @sgt: The sg_table object. It is expected to be dma mapped.
- * @flags: Various options affecting the map
- *
- * @return: memory descriptor or error code
- */
-static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
-					 struct sg_table *sgt, u32 flags)
-{
-	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
-	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
-	struct cxi_dev *dev = lni_priv_vf->dev;
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-	struct cxi_md_priv_vf *md_priv_vf;
-	struct cxi_atu_map_sgt_cmd *cmd;
-	struct cxi_atu_map_sgt_resp resp = {};
-	size_t cmd_len;
-	size_t resp_len = sizeof(resp);
-	struct scatterlist *sg;
-	int i;
-	int rc;
-	size_t sgt_len;
 
-	if (!sgt)
-		return ERR_PTR(-EINVAL);
-
-	if (!cass_sgtable_is_valid(hw, sgt, &sgt_len))
-		return ERR_PTR(-EINVAL);
-
-	sg = sgt->sgl;
-
-	md_priv_vf = kzalloc(sizeof(*md_priv_vf), GFP_KERNEL);
-	if (!md_priv_vf)
-		return ERR_PTR(-ENOMEM);
-
-	md_priv_vf->lni_priv = lni_priv;
-	md_priv_vf->device = &hw->cdev.pdev->dev;
-	md_priv_vf->md.va = 0;
-	md_priv_vf->md.len = sgt_len;
-	md_priv_vf->olen = sgt_len;
-	md_priv_vf->md.page_shift = PAGE_SHIFT;
-	md_priv_vf->md.huge_shift = PMD_SHIFT;
-	md_priv_vf->flags = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
-	md_priv_vf->sgt = sgt;
-	md_priv_vf->pages = NULL;
-	md_priv_vf->npages = 0;
-
-	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
-		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid, sgt->nents, sgt_len,
-		 flags);
-
-	cmd_len = struct_size(cmd, sge, sgt->nents);
-	if (cmd_len > MAX_VFMSG_SIZE) {
-		rc = -E2BIG;
-		goto free_md_priv;
-	}
-	cmd = kvzalloc(cmd_len, GFP_KERNEL);
-	if (!cmd) {
-		rc = -ENOMEM;
-		goto free_md_priv;
-	}
-
-	cmd->op = CXI_OP_ATU_MAP_SGT;
-	cmd->lni = lni_priv_vf->lni.id;
-	cmd->flags = flags;
-	cmd->nents = sgt->nents;
-
-	pr_debug("Sending SGT with %d entries to PF\n", sgt->nents);
-	for (i = 0; i < sgt->nents; i++) {
-		cmd->sge[i].dma_addr = sg_dma_address(sg);
-		cmd->sge[i].dma_len = sg_dma_len(sg);
-		cmd->sge[i].offset = sg->offset;
-
-		sg = sg_next(sg);
-	}
-
-	rc = cxi_send_msg_to_pf(dev, cmd, cmd_len, &resp, &resp_len);
-	kvfree(cmd);
-	if (rc)
-		goto free_md_priv;
-
-	/* Set the iova and the lac retrieved from the PF */
-	md_priv_vf->md.iova = resp.md.iova;
-	md_priv_vf->md.lac = resp.md.lac;
-	md_priv_vf->md.id = resp.md.id;
-	pr_debug("VF map resp: md:%d iova:%llx lac:%u resp_len:%zu\n",
-		 md_priv_vf->md.id, md_priv_vf->md.iova,
-		 md_priv_vf->md.lac, resp_len);
-
-	return &md_priv_vf->md;
-
-free_md_priv:
-	kfree(md_priv_vf);
-	return ERR_PTR(rc);
-}
-
-static int cxi_unmap_sgtable_vf(struct cxi_dev *dev,
+static int cass_unmap_sgtable_vf(struct cxi_dev *dev,
 				struct cxi_md_priv_vf *md_priv_vf,
 				struct cass_dev *hw, int md_id)
 {
@@ -1684,36 +2005,6 @@ int cxi_update_sgtable(struct cxi_md *md, struct sg_table *sgt)
 }
 EXPORT_SYMBOL(cxi_update_sgtable);
 
-/**
- * cass_virt_to_pages() - Get page structures for kernel virtual addresses
- *
- * @hw: Cassini device for error reporting
- * @va: Starting virtual address (will be page-aligned)
- * @npages: Number of pages to get
- * @pages: Array to store page pointers
- *
- * @return: 0 on success, negative error code on failure
- */
-static int cass_virt_to_pages(struct cass_dev *hw, uintptr_t va, int npages,
-			      struct page **pages)
-{
-	int i;
-	uintptr_t addr = va & PAGE_MASK;
-
-	for (i = 0; i < npages; i++, addr += PAGE_SIZE) {
-		if (is_vmalloc_addr((void *)addr))
-			pages[i] = vmalloc_to_page((void *)addr);
-		else
-			pages[i] = virt_to_page(addr);
-
-		if (!pages[i]) {
-			cxidev_err(&hw->cdev, "Failed to get page for addr 0x%lx\n", addr);
-			return -EFAULT;
-		}
-	}
-
-	return 0;
-}
 
 /**
  * cxi_update_iov_vf() - Update an iov-backed MD on a VF
@@ -1752,62 +2043,21 @@ static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
 		return -EOVERFLOW;
 
 	/* md->len tracks the current mapping size; olen is the immutable
-	 * original reservation size set once in cxi_map_alloc_vf().
+	 * original reservation size set once in cass_map_alloc_vf().
 	 */
 	if (len > md_priv_vf->olen) {
 		pr_debug("Address range not bounded by MD\n");
 		return -EINVAL;
 	}
 
-	npages = (PAGE_ALIGN(va + len) - (va & PAGE_MASK)) >> PAGE_SHIFT;
-
-	new_pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
-	if (!new_pages)
-		return -ENOMEM;
-
-	if (md_priv_vf->flags & CXI_MAP_PIN) {
-		unsigned int gup_flags = FOLL_LONGTERM;
-
-		if (md_priv_vf->flags & CXI_MAP_WRITE)
-			gup_flags |= FOLL_WRITE;
-
-		rc = pin_user_pages_fast(va & PAGE_MASK, npages,
-					 gup_flags, new_pages);
-		if (rc != npages) {
-			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n",
-				   rc, npages);
-			if (rc > 0)
-				unpin_user_pages(new_pages, rc);
-			rc = rc < 0 ? rc : -EFAULT;
-			goto free_new_pages;
-		}
-	} else {
-		rc = cass_virt_to_pages(hw, va, npages, new_pages);
-		if (rc)
-			goto free_new_pages;
-	}
-
-	new_sgt = kzalloc(sizeof(*new_sgt), GFP_KERNEL);
-	if (!new_sgt) {
-		rc = -ENOMEM;
-		goto unpin_new_pages;
-	}
-
-	rc = sg_alloc_table_from_pages_segment(new_sgt, new_pages, npages,
-					       va & ~PAGE_MASK, len,
-					       UINT_MAX, GFP_KERNEL);
+	rc = cass_alloc_pages_sgt_vf(hw, va, len, md_priv_vf->flags, iter,
+				    &new_pages, &new_sgt, &npages);
 	if (rc)
-		goto free_new_sgt;
-
-	rc = dma_map_sgtable(&hw->cdev.pdev->dev, new_sgt, DMA_BIDIRECTIONAL, 0);
-	if (rc) {
-		cxidev_err(&hw->cdev, "dma_map_sgtable failed\n");
-		goto free_new_sgt_table;
-	}
+		return rc;
 
 	rc = cxi_update_sgtable_vf(md, new_sgt);
 	if (rc)
-		goto unmap_new_sgt;
+		goto cleanup;
 
 	/* old_pages is NULL when the MD was created with CXI_MAP_ALLOC_MD and
 	 * has not been populated yet; nothing to free in that case.
@@ -1833,22 +2083,18 @@ static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
 
 	return 0;
 
-unmap_new_sgt:
+cleanup:
 	dma_unmap_sgtable(&hw->cdev.pdev->dev, new_sgt, DMA_BIDIRECTIONAL, 0);
-free_new_sgt_table:
 	sg_free_table(new_sgt);
-free_new_sgt:
 	kfree(new_sgt);
-unpin_new_pages:
 	if (md_priv_vf->flags & CXI_MAP_PIN)
 		unpin_user_pages(new_pages, npages);
-free_new_pages:
 	kvfree(new_pages);
 	return rc;
 }
 
 /**
- * cxi_map_alloc_vf() - Allocate an MD IOVA on the PF without mapping any pages
+ * cass_map_alloc_vf() - Allocate an MD IOVA on the PF without mapping any pages
  *
  * VF equivalent of cxi_map(..., CXI_MAP_ALLOC_MD).  Sends CXI_OP_ATU_MAP
  * with va=0 and CXI_MAP_ALLOC_MD set, reusing the same PF handler as regular
@@ -1860,7 +2106,7 @@ free_new_pages:
  * @len:   Allocation size in bytes
  * @flags: Mapping flags (must include CXI_MAP_ALLOC_MD)
  */
-static struct cxi_md *cxi_map_alloc_vf(struct cxi_lni *lni, size_t len,
+static struct cxi_md *cass_map_alloc_vf(struct cxi_lni *lni, size_t len,
 				       u32 flags)
 {
 	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
@@ -1915,17 +2161,7 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
 	struct cxi_dev *dev = lni_priv_vf->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-	struct cxi_md *md;
-	struct cxi_md_priv_vf *md_priv_vf;
-	/* For now, we do not support hugepages. This will come later when we add the ATS
-	 * for both VF and PF: NETCASSINI-7859.
-	 * In this effort we will reuse code to align pages and to support huge pages too
-	 */
-	const int npages = (PAGE_ALIGN(va + len) - (va & PAGE_MASK)) >> PAGE_SHIFT;
-	struct page **pages;
-	struct sg_table *sgt;
 	unsigned long end;
-	int rc;
 
 	if (check_add_overflow(va, len, &end)) {
 		pr_debug("va (%016lx) + len (%016lx) overflows\n", va, len);
@@ -1934,7 +2170,7 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 
 	/* Allocate-only path: no VA, no pages, just reserve an IOVA on the PF */
 	if (flags & CXI_MAP_ALLOC_MD)
-		return cxi_map_alloc_vf(lni, len, flags);
+		return cass_map_alloc_vf(lni, len, flags);
 
 	if (flags & CXI_MAP_USER_ADDR && !(flags & CXI_MAP_PIN)) {
 		cxidev_err(&hw->cdev, "VF does not support ODP\n");
@@ -1946,88 +2182,11 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
-	pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
-	if (!pages) {
-		rc = -ENOMEM;
-		return ERR_PTR(rc);
-	}
-
-	/* Get the pages and pin them if requested */
-	if (flags & CXI_MAP_PIN) {
-		unsigned int gup_flags = FOLL_LONGTERM;
-
-		if (flags & CXI_MAP_WRITE)
-			gup_flags |= FOLL_WRITE;
-
-		rc = pin_user_pages_fast(va & PAGE_MASK, npages, gup_flags, pages);
-		if (rc != npages) {
-			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n", rc, npages);
-			if (rc > 0)
-				unpin_user_pages(pages, rc);
-			rc = rc < 0 ? rc : -EFAULT;
-			goto free_pages;
-		}
-	} else {
-		rc = cass_virt_to_pages(hw, va, npages, pages);
-		if (rc)
-			goto free_pages;
-	}
-
-	/* Now we DMA-map the pages using a scatter-gather table */
-	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
-	if (!sgt) {
-		rc = -ENOMEM;
-		goto unpin_pages;
-	}
-
-	rc = sg_alloc_table_from_pages_segment(sgt, pages, npages,
-					       va & ~PAGE_MASK, len,
-					       UINT_MAX, GFP_KERNEL);
-	if (rc)
-		goto free_sgt;
-
-	rc = dma_map_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
-	if (rc) {
-		cxidev_err(&hw->cdev, "dma_map_sgtable failed\n");
-		goto free_sgt_table;
-	}
-
-	pr_debug("va:0x%lx len:0x%lx npages:%d nents:%u page_aligned_va:0x%lx page_offset:0x%lx\n",
-		 va, len, npages, sgt->nents, va & PAGE_MASK, va & ~PAGE_MASK);
-
-	md = cxi_map_sgtable_vf(lni, sgt, flags);
-	if (IS_ERR(md)) {
-		rc = PTR_ERR(md);
-		goto unmap_sgt;
-	}
-
-	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
-	md_priv_vf->md.va = va;
-	md_priv_vf->olen = len;
-	md_priv_vf->sgt = sgt;
-	md_priv_vf->pages = pages;
-	md_priv_vf->npages = npages;
-
-	/* Adjust IOVA to include the within-page offset.
-	 * PF returns page-aligned IOVA, but application needs the actual data address.
+	/* For now, we map 4K pages, no matter what the page size is.
+	 * This spends more NTA entries. Hugepage VF will be added shortly in
+	 * NETCASSINI-8429.
 	 */
-	md_priv_vf->md.iova += (va & ~PAGE_MASK);
-	md_priv_vf->md.len = len;
-
-	return md;
-
-unmap_sgt:
-	dma_unmap_sgtable(&hw->cdev.pdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
-free_sgt_table:
-	sg_free_table(sgt);
-free_sgt:
-	kfree(sgt);
-unpin_pages:
-	if (flags & CXI_MAP_PIN)
-		unpin_user_pages(pages, npages);
-free_pages:
-	kvfree(pages);
-	return ERR_PTR(rc);
+	return cass_map_pages_vf(lni, va, len, flags, NULL);
 }
 
 /**
@@ -2233,12 +2392,8 @@ static int cxi_unmap_vf(struct cxi_md *md)
 	pr_debug("VF md:%d lac:%d va:%llx iova:%llx len:%lx\n",
 		 md->id, md->lac, md->va, md->iova, md->len);
 
-	/* Notify PF to free the MD created from the VF sglist */
-	rc = cxi_unmap_sgtable_vf(dev, md_priv_vf, hw, md->id);
-	if (rc)
-		return rc;
+	rc = cass_unmap_sgtable_vf(dev, md_priv_vf, hw, md->id);
 
-	/* Unmap and free scatter-gather table if we own it */
 	if (md_priv_vf->pages && md_priv_vf->sgt) {
 		dma_unmap_sgtable(md_priv_vf->device, md_priv_vf->sgt, DMA_BIDIRECTIONAL, 0);
 		sg_free_table(md_priv_vf->sgt);
@@ -2255,7 +2410,7 @@ static int cxi_unmap_vf(struct cxi_md *md)
 	/* Free the VF MD structure */
 	kfree(md_priv_vf);
 
-	return 0;
+	return rc;
 }
 
 /**
