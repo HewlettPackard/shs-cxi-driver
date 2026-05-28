@@ -1965,6 +1965,9 @@ int cass_nta_mirror_kern(struct cxi_md_priv *md_priv,
 
 			kvec++;
 		}
+	} else {
+		ret = -EINVAL;
+		goto sg_alloc_error;
 	}
 
 	ret = dma_map_sgtable(md_priv->device, sgt, DMA_BIDIRECTIONAL, 0);

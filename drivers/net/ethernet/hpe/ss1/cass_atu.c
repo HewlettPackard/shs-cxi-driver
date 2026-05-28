@@ -1246,8 +1246,11 @@ int cxi_update_iov(struct cxi_md *md, const struct iov_iter *iter)
 
 	if (iov_iter_is_bvec(iter))
 		ret = cass_bvec(hw, iter, &len, &va);
-	else
+	else if (iov_iter_is_kvec(iter))
 		ret = cass_kvec(hw, iter, &len, &va);
+	else
+		return -EINVAL;
+
 	if (ret)
 		return ret;
 
@@ -1296,8 +1299,11 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 
 	if (iov_iter_is_bvec(iter))
 		ret = cass_bvec(hw, iter, &m_opts.va_len, &va);
-	else
+	else if (iov_iter_is_kvec(iter))
 		ret = cass_kvec(hw, iter, &m_opts.va_len, &va);
+	else
+		return ERR_PTR(-EINVAL);
+
 	if (ret)
 		return ERR_PTR(ret);
 
