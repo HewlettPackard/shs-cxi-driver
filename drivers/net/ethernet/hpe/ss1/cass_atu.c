@@ -719,12 +719,10 @@ static void cass_remove_md(struct cxi_md_priv *md_priv)
 	cass_md_clear(md_priv, true, true);
 }
 
-static void cass_md_iova_free(struct cxi_md_priv *md_priv)
+static void cass_iova_free(struct cass_ac *cac, u64 iova, size_t olen)
 {
-	struct cass_ac *cac = md_priv->cac;
-
 	if (cac->iovad)
-		FREE_IOVA_FAST(cac->iovad, md_priv->md.iova, md_priv->olen);
+		FREE_IOVA_FAST(cac->iovad, iova, olen);
 }
 
 static int cass_bvec(struct cass_dev *hw, const struct iov_iter *iter,
@@ -1318,8 +1316,11 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 		return ERR_PTR(PTR_ERR(cac));
 
 	md_priv = kzalloc(sizeof(*md_priv), GFP_KERNEL);
-	if (md_priv == NULL)
-		return ERR_PTR(-ENOMEM);
+	if (!md_priv) {
+		ret = -ENOMEM;
+		goto iova_free;
+	}
+
 	refcount_set(&md_priv->refcount, 1);
 	md = &md_priv->md;
 	md_priv->device = &hw->cdev.pdev->dev;
@@ -1351,10 +1352,11 @@ struct cxi_md *cxi_map_iov(struct cxi_lni *lni, const struct iov_iter *iter,
 	return md;
 
 mirror_range_error:
-	cass_md_iova_free(md_priv);
 	ida_free(&hw->md_index_table, md->id);
 md_free:
 	kfree(md_priv);
+iova_free:
+	cass_iova_free(cac, m_opts.iova, m_opts.va_len);
 
 	return ERR_PTR(ret);
 }
@@ -1523,8 +1525,11 @@ struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni, struct sg_table *sgt,
 		return ERR_PTR(PTR_ERR(cac));
 
 	md_priv = kzalloc(sizeof(*md_priv), GFP_KERNEL);
-	if (md_priv == NULL)
-		return ERR_PTR(-ENOMEM);
+	if (!md_priv) {
+		ret = -ENOMEM;
+		goto iova_free;
+	}
+
 	refcount_set(&md_priv->refcount, 1);
 	md = &md_priv->md;
 	md_priv->device = &hw->cdev.pdev->dev;
@@ -1562,10 +1567,11 @@ struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni, struct sg_table *sgt,
 	return md;
 
 mirror_range_error:
-	cass_md_iova_free(md_priv);
 	ida_free(&hw->md_index_table, md->id);
 md_free:
 	kfree(md_priv);
+iova_free:
+	cass_iova_free(cac, m_opts.iova, m_opts.va_len);
 
 	return ERR_PTR(ret);
 }
@@ -2172,7 +2178,7 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 mirror_range_error:
 	ida_free(&hw->md_index_table, md->id);
 iova_free:
-	cass_md_iova_free(md_priv);
+	cass_iova_free(md_priv->cac, md_priv->md.iova, md_priv->olen);
 put_device_pages:
 	if (flags & CXI_MAP_DEVICE)
 		cass_device_put_pages(md_priv);
@@ -2248,7 +2254,7 @@ int cxi_unmap(struct cxi_md *md)
 		 md->len);
 
 	cass_remove_md(md_priv);
-	cass_md_iova_free(md_priv);
+	cass_iova_free(md_priv->cac, md_priv->md.iova, md_priv->olen);
 	ida_free(&hw->md_index_table, md->id);
 
 	cxidev_WARN_ONCE(dev, !refcount_dec_and_test(&md_priv->refcount),
