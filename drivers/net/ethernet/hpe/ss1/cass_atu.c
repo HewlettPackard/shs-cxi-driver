@@ -286,10 +286,11 @@ pri_init_fail:
 	cass_nta_cq_fini(hw);
 
 cq_init_fail:
-	refcount_dec(&hw->refcount);
 	dma_unmap_single(&hw->cdev.pdev->dev, hw->oxe_dummy_dma_addr,
 			 PAGE_SIZE, DMA_TO_DEVICE);
 free_dummy:
+	refcount_dec(&hw->refcount);
+	ida_destroy(&hw->atu_table);
 	kfree(hw->oxe_dummy_addr);
 
 	return ret;
