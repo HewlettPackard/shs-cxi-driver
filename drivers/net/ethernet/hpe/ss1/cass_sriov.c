@@ -1229,6 +1229,11 @@ int cass_vf_init(struct cass_dev *hw)
 		.op = CXI_OP_VF_GET_TOKEN,
 	};
 	struct cxi_vf_get_token_resp token_resp;
+	const struct cxi_query_version_cmd version_cmd = {
+		.op = CXI_OP_QUERY_VERSION,
+		.version = CXI_API_VERSION
+	};
+	struct cxi_query_version_resp version_resp;
 	size_t resp_len = sizeof(token_resp);
 	struct sockaddr_vm addr = {
 		.svm_family = AF_VSOCK,
@@ -1275,6 +1280,25 @@ int cass_vf_init(struct cass_dev *hw)
 	rc = vf_handshake(hw);
 	if (rc < 0)
 		goto shutdown_vf_sock;
+
+	/* Check version compatibility against PF. PF can reject VF client by
+	 * returning -EINVAL
+	 */
+	rc = cxi_send_msg_to_pf(&hw->cdev, &version_cmd, sizeof(version_cmd),
+				&version_resp, &resp_len);
+	if (rc == -EINVAL) {
+		cxidev_err(&hw->cdev, "PF does not support this VF client version");
+		goto shutdown_vf_sock;
+	}
+	if (rc < 0) {
+		cxidev_err(&hw->cdev, "failed to query PF version: %d", rc);
+		goto shutdown_vf_sock;
+	}
+	if (version_resp.version < CXI_SRIOV_SERVER_MIN) {
+		cxidev_err(&hw->cdev, "PF API version 0x%x is too old (0x%x or newer required)",
+			   version_resp.version, CXI_SRIOV_SERVER_MIN);
+		goto shutdown_vf_sock;
+	}
 
 	/* Handshake successful, now retrieve token and connect notification socket */
 	rc = cxi_send_msg_to_pf(&hw->cdev, &token_cmd, sizeof(token_cmd),

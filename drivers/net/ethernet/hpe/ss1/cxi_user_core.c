@@ -3786,6 +3786,29 @@ out:
 	return rc;
 }
 
+static int cxi_user_query_version(struct user_client *client,
+				  const void *cmd_in, size_t cmd_len,
+				  void **resp_out, size_t resp_buf_size,
+				  size_t *resp_out_len)
+{
+	const struct cxi_query_version_cmd *cmd = cmd_in;
+	const struct cxi_query_version_resp resp = {
+		.version = CXI_API_VERSION,
+	};
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
+			  resp_out_len))
+		return -EFAULT;
+
+	if (cmd->version < CXI_SRIOV_CLIENT_MIN) {
+		cxidev_err(client->ucxi->dev, "VF %d: API version 0x%x is too old (0x%x or newer required)",
+			   client->vf_num, cmd->version, CXI_SRIOV_CLIENT_MIN);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_LNI_ALLOC] = {
 		.req_size   = sizeof(struct cxi_lni_alloc_cmd),
@@ -4131,6 +4154,10 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_TELEM_GET] = {
 		.name       = "TELEM_GET",
 		.handler    = cxi_user_telem_get, },
+	[CXI_OP_QUERY_VERSION] = {
+		.req_size   = sizeof(struct cxi_query_version_cmd),
+		.name       = "QUERY_VERSION",
+		.handler    = cxi_user_query_version, },
 };
 
 /* Read and process a command from userspace or from a Virtual

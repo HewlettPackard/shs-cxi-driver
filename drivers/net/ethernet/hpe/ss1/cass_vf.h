@@ -9,6 +9,20 @@
  */
 #define MAX_VFMSG_SIZE (1024 * 1024)
 
+#define CXI_VERSION(a, b, c) KERNEL_VERSION(a, b, c)
+#define CXI_VERSION_MAJOR 1
+#define CXI_VERSION_MINOR 0
+#define CXI_VERSION_PATCH 0
+
+/* Version of user/VF API implemented by this driver */
+#define CXI_API_VERSION CXI_VERSION(CXI_VERSION_MAJOR, CXI_VERSION_MINOR, CXI_VERSION_PATCH)
+
+/* Minimum VF client version required by PF */
+#define CXI_SRIOV_CLIENT_MIN CXI_VERSION(1, 0, 0)
+
+/* Minimum PF version required by VF clients */
+#define CXI_SRIOV_SERVER_MIN CXI_VERSION(1, 0, 0)
+
 /* VF private structures */
 struct cxi_lni_priv_vf {
 	/* Matching fields in cxi_lni_priv */

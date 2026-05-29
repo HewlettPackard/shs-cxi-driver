@@ -147,6 +147,7 @@ enum cxi_command_opcode {
 		CXI_OP_RMU_ETH_ADD_ALL_MCAST_FILTER,
 		CXI_OP_ETH_VF_MAC_GET,
 		CXI_OP_ETH_VF_MAC_VALIDATE,
+		CXI_OP_QUERY_VERSION,
 
 		CXI_OP_TELEM_GET,
 
@@ -1601,6 +1602,16 @@ struct cxi_telem_get_resp {
 	__s64 ts_sec;
 	__u64 ts_nsec;
 	__u64 values[0];
+};
+
+struct cxi_query_version_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int version;
+};
+
+struct cxi_query_version_resp {
+	unsigned int version;
 };
 
 #define CXIERR_GENL_FAMILY_NAME "cxierr"
