@@ -172,7 +172,8 @@ void cass_nta_pri_fini(struct cass_dev *hw)
 	destroy_workqueue(hw->prb_wq);
 	destroy_workqueue(hw->pri_wq);
 	dma_unmap_single(&hw->cdev.pdev->dev, hw->prt_dma_addr,
-			 sizeof(struct c_page_request_entry), DMA_FROM_DEVICE);
+			 C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
+			 DMA_FROM_DEVICE);
 	kfree(hw->page_request_table);
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec), hw);
 	dma_unmap_single(&hw->cdev.pdev->dev, hw->atu_cq.rsp_dma_addr,
@@ -204,7 +205,7 @@ int cass_nta_pri_init(struct cass_dev *hw)
 		return -ENOMEM;
 
 	hw->prt_dma_addr = dma_map_single(&hw->cdev.pdev->dev, hw->page_request_table,
-					  sizeof(struct c_page_request_entry),
+					  C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
 					  DMA_FROM_DEVICE);
 	if (dma_mapping_error(&hw->cdev.pdev->dev, hw->prt_dma_addr)) {
 		rc = -ENOMEM;
@@ -254,7 +255,8 @@ alloc_wq_failed:
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec), hw);
 free_mapping:
 	dma_unmap_single(&hw->cdev.pdev->dev, hw->prt_dma_addr,
-			 sizeof(struct c_page_request_entry), DMA_FROM_DEVICE);
+			 C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
+			 DMA_FROM_DEVICE);
 free_table:
 	kfree(hw->page_request_table);
 
