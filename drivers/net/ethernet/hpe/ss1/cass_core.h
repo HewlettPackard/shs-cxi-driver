@@ -377,6 +377,8 @@ struct cass_atu_cq {
 	dma_addr_t cmp_wait_rsp_addr;
 	dma_addr_t ib_wait_rsp_addr;
 
+	bool hw_failure;
+
 	char cmpl_wait_int_name[CASS_MAX_IRQ_NAME];
 };
 

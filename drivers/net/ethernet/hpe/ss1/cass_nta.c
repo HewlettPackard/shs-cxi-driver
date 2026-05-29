@@ -494,10 +494,9 @@ int cass_inbound_wait(struct cass_dev *hw, bool wait_for_response)
 		.rsp_en = wait_for_response,
 		.rsp_addr = cq->ib_wait_rsp_addr,
 	};
-	static bool hw_failure;
 
 	/* hw_failure was set previously. No need to progress */
-	if (hw_failure)
+	if (cq->hw_failure)
 		return -EHOSTDOWN;
 
 	cq->wait_rsp_data->ib = 0;
@@ -520,9 +519,9 @@ int cass_inbound_wait(struct cass_dev *hw, bool wait_for_response)
 				(rsp_read_data == WAIT_RSP_DATA), 1,
 				ATU_IBW_TIMEOUT);
 			if (ret) {
-				hw_failure = cass_cmdproc_debug(hw, true);
+				cq->hw_failure = cass_cmdproc_debug(hw, true);
 
-				if (hw_failure) {
+				if (cq->hw_failure) {
 					rc = -EHOSTDOWN;
 					break;
 				}
