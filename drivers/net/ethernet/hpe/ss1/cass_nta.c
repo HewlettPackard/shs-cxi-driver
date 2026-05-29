@@ -103,7 +103,11 @@ static void cass_nta_cq_write(struct cass_dev *hw, unsigned int index,
 
 void cass_nta_cq_fini(struct cass_dev *hw)
 {
+	struct cass_atu_cq *cq = &hw->atu_cq;
+
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_cq_vec), hw);
+	dma_free_coherent(&hw->cdev.pdev->dev, sizeof(*cq->wait_rsp_data),
+			  cq->wait_rsp_data, cq->rsp_dma_addr);
 }
 
 static irqreturn_t cass_nta_cq_cb(int irq, void *context)
@@ -130,9 +134,10 @@ int cass_nta_cq_init(struct cass_dev *hw)
 	};
 	int rc;
 
-	cq->rsp_dma_addr = dma_map_single(&hw->cdev.pdev->dev, &cq->wait_rsp_data,
-					  sizeof(cq->wait_rsp_data), DMA_FROM_DEVICE);
-	if (dma_mapping_error(&hw->cdev.pdev->dev, cq->rsp_dma_addr))
+	cq->wait_rsp_data = dma_alloc_coherent(&hw->cdev.pdev->dev,
+					       sizeof(*cq->wait_rsp_data),
+					       &cq->rsp_dma_addr, GFP_KERNEL);
+	if (!cq->wait_rsp_data)
 		return -ENOMEM;
 
 	cq->cmp_wait_rsp_addr = (cq->rsp_dma_addr + offsetof(struct wait_rsp_data, cmp)) >> 3;
@@ -148,8 +153,9 @@ int cass_nta_cq_init(struct cass_dev *hw)
 			 cass_nta_cq_cb, 0, cq->cmpl_wait_int_name, hw);
 	if (rc) {
 		dev_err(&hw->cdev.pdev->dev, "Failed to request IRQ.\n");
-		dma_unmap_single(&hw->cdev.pdev->dev, cq->rsp_dma_addr,
-				 sizeof(cq->wait_rsp_data), DMA_FROM_DEVICE);
+		dma_free_coherent(&hw->cdev.pdev->dev,
+				  sizeof(*cq->wait_rsp_data),
+				  cq->wait_rsp_data, cq->rsp_dma_addr);
 		return rc;
 	}
 
@@ -175,8 +181,6 @@ void cass_nta_pri_fini(struct cass_dev *hw)
 			  C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
 			  hw->page_request_table, hw->prt_dma_addr);
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec), hw);
-	dma_unmap_single(&hw->cdev.pdev->dev, hw->atu_cq.rsp_dma_addr,
-			 sizeof(struct wait_rsp_data), DMA_FROM_DEVICE);
 }
 
 /**
@@ -318,7 +322,7 @@ static void cass_dcpl_debug(struct cass_dev *hw)
 	cass_read(hw, C_ATU_STS_AT_EPOCH, &val2, sizeof(val2));
 	cxidev_warn_ratelimited(&hw->cdev,
 				"Completion wait timeout after decouple. atu_sts_cmdproc:0x%llx atu_sts_at_epoch:0x%llx rsp_data:0x%llx\n",
-				val1, val2, hw->atu_cq.wait_rsp_data.cmp);
+				val1, val2, hw->atu_cq.wait_rsp_data->cmp);
 }
 
 static void cass_completion_wait(struct cass_dev *hw, unsigned int wr_index)
@@ -338,7 +342,7 @@ static void cass_completion_wait(struct cass_dev *hw, unsigned int wr_index)
 	entry.comp_wait_rsp_en = 1;
 	entry.comp_wait_rsp_addr = cq->cmp_wait_rsp_addr;
 
-	cq->wait_rsp_data.cmp = 0;
+	cq->wait_rsp_data->cmp = 0;
 
 	cass_nta_cq_write(hw, ATUCQ_ENTRY(wr_index), &entry);
 
@@ -359,7 +363,7 @@ static void cass_completion_wait(struct cass_dev *hw, unsigned int wr_index)
 		timeout *= 10;
 
 	do {
-		ret = readq_poll_timeout_atomic(&cq->wait_rsp_data.cmp,
+		ret = readq_poll_timeout_atomic(&cq->wait_rsp_data->cmp,
 						cw_rsp_read_data,
 						(cw_rsp_read_data == WAIT_RSP_DATA),
 						1, timeout);
@@ -496,7 +500,7 @@ int cass_inbound_wait(struct cass_dev *hw, bool wait_for_response)
 	if (hw_failure)
 		return -EHOSTDOWN;
 
-	cq->wait_rsp_data.ib = 0;
+	cq->wait_rsp_data->ib = 0;
 
 	/* Writes to C_ATU_CFG_CMDPROC are ignored if ATUCQ is not idle. */
 	ret = cass_poll_sts_cmdproc_idle(hw, true);
@@ -512,7 +516,7 @@ int cass_inbound_wait(struct cass_dev *hw, bool wait_for_response)
 	if (wait_for_response) {
 		do {
 			ret = readq_poll_timeout_atomic(
-				&cq->wait_rsp_data.ib, rsp_read_data,
+				&cq->wait_rsp_data->ib, rsp_read_data,
 				(rsp_read_data == WAIT_RSP_DATA), 1,
 				ATU_IBW_TIMEOUT);
 			if (ret) {

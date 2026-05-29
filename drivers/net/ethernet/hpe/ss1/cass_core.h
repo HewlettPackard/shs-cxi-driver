@@ -361,15 +361,17 @@ struct cass_p2p_ops {
  */
 #define WAIT_RSP_DATA 0xf00fbeefULL
 
+struct wait_rsp_data {
+	u64 cmp ____cacheline_aligned;
+	u64 ib ____cacheline_aligned;
+};
+
 struct cass_atu_cq {
 	/* Protects access to the ATU CQ and wait_rsp_data */
 	struct mutex atu_cq_mutex;
 	struct mutex atu_ib_mutex;
 
-	struct wait_rsp_data {
-		u64 cmp ____cacheline_aligned;
-		u64 ib ____cacheline_aligned;
-	} wait_rsp_data;
+	struct wait_rsp_data *wait_rsp_data;
 
 	dma_addr_t rsp_dma_addr;
 	dma_addr_t cmp_wait_rsp_addr;
