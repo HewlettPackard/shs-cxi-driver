@@ -296,10 +296,18 @@ free_dummy:
 	return ret;
 }
 
+static void cass_iova_free(struct cass_ac *cac, u64 iova, size_t olen)
+{
+	if (cac->iovad)
+		FREE_IOVA_FAST(cac->iovad, iova, olen);
+}
+
 static void cass_md_list_free(struct cass_ac *cac)
 {
 	struct cxi_md_priv *tmp;
 	struct cxi_md_priv *le;
+	struct cass_dev *hw = container_of(cac->lni_priv->dev, struct cass_dev,
+					   cdev);
 
 	mutex_lock(&cac->md_mutex);
 
@@ -307,7 +315,11 @@ static void cass_md_list_free(struct cass_ac *cac)
 		list_del(&le->md_entry);
 		refcount_dec(&cac->refcount);
 		cass_md_clear(le, false, true);
+		cass_iova_free(cac, le->md.iova, le->olen);
+		ida_free(&hw->md_index_table, le->md.id);
+		cass_dma_unmap_pages(le);
 		kfree(le);
+		refcount_dec(&cac->lni_priv->refcount);
 	}
 
 	mutex_unlock(&cac->md_mutex);
@@ -717,12 +729,6 @@ static void cass_remove_md(struct cxi_md_priv *md_priv)
 	mutex_unlock(&md_priv->cac->md_mutex);
 
 	cass_md_clear(md_priv, true, true);
-}
-
-static void cass_iova_free(struct cass_ac *cac, u64 iova, size_t olen)
-{
-	if (cac->iovad)
-		FREE_IOVA_FAST(cac->iovad, iova, olen);
 }
 
 static int cass_bvec(struct cass_dev *hw, const struct iov_iter *iter,
