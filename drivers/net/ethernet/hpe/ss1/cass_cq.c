@@ -430,11 +430,15 @@ static struct cxi_md_priv *get_device_addr(struct cxi_lni_priv *lni_priv,
 	};
 	u32 flags = CXI_MAP_DEVICE;
 	dma_addr_t next_addr = 0;
+	unsigned long end;
 
 	if (!len) {
 		pr_debug("Length is 0\n");
 		return ERR_PTR(-EINVAL);
 	}
+
+	if (check_add_overflow(va, len, &end))
+		return ERR_PTR(-EOVERFLOW);
 
 	md_priv = kzalloc(sizeof(*md_priv), GFP_KERNEL);
 	if (!md_priv)

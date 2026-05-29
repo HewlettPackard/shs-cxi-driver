@@ -1736,6 +1736,7 @@ static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct sg_table *new_sgt;
 	struct page **new_pages;
+	unsigned long end;
 	u64 va;
 	size_t len;
 	int npages;
@@ -1748,6 +1749,9 @@ static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
 
 	if (rc)
 		return rc;
+
+	if (check_add_overflow(va, len, &end))
+		return -EOVERFLOW;
 
 	/* md->len tracks the current mapping size; olen is the immutable
 	 * original reservation size set once in cxi_map_alloc_vf().
@@ -1917,7 +1921,13 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 	const int npages = (PAGE_ALIGN(va + len) - (va & PAGE_MASK)) >> PAGE_SHIFT;
 	struct page **pages;
 	struct sg_table *sgt;
+	unsigned long end;
 	int rc;
+
+	if (check_add_overflow(va, len, &end)) {
+		pr_debug("va (%016lx) + len (%016lx) overflows\n", va, len);
+		return ERR_PTR(-EOVERFLOW);
+	}
 
 	/* Allocate-only path: no VA, no pages, just reserve an IOVA on the PF */
 	if (flags & CXI_MAP_ALLOC_MD)
@@ -2040,10 +2050,16 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 	struct cass_ac *cac;
 	u64 ova = va;
 	size_t olen = len;
+	unsigned long end;
 
 	if (!len) {
 		pr_debug("Length is 0\n");
 		return ERR_PTR(-EINVAL);
+	}
+
+	if (check_add_overflow(va, len, &end)) {
+		pr_debug("va (%016lx) + len (%016lx) overflows\n", va, len);
+		return ERR_PTR(-EOVERFLOW);
 	}
 
 	if (flags & CXI_MAP_PIN &&
@@ -2302,6 +2318,9 @@ int cxi_update_md(struct cxi_md *md, uintptr_t va, size_t len, u32 flags)
 	if (!md || md->lac >= C_NUM_LACS)
 		return -EINVAL;
 
+	if (check_add_overflow(va, len, &m_opts.va_end))
+		return -EOVERFLOW;
+
 	dev = container_of(md, struct cxi_md_priv, md)->lni_priv->dev;
 	if (!dev->is_physfn)
 		return -EOPNOTSUPP;
@@ -2325,7 +2344,6 @@ int cxi_update_md(struct cxi_md *md, uintptr_t va, size_t len, u32 flags)
 		return -EINVAL;
 	}
 
-	m_opts.va_end = va + len;
 	m_opts.md_priv = md_priv;
 	m_opts.page_shift = md->page_shift;
 	m_opts.huge_shift = md->huge_shift;
