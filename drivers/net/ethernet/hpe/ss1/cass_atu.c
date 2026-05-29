@@ -996,9 +996,13 @@ int cass_cpu_page_size(struct cass_dev *hw, struct ac_map_opts *m_opts,
 	int ret = 0;
 	struct vm_area_struct *vma;
 
-	/* ODP hint from user for the hugepage size */
+	/* ODP hint from user for the hugepage size. If either
+	 * faulting or prefetching, use the huge_shift hint from
+	 * the user.
+	 */
 	if (hints && !hints->page_shift && hints->huge_shift &&
-	    !(m_opts->flags & CXI_MAP_PIN & CXI_MAP_FAULT & CXI_MAP_PREFETCH)) {
+	    !(m_opts->flags & CXI_MAP_PIN) &&
+	    (m_opts->flags & (CXI_MAP_FAULT | CXI_MAP_PREFETCH))) {
 		m_opts->huge_shift = hints->huge_shift;
 		*align_shift = align_and_page_shift(m_opts);
 
