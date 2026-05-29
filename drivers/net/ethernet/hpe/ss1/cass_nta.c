@@ -1194,8 +1194,11 @@ int cass_pfns_mirror(struct cxi_md_priv *md_priv, const struct ac_map_opts *m_op
 
 		ret = cass_dma_addr_mirror(dma_addr, iova, cac, md_priv->flags,
 					   is_huge_page, &inval);
-		if (ret)
+		if (ret) {
+			dma_unmap_page(md_priv->device, dma_addr, size,
+				       DMA_BIDIRECTIONAL);
 			goto mirror_error;
+		}
 
 		i += KPFN_INC(cac, is_huge_page);
 		invalidate += inval;
