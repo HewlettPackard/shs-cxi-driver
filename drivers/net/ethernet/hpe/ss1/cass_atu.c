@@ -1636,6 +1636,10 @@ static int cxi_update_sgtable_vf(struct cxi_md *md, struct sg_table *sgt)
 
 /**
  * cxi_update_sgtable() - Update the specified address range contained in MD
+ *                        This is used by an external owner (kfabric) which
+ *                        creates MDs with CXI_MAP_ALLOC_MD | CXI_MAP_NOCACHE.
+ *                        This allows the owner to update the page tables
+ *                        at will by calling cxi_update_sgtable.
  *
  * @md: Memory Descriptor used in network operations
  * @sgt: The sg_table object. It is expected to be dma mapped.
@@ -1658,6 +1662,11 @@ int cxi_update_sgtable(struct cxi_md *md, struct sg_table *sgt)
 
 	if (len > md_priv->olen) {
 		pr_debug("Address range not bounded by MD\n");
+		return -EINVAL;
+	}
+
+	if (!md_priv->external_sgt_owner && md_priv->sgt) {
+		pr_debug("Previous SGT must be null to update unless owned by external owner\n");
 		return -EINVAL;
 	}
 
