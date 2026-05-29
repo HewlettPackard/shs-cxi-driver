@@ -1040,8 +1040,8 @@ int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
 	struct cass_dev *hw = container_of(cac->lni_priv->dev, struct cass_dev,
 					   cdev);
 
-	if (iova_offset > cac->iova_len) {
-		pr_warn("iova_offset:0x%llx > iova_len:0x%llx iova:%llx iova_base:%llx\n",
+	if (iova_offset >= cac->iova_len) {
+		pr_warn("iova_offset:0x%llx >= iova_len:0x%llx iova:%llx iova_base:%llx\n",
 			iova_offset, cac->iova_len, iova, cac->iova_base);
 		return -EINVAL;
 	}
