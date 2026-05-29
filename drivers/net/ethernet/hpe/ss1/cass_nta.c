@@ -171,10 +171,9 @@ void cass_nta_pri_fini(struct cass_dev *hw)
 	cass_clear(hw, C_ATU_CFG_PRI, C_ATU_CFG_PRI_SIZE);
 	destroy_workqueue(hw->prb_wq);
 	destroy_workqueue(hw->pri_wq);
-	dma_unmap_single(&hw->cdev.pdev->dev, hw->prt_dma_addr,
-			 C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
-			 DMA_FROM_DEVICE);
-	kfree(hw->page_request_table);
+	dma_free_coherent(&hw->cdev.pdev->dev,
+			  C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
+			  hw->page_request_table, hw->prt_dma_addr);
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec), hw);
 	dma_unmap_single(&hw->cdev.pdev->dev, hw->atu_cq.rsp_dma_addr,
 			 sizeof(struct wait_rsp_data), DMA_FROM_DEVICE);
@@ -198,19 +197,11 @@ int cass_nta_pri_init(struct cass_dev *hw)
 	if (cass_version(hw, CASSINI_1_0))
 		return 0;
 
-	hw->page_request_table = kcalloc(C_ATU_PRB_ENTRIES,
-					 sizeof(struct c_page_request_entry),
-					 GFP_KERNEL);
+	hw->page_request_table = dma_alloc_coherent(&hw->cdev.pdev->dev,
+					 C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
+					 &hw->prt_dma_addr, GFP_KERNEL);
 	if (!hw->page_request_table)
 		return -ENOMEM;
-
-	hw->prt_dma_addr = dma_map_single(&hw->cdev.pdev->dev, hw->page_request_table,
-					  C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
-					  DMA_FROM_DEVICE);
-	if (dma_mapping_error(&hw->cdev.pdev->dev, hw->prt_dma_addr)) {
-		rc = -ENOMEM;
-		goto free_table;
-	}
 
 	hw->pri_rd_ptr = 0;
 
@@ -220,7 +211,7 @@ int cass_nta_pri_init(struct cass_dev *hw)
 			 cass_pri_int_cb, 0, hw->odp_pri_int_name, hw);
 	if (rc) {
 		pr_err("Failed to request IRQ.\n");
-		goto free_mapping;
+		goto free_table;
 	}
 
 	/* limit to a single threaded worker */
@@ -253,12 +244,10 @@ alloc_prb_wq_failed:
 	destroy_workqueue(hw->pri_wq);
 alloc_wq_failed:
 	free_irq(pci_irq_vector(hw->cdev.pdev, hw->atu_pri_vec), hw);
-free_mapping:
-	dma_unmap_single(&hw->cdev.pdev->dev, hw->prt_dma_addr,
-			 C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
-			 DMA_FROM_DEVICE);
 free_table:
-	kfree(hw->page_request_table);
+	dma_free_coherent(&hw->cdev.pdev->dev,
+			  C_ATU_PRB_ENTRIES * sizeof(struct c_page_request_entry),
+			  hw->page_request_table, hw->prt_dma_addr);
 
 	return rc;
 }
