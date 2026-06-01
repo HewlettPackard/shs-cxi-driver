@@ -1765,8 +1765,13 @@ static int cxi_update_iov_vf(struct cxi_md *md, const struct iov_iter *iter)
 		return -ENOMEM;
 
 	if (md_priv_vf->flags & CXI_MAP_PIN) {
+		unsigned int gup_flags = FOLL_LONGTERM;
+
+		if (md_priv_vf->flags & CXI_MAP_WRITE)
+			gup_flags |= FOLL_WRITE;
+
 		rc = pin_user_pages_fast(va & PAGE_MASK, npages,
-					 FOLL_WRITE | FOLL_LONGTERM, new_pages);
+					 gup_flags, new_pages);
 		if (rc != npages) {
 			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n",
 				   rc, npages);
@@ -1948,7 +1953,12 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 
 	/* Get the pages and pin them if requested */
 	if (flags & CXI_MAP_PIN) {
-		rc = pin_user_pages_fast(va & PAGE_MASK, npages, FOLL_WRITE | FOLL_LONGTERM, pages);
+		unsigned int gup_flags = FOLL_LONGTERM;
+
+		if (flags & CXI_MAP_WRITE)
+			gup_flags |= FOLL_WRITE;
+
+		rc = pin_user_pages_fast(va & PAGE_MASK, npages, gup_flags, pages);
 		if (rc != npages) {
 			cxidev_err(&hw->cdev, "pin_user_pages_fast failed: %d/%d\n", rc, npages);
 			if (rc > 0)
