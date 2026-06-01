@@ -851,7 +851,9 @@ int cass_sbl_init(struct cass_dev *hw)
 	}
 
 	hw->sbl_counters = NULL;
-	cass_sbl_counters_init(hw);
+	err = cass_sbl_counters_init(hw);
+	if (err)
+		sbl_delete_instance(hw->sbl);
 
  out_bad_sbl:
 	if (err)
@@ -1584,14 +1586,19 @@ bool cass_sbl_pml_pcs_aligned(struct cass_dev *hw)
 /*
  * Create and initialise the port's counter array
  */
-void cass_sbl_counters_init(struct cass_dev *hw)
+int cass_sbl_counters_init(struct cass_dev *hw)
 {
 	int i;
 
-	hw->sbl_counters = kzalloc(sizeof(atomic_t)*CASS_SBL_NUM_COUNTERS, GFP_KERNEL);
+	hw->sbl_counters =
+		kcalloc(CASS_SBL_NUM_COUNTERS, sizeof(atomic_t), GFP_KERNEL);
+	if (!hw->sbl_counters)
+		return -ENOMEM;
 
 	for (i = 0; i < CASS_SBL_NUM_COUNTERS; ++i)
 		atomic_set(&hw->sbl_counters[i], 0);
+
+	return 0;
 }
 
 /*

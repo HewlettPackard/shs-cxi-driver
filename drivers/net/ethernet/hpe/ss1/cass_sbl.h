@@ -565,7 +565,7 @@ void cass_sbl_exit(struct cass_dev *hw);
 /*
  * sbl counters
  */
-void cass_sbl_counters_init(struct cass_dev *hw);
+int cass_sbl_counters_init(struct cass_dev *hw);
 void cass_sbl_counters_term(struct cass_dev *hw);
 void cass_sbl_counters_down_origin_inc(struct cass_dev *hw, int down_origin);
 void cass_sbl_counters_update(struct cass_dev *hw);
@@ -573,7 +573,7 @@ void cass_sbl_counters_update(struct cass_dev *hw);
 /*
  * lmon counters
  */
-void cass_lmon_counters_init(struct cass_dev *hw);
+int cass_lmon_counters_init(struct cass_dev *hw);
 void cass_lmon_counters_term(struct cass_dev *hw);
 
 int cass_sbl_set_eth_name(struct cass_dev *hw, const char *name);

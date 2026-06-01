@@ -554,14 +554,19 @@ void cass_lmon_kill_all(struct cass_dev *hw)
 /*
  * Update lmon counters
  */
-void cass_lmon_counters_init(struct cass_dev *hw)
+int cass_lmon_counters_init(struct cass_dev *hw)
 {
 	int i;
 
-	hw->port->lmon_counters = kzalloc(sizeof(atomic_t)*CASS_LMON_NUM_COUNTERS, GFP_KERNEL);
+	hw->port->lmon_counters =
+		kcalloc(CASS_LMON_NUM_COUNTERS, sizeof(atomic_t), GFP_KERNEL);
+	if (!hw->port->lmon_counters)
+		return -ENOMEM;
 
 	for (i = 0; i < CASS_LMON_NUM_COUNTERS; ++i)
 		atomic_set(&hw->port->lmon_counters[i], 0);
+
+	return 0;
 }
 
 /*

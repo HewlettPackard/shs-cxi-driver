@@ -14,6 +14,8 @@
  */
 int cass_port_new_port_db(struct cass_dev *hw)
 {
+	int rc;
+
 	hw->port = kzalloc(sizeof(struct cass_port), GFP_KERNEL);
 	if (!hw->port)
 		return -ENOMEM;
@@ -27,7 +29,13 @@ int cass_port_new_port_db(struct cass_dev *hw)
 	hw->port->rx_pause = false;
 	hw->port->lmon_counters = NULL;
 	hw->port->start_time = 0;
-	cass_lmon_counters_init(hw);
+
+	rc = cass_lmon_counters_init(hw);
+	if (rc) {
+		kfree(hw->port);
+		hw->port = NULL;
+		return rc;
+	}
 
 	return 0;
 }
