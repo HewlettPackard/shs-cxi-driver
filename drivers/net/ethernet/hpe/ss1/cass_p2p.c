@@ -104,15 +104,17 @@ struct cass_p2p_ops p2p_ops = {
  */
 static int cxi_p2p_init(void)
 {
-	int ret = 0;
+	int ret = -EOPNOTSUPP;
 
 	if (cxi_supported_p2p_type > 0)
 		return 0;
 
 	mutex_lock(&p2p_init_lock);
 
-	if (cxi_supported_p2p_type > 0)
+	if (cxi_supported_p2p_type > 0) {
+		ret = 0;
 		goto out_unlock;
+	}
 
 #ifdef HAVE_NVIDIA_P2P
 	ret = nvidia_p2p_init();
