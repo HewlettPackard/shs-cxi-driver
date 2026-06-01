@@ -1401,6 +1401,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	md_priv_vf->device = &hw->cdev.pdev->dev;
 	md_priv_vf->md.va = 0;
 	md_priv_vf->md.len = sgt_len;
+	md_priv_vf->olen = sgt_len;
 	md_priv_vf->md.page_shift = PAGE_SHIFT;
 	md_priv_vf->md.huge_shift = PMD_SHIFT;
 	md_priv_vf->flags = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
@@ -2002,6 +2003,7 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 
 	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
 	md_priv_vf->md.va = va;
+	md_priv_vf->olen = len;
 	md_priv_vf->sgt = sgt;
 	md_priv_vf->pages = pages;
 	md_priv_vf->npages = npages;
