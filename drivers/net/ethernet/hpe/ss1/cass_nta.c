@@ -1024,7 +1024,7 @@ free_bitmap:
 }
 
 int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
-			 u32 flags, bool is_huge_page, bool *invalidate)
+			 u32 flags, bool is_huge_page)
 {
 	int ret;
 	int l0_index;
@@ -1055,7 +1055,6 @@ int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
 		}
 
 		/* Replacing a non-leaf entry with a leaf entry. */
-		/* TODO: check if this is still necessary */
 		if (!ppde->pte.leaf) {
 			ret = cass_l1_table_empty(cac, ppde, l0_index,
 						  iova_offset);
@@ -1154,8 +1153,6 @@ int cass_pfns_mirror(struct cxi_md_priv *md_priv, const struct ac_map_opts *m_op
 	int ret;
 	int i;
 	size_t size;
-	bool inval = false;
-	int invalidate = 0;
 	struct page *page;
 	dma_addr_t dma_addr;
 	u64 iova = m_opts->iova;
@@ -1193,7 +1190,7 @@ int cass_pfns_mirror(struct cxi_md_priv *md_priv, const struct ac_map_opts *m_op
 		}
 
 		ret = cass_dma_addr_mirror(dma_addr, iova, cac, md_priv->flags,
-					   is_huge_page, &inval);
+					   is_huge_page);
 		if (ret) {
 			dma_unmap_page(md_priv->device, dma_addr, size,
 				       DMA_BIDIRECTIONAL);
@@ -1201,7 +1198,6 @@ int cass_pfns_mirror(struct cxi_md_priv *md_priv, const struct ac_map_opts *m_op
 		}
 
 		i += KPFN_INC(cac, is_huge_page);
-		invalidate += inval;
 		iova += size;
 	}
 
@@ -1212,12 +1208,6 @@ mirror_error:
 		/* Clean up previously populated ptes. */
 		cass_clear_range(md_priv, m_opts->iova, i * page_size);
 	}
-
-	/* If any PTEs are replaced they will need to be invalidated.
-	 * Invalidate the whole range.
-	 */
-	if (invalidate)
-		cass_invalidate_range(cac, m_opts->iova, npfns * page_size);
 
 	return ret;
 }
@@ -1360,7 +1350,6 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 	int i;
 	int j = 0;
 	int ret;
-	bool inval;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
 	struct cass_ac *cac = md_priv->cac;
@@ -1385,8 +1374,7 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 			atu_debug("iova:%llx dma_addr:%llx inc:%lx\n",
 				  iova, dma_addr, inc);
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-						   md_priv->flags,
-						   is_hp, &inval);
+						   md_priv->flags, is_hp);
 			if (ret)
 				goto mirror_error;
 
@@ -1500,8 +1488,6 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 	int i;
 	int ret;
 	int addr_inc;
-	bool inval = false;
-	int invalidate = 0;
 	bool is_huge_page;
 	u64 iova = m_opts->iova;
 	struct page **pages = NULL;
@@ -1546,8 +1532,7 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 			addr_inc = is_huge_page ? hlen : plen;
 
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-						   m_opts->flags,
-						   is_huge_page, &inval);
+						   m_opts->flags, is_huge_page);
 			if (ret) {
 				pr_err("Error populating %d PTEs at index %d iova:%llx inc:%x\n",
 				       npages, i, iova, addr_inc);
@@ -1558,7 +1543,6 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 			iova += addr_inc;
 			len -= addr_inc;
 			md_len -= addr_inc;
-			invalidate += inval;
 		}
 
 		if (md_len <= 0)
@@ -1566,9 +1550,6 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 	}
 
 	mutex_unlock(&cac->ac_mutex);
-
-	if (invalidate)
-		cass_invalidate_range(cac, m_opts->iova, plen * i);
 
 	md_priv->pages = pages;
 
@@ -1863,7 +1844,6 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 	int i;
 	int j = 0;
 	int ret;
-	bool inval;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
 	struct cass_ac *cac = md_priv->cac;
@@ -1878,8 +1858,7 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 
 		while (len > 0) {
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-						   md_priv->flags, false,
-						   &inval);
+						   md_priv->flags, false);
 			if (ret)
 				goto mirror_error;
 

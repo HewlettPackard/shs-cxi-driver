@@ -1384,7 +1384,7 @@ void cass_clear_range(const struct cxi_md_priv *md_priv, u64 iova, u64 len);
 void cass_md_clear(struct cxi_md_priv *md_prv, bool inval, bool need_lock);
 void cass_dma_unmap_pages(struct cxi_md_priv *md_priv);
 int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
-			 u32 flags, bool is_huge_page, bool *invalidate);
+			 u32 flags, bool is_huge_page);
 int cass_mirror_fault(const struct ac_map_opts *m_opts, u64 *pfns, int count,
 		      uintptr_t addr, size_t len);
 int cass_mirror_odp(const struct ac_map_opts *m_opts, struct cass_ac *cac,
