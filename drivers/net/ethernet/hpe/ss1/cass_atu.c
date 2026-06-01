@@ -2228,12 +2228,15 @@ static int cxi_unmap_vf(struct cxi_md *md)
 	struct cxi_md_priv_vf *md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
 	struct cxi_dev *dev = md_priv_vf->lni_priv->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	int rc;
 
 	pr_debug("VF md:%d lac:%d va:%llx iova:%llx len:%lx\n",
 		 md->id, md->lac, md->va, md->iova, md->len);
 
 	/* Notify PF to free the MD created from the VF sglist */
-	cxi_unmap_sgtable_vf(dev, md_priv_vf, hw, md->id);
+	rc = cxi_unmap_sgtable_vf(dev, md_priv_vf, hw, md->id);
+	if (rc)
+		return rc;
 
 	/* Unmap and free scatter-gather table if we own it */
 	if (md_priv_vf->pages && md_priv_vf->sgt) {
