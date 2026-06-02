@@ -1556,7 +1556,7 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 	return 0;
 
 mirror_error:
-	cass_clear_range(md_priv, m_opts->iova, plen * i);
+	cass_clear_range(md_priv, m_opts->iova, iova - m_opts->iova);
 	mutex_unlock(&cac->ac_mutex);
 	cass_dma_unmap_pages(md_priv);
 
