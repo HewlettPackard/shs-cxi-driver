@@ -664,6 +664,11 @@ cq_release:
 	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
 		       cq->cmds_len, DMA_BIDIRECTIONAL);
 
+	if (cq->md_priv) {
+		cass_device_put_pages(cq->md_priv);
+		kfree(cq->md_priv);
+	}
+
 	if (cq->pages) {
 		unpin_user_pages(cq->pages, cq->cmds_len >> PAGE_SHIFT);
 		kfree(cq->pages);
@@ -890,8 +895,9 @@ cq_unmap:
 	if (!is_user && !lni_priv->is_vf)
 		cq_mmio_unmap(cq);
 cq_release:
-	dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
-		       cq->cmds_len, DMA_BIDIRECTIONAL);
+	if (!lni_priv->is_vf)
+		dma_unmap_page(&hw->cdev.pdev->dev, cq->cmds_dma_addr,
+			       cq->cmds_len, DMA_BIDIRECTIONAL);
 
 	if (cq->md_priv) {
 		cass_device_put_pages(cq->md_priv);

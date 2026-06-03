@@ -452,9 +452,11 @@ int cxi_eq_resize_internal(struct cxi_eq *evtq, void *queue,
 			md_priv = container_of(eq->resize.md, struct cxi_md_priv, md);
 			refcount_inc(&md_priv->refcount);
 		}
-	} else if (!passthrough) {
-		md_priv = container_of(queue_md, struct cxi_md_priv, md);
-		refcount_inc(&md_priv->refcount);
+	} else {
+		if (!passthrough) {
+			md_priv = container_of(queue_md, struct cxi_md_priv, md);
+			refcount_inc(&md_priv->refcount);
+		}
 		eq->resize.dma_addr = dma_addr;
 	}
 
