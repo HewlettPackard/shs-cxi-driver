@@ -3232,7 +3232,8 @@ static int cxi_user_get_dev_properties(struct user_client *client,
 	struct cxi_properties_info info;
 	int rc;
 
-	rc = cxi_get_dev_properties(client->ucxi->dev, &info);
+	rc = cxi_get_dev_properties_internal(client->ucxi->dev, &info,
+					     client->is_vf, client->vf_num);
 	if (rc)
 		return rc;
 

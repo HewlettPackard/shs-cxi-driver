@@ -510,6 +510,26 @@ static int cxi_get_properties_vf(struct cxi_dev *cdev,
 }
 
 /**
+ * cxi_get_dev_properties_internal - Get current device properties.
+ * @cdev: CXI device
+ * @prop: Properties output pointer
+ * @is_vf: true if called on behalf of a VF
+ * @vf_num: VF index (0-based); ignored when @is_vf is false
+ */
+int cxi_get_dev_properties_internal(struct cxi_dev *cdev,
+				    struct cxi_properties_info *prop,
+				    bool is_vf, unsigned int vf_num)
+{
+	*prop = cdev->prop;
+
+	if (is_vf)
+		prop->nid |= (vf_num + 1) << C_DFA_NIC_BITS;
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_get_dev_properties_internal);
+
+/**
  * cxi_get_dev_properties - Get current device properties.
  * @cdev: CXI device
  * @prop: Properties output pointer
@@ -519,9 +539,7 @@ int cxi_get_dev_properties(struct cxi_dev *cdev, struct cxi_properties_info *pro
 	if (!cdev->is_physfn)
 		return cxi_get_properties_vf(cdev, prop);
 
-	*prop = cdev->prop;
-
-	return 0;
+	return cxi_get_dev_properties_internal(cdev, prop, false, 0);
 }
 EXPORT_SYMBOL(cxi_get_dev_properties);
 

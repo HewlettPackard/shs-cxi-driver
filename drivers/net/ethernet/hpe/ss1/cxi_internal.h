@@ -39,4 +39,8 @@ int cxi_eth_vf_get_assigned_mac_internal(struct cxi_dev *cdev,
 int cxi_link_state_get_internal(struct cxi_dev *cdev, bool *up,
 				bool vf_en, u8 vf_num);
 
+int cxi_get_dev_properties_internal(struct cxi_dev *cdev,
+				    struct cxi_properties_info *prop,
+				    bool is_vf, unsigned int vf_num);
+
 #endif /* _CXI_INTERNAL_H */
