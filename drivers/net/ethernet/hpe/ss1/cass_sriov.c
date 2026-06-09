@@ -1048,6 +1048,7 @@ static int vf_notif_handler(void *data)
 	void *rsp = NULL;
 	size_t msg_len, rsp_len;
 	unsigned int msg_flags;
+	unsigned int seq;
 
 	if (!msg_buf || !rsp_buf) {
 		rc = -ENOMEM;
@@ -1066,7 +1067,7 @@ static int vf_notif_handler(void *data)
 
 		rc = read_message_from_vsock_large(hw->vf_notif_sock, &msg,
 						   &msg_len, NULL,
-						   NULL, NULL, NULL,
+						   NULL, NULL, &seq,
 						   &msg_flags);
 		if (rc == -EAGAIN) {
 			continue;
@@ -1092,7 +1093,7 @@ static int vf_notif_handler(void *data)
 		}
 
 		if (!(msg_flags & VF_PF_MSG_F_NO_REPLY)) {
-			rc = write_message_to_vsock(hw->vf_notif_sock, rsp, rsp_len, rc, 0, 0);
+			rc = write_message_to_vsock(hw->vf_notif_sock, rsp, rsp_len, rc, seq, 0);
 			if (rsp != rsp_buf)
 				kvfree(rsp);
 
