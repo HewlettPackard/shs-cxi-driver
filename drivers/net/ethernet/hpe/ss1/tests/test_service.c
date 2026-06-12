@@ -536,6 +536,48 @@ err:
 	return rc;
 }
 
+/* Two services that use the same exact VNI must both be allocatable.
+ * This is the WLM "job_vni" case where multiple job steps share a VNI.
+ * Range overlaps are still rejected.
+ */
+static int test_shared_exact_vni(struct cxi_dev *dev)
+{
+	int rc;
+	int svc_id1 = -1;
+	int svc_id2 = -1;
+	struct cxi_svc_desc desc = {
+		.enable = 1,
+		.is_system_svc = 1,
+		.num_vld_vnis = 1,
+		.restricted_vnis = 1,
+		.vnis[0] = VNI,
+	};
+	struct cxi_svc_fail_info info;
+
+	rc = cxi_svc_alloc(dev, &desc, &info, "shared-vni-1");
+	if (rc < 0) {
+		test_err("first cxi_svc_alloc failed: %d\n", rc);
+		goto err;
+	}
+	svc_id1 = rc;
+
+	rc = cxi_svc_alloc(dev, &desc, &info, "shared-vni-2");
+	if (rc < 0) {
+		test_err("second cxi_svc_alloc with shared exact VNI failed: %d\n",
+			 rc);
+		goto err_destroy;
+	}
+	svc_id2 = rc;
+
+	rc = 0;
+
+	cxi_svc_destroy(dev, svc_id2);
+err_destroy:
+	cxi_svc_destroy(dev, svc_id1);
+err:
+	return rc;
+}
+
 static int test_service_vni_range(struct cxi_dev *dev)
 {
 	int rc;
@@ -829,6 +871,12 @@ static int run_tests(struct cxi_dev *dev)
 	rc = test_service_vni_range(dev);
 	if (rc) {
 		test_err("test_service_vni failed: %d\n", rc);
+		return -EIO;
+	}
+
+	rc = test_shared_exact_vni(dev);
+	if (rc) {
+		test_err("test_shared_exact_vni failed: %d\n", rc);
 		return -EIO;
 	}
 

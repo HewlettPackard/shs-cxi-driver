@@ -321,6 +321,15 @@ int vni_overlap_test(struct cxi_rxtx_profile *profile1,
 	if (zero_vni(&profile1->vni_attr))
 		return 0;
 
+	/* Allow overlap only when both entries specify an exact VNI
+	 * (ignore == 0). This lets multiple services share a single VNI
+	 * (e.g. WLM job_vni) while still rejecting any overlap involving
+	 * a wildcarded VNI range, which could create ambiguous TCAM entries.
+	 */
+	if (overlap && profile1->vni_attr.ignore == 0 &&
+	    profile2->vni_attr.ignore == 0)
+		return 0;
+
 	return overlap ? -EEXIST : 0;
 }
 
