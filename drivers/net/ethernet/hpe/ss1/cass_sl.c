@@ -49,12 +49,31 @@ static unsigned int cass_sl_pml_rec_rate_limit_win_size_ms = SL_DFLT_PML_REC_RAT
 module_param(cass_sl_pml_rec_rate_limit_win_size_ms, uint, 0644);
 MODULE_PARM_DESC(cass_sl_pml_rec_rate_limit_win_size_ms, "PML recovery rate limiter window in ms");
 
+static ssize_t pause_show(struct kobject *kobj,
+			  struct kobj_attribute *kattr, char *buf)
+{
+	struct cass_dev *cass_dev;
+
+	cass_dev = container_of(kobj, struct cass_dev, port_num_kobj);
+
+	return cass_pause_sysfs_sprint(cass_dev, buf, PAGE_SIZE);
+}
+
+static struct kobj_attribute cass_sl_attr_pause = __ATTR_RO(pause);
+
+static struct attribute *cass_sl_port_num_attrs[] = {
+	&cass_sl_attr_pause.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(cass_sl_port_num);
+
 static struct kobj_type cass_sl_port_sysfs = {
 	.sysfs_ops = &kobj_sysfs_ops,
 };
 
 static struct kobj_type cass_sl_port_num_sysfs = {
 	.sysfs_ops = &kobj_sysfs_ops,
+	.default_groups = cass_sl_port_num_groups,
 };
 
 bool cass_sl_is_pcs_aligned(struct cass_dev *cass_dev)

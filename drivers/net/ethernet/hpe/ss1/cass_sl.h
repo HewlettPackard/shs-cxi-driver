@@ -89,5 +89,6 @@ int  cass_sl_link_down(struct cass_dev *cass_dev);
 void cass_sl_exit(struct cass_dev *cass_dev);
 int  cass_sl_media_unconfig(struct cass_dev *cass_dev);
 void cass_sl_link_fini(struct cass_dev *cass_dev);
+int  cass_pause_sysfs_sprint(struct cass_dev *hw, char *buf, size_t size);
 
 #endif /* _CASS_SL_H_ */
