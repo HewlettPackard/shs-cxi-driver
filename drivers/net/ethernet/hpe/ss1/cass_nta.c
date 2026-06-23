@@ -782,13 +782,61 @@ static void cass_l1_table_free(struct cass_dev *hw, struct cass_nta *nta,
 	memset(l1, 0, sizeof(*l1));
 }
 
-/* Return the virtual address of a given PTE */
-static union a_pte *get_virt_pte(const struct cass_nta *nta, unsigned int l0_index,
-				 unsigned int l1_index)
+static bool cass_l1_table_virt_valid(const void *addr)
 {
+#ifdef CONFIG_X86_64
+	unsigned long va = (unsigned long)addr;
+
+#if defined(__is_canonical_address)
+	if (!__is_canonical_address(va))
+		return false;
+#elif defined(is_canonical_address)
+	if (!is_canonical_address(va))
+		return false;
+#endif
+
+	if (va < page_offset_base)
+		return false;
+
+#if defined(MAX_DIRECT_MAP)
+	if ((va - page_offset_base) >= MAX_DIRECT_MAP)
+		return false;
+#endif
+#elif defined(CONFIG_ARM64)
+	if (!virt_addr_valid(addr))
+		return false;
+#endif
+
+	return true;
+}
+
+/* Return the virtual address of a given PTE */
+static union a_pte *get_virt_pte(struct cxi_dev *cdev,
+				 const struct cass_nta *nta,
+				 unsigned int l0_index, unsigned int l1_index)
+{
+	struct page *l1_pages;
+	void *l1_addr;
 	union a_pte *l1_array;
 
-	l1_array = page_address(nta->l1[l0_index].l1_pages);
+	l1_pages = READ_ONCE(nta->l1[l0_index].l1_pages);
+	if (cxidev_WARN_ONCE(cdev, !l1_pages,
+			     "l1_pages[%u] is NULL (alloc failure?)\n",
+			     l0_index))
+		return NULL;
+
+	l1_addr = page_to_virt(l1_pages);
+	if (cxidev_WARN_ONCE(cdev, !l1_addr,
+			     "page_to_virt failed for l1_pages[%u]\n",
+			     l0_index))
+		return NULL;
+
+	if (cxidev_WARN_ONCE(cdev, !cass_l1_table_virt_valid(l1_addr),
+			     "l1_pages[%u] virt=%p not canonical or out of direct map\n",
+			     l0_index, l1_addr))
+		return NULL;
+
+	l1_array = l1_addr;
 
 	return &l1_array[l1_index];
 }
@@ -799,7 +847,7 @@ static void cass_pte_clear(struct cass_dev *hw, const struct cxi_md_priv *md_pri
 {
 	struct cass_ac *cac = md_priv->cac;
 	struct cass_nta *nta = cac->nta;
-	union a_pte *pte = get_virt_pte(nta, l0_index, l1_index);
+	union a_pte *pte = get_virt_pte(&hw->cdev, nta, l0_index, l1_index);
 	unsigned long *map;
 
 	if (pte && pte->pte.p) {
@@ -850,6 +898,20 @@ static void cass_pg_tbl_indices(const struct cass_ac *cac, s64 iova_offset,
 	*l1_index = (iova_offset >> l1_shift) & MASK(pts);
 }
 
+/* Verify that the iova is lower bounded by the base */
+static int cass_iova_offset(struct cxi_dev *cdev, const struct cass_ac *cac,
+			    u64 iova, s64 *iova_offset)
+{
+	if (cxidev_WARN_ONCE(cdev, iova < cac->iova_base,
+			     "%s iova:%llx < iova_base:%llx\n",
+			     __func__, iova, cac->iova_base))
+		return -EINVAL;
+
+	*iova_offset = iova - cac->iova_base;
+
+	return 0;
+}
+
 /**
  * cass_clear_range() - clear a range of ptes and invalidate the ATU cache
  *
@@ -866,7 +928,7 @@ void cass_clear_range(const struct cxi_md_priv *md_priv, u64 iova, u64 len)
 	struct cass_ac *cac = md_priv->cac;
 	int page_shift = cac->page_shift;
 	int entries = len >> page_shift;
-	s64 iova_offset = iova - cac->iova_base;
+	s64 iova_offset;
 	union a_pte *pde;
 	/* Only ODP needs to be unmapped here. Device and pinned memory will
 	 * be unmapped when the SG table is cleaned up.
@@ -874,6 +936,9 @@ void cass_clear_range(const struct cxi_md_priv *md_priv, u64 iova, u64 len)
 	bool do_unmap = !md_priv->sgt;
 
 	if (!len)
+		return;
+
+	if (cass_iova_offset(&hw->cdev, cac, iova, &iova_offset))
 		return;
 
 	for (; entries > 0; iova_offset += BIT(page_shift), entries--) {
@@ -1034,10 +1099,14 @@ int cass_dma_addr_mirror(dma_addr_t dma_addr, u64 iova, struct cass_ac *cac,
 	union a_pte pde = {};
 	union a_pte pte = {};
 	bool update_pde = false;
-	s64 iova_offset = iova - cac->iova_base;
+	s64 iova_offset;
 	bool ptg_mode_sgl = !cac->cfg_ac.pg_table_size;
 	struct cass_dev *hw = container_of(cac->lni_priv->dev, struct cass_dev,
 					   cdev);
+
+	ret = cass_iova_offset(&hw->cdev, cac, iova, &iova_offset);
+	if (ret)
+		return ret;
 
 	if (iova_offset >= cac->iova_len) {
 		pr_warn("iova_offset:0x%llx >= iova_len:0x%llx iova:%llx iova_base:%llx\n",
@@ -1123,7 +1192,11 @@ new_pde:
 
 	/* fill in the l1 table entry */
 	cass_pte_build(0, &pte, dma_addr, true, flags, false, false);
-	ppte = get_virt_pte(cac->nta, l0_index, l1_index);
+	ppte = get_virt_pte(&hw->cdev, cac->nta, l0_index, l1_index);
+	if (cxidev_WARN_ONCE(&hw->cdev, !ppte,
+			     "get_virt_pte failed for l0_index=%d l1_index=%d\n",
+			     l0_index, l1_index))
+		return -EFAULT;
 
 	atu_debug("pte %p phys:%lx iova:%llx entry:0x%llx\n", ppte,
 		  (ulong)PTE_ADDR(pte.pte) + l1_index * ATU_PTE_ENTRY_SIZE,
