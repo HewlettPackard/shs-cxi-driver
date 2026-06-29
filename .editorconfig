@@ -1,0 +1,50 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+[*.c]
+indent_style = tab
+indent_size = 8
+max_line_length = 80
+
+[*.h]
+indent_style = tab
+indent_size = 8
+max_line_length = 80
+
+[Makefile]
+indent_style = tab
+indent_size = 8
+
+[Kbuild]
+indent_style = tab
+indent_size = 8
+
+[*.md]
+indent_style = space
+indent_size = 2
+max_line_length = off
+
+[*.sh]
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.yaml]
+indent_style = space
+indent_size = 2
+
+[*.yml]
+indent_style = space
+indent_size = 2
+
+[*.json]
+indent_style = space
+indent_size = 2

@@ -1,4 +1,5 @@
 *       @hpe/hpc-shs-ss11-codereviewers  @hpe/hpc-shs-cxi-driver-codereviewers
+.github/* @hpe/hpc-shs-ss11-codereviewers @hpe/hpc-shs-cxi-driver-codereviewers
 Jenkinsfile* @hpe/hpc-shs-cassini-enablement
 *.spec @hpe/hpc-shs-cassini-enablement
 *.rpm_preamble @hpe/hpc-shs-cassini-enablement
