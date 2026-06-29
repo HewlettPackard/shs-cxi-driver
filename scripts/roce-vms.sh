@@ -14,6 +14,7 @@ if [[ $HYP -eq 0 ]]; then
 fi
 
 # Load all the drivers
+modprobe configfs
 modprobe ptp
 modprobe ib_uverbs
 modprobe ip6_udp_tunnel
@@ -26,8 +27,13 @@ insmod ../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-user.ko
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-eth.ko
 
-# Wait for the new devices to appear
-sleep 1
+# Wait for the cxi Ethernet interface to appear, then let udev finish renaming
+# it (eth0 -> ethN) so the name captured below does not go stale.
+for _ in $(seq 1 20); do
+	ip a | grep -qE '00:0e:ab:0[01]:00:00' && break
+	sleep 0.5
+done
+udevadm settle 2>/dev/null || true
 
 # Find which node this script is running on. Node 0 has MAC address
 # 00:0e:ab:00:00:00 and the other has 00:0e:ab:01:00:00. Set

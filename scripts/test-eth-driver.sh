@@ -13,6 +13,7 @@ if [[ $HYP -eq 0 ]]; then
 fi
 
 # Load all the drivers
+modprobe configfs
 modprobe ptp
 insmod ../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko
 insmod ../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko
@@ -20,12 +21,19 @@ insmod ../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-user.ko
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-eth.ko
 
-# Wait for the new devices to appear
-sleep 1
+# Wait for both Ethernet interfaces to appear, then let udev finish renaming
+# them (eth0/eth1 -> ethN) so the names captured below do not go stale.
+for _ in $(seq 1 20); do
+	ETH1=$(ip -j a | jq -r '.[] | select(.address=="00:0e:ab:00:00:00") | .ifname')
+	ETH2=$(ip -j a | jq -r '.[] | select(.address=="00:0e:ab:01:00:00") | .ifname')
+	[ -n "$ETH1" ] && [ -n "$ETH2" ] && break
+	sleep 0.5
+done
+udevadm settle 2>/dev/null || true
 
-# Find both interface names. One has MAC address 00:0e:ab:00:00:00 and
-# the other has 00:0e:ab:01:00:00.  netsim can route the packets
-# between the nodes.
+# Re-read the names after udev has settled so they are final.
+# One has MAC address 00:0e:ab:00:00:00 and the other has 00:0e:ab:01:00:00.
+# netsim can route the packets between the nodes.
 ETH1=$(ip -j a | jq -r '.[] | select(.address=="00:0e:ab:00:00:00") | .ifname')
 ETH2=$(ip -j a | jq -r '.[] | select(.address=="00:0e:ab:01:00:00") | .ifname')
 
