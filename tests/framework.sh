@@ -1,12 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
 # Framework for testing
 #
 # This must be sourced by a test script
 
-# Paths to our tools. They can be overridden from the caller's
-# environment.
-TOP_DIR=$(realpath $(pwd)/../..)
-VIRTME_DIR=${VIRTME_DIR:-$TOP_DIR/virtme}
-QEMU_DIR=${QEMU_DIR:-$TOP_DIR/cassini-qemu/x86_64-softmmu}
+# Source the shared VM-launch framework and this repo's configuration.
+# vm-lib.sh provides vm_startvm(); vm.conf supplies the cxi-driver specifics
+# (memory, firmware rodir, $NETSIM_CCN device, nested-VM hook).
+#
+# Resolve paths from this script's own location, not from $(pwd) or a hardcoded
+# repo name, so the right vm.conf is used regardless of the checkout directory
+# (cxi-driver, PR-cxi-driver, PR-cxi-driver_2, ...). vm-tools comes from the
+# flat workspace root; vm.conf comes from this repo's own checkout.
+REPO_DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+TOP_DIR=$(realpath "$REPO_DIR/..")
+source "$TOP_DIR/vm-tools/vm-lib.sh"
+source "$REPO_DIR/vm.conf"
 
 # An error was found. Dump the script stack, and display the message
 # in the argument, and exit.
@@ -22,37 +30,10 @@ function error {
     exit 1
 }
 
-# Start a VM, load the test driver, and exits
-# arg 1 = the script to run
+# Start a VM, run the test script inside it, and exit.
+# arg 1 = the script to run inside the VM
 function startvm {
-    export PATH=$QEMU_DIR:$VIRTME_DIR:/sbin:$PATH
-
-    NETSIM_NICS=${NETSIM_NICS:-1}
-    NETSIM_CCN=${NETSIM_CCN:-ccn11}
-
-    if [[ $NETSIM_NICS -eq 1 ]]; then
-        CCN_OPTS="-device $NETSIM_CCN,addr=8"
-    elif [[ $NETSIM_NICS -eq 2 ]]; then
-        CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=13"
-    elif [[ $NETSIM_NICS -eq 4 ]]; then
-        CCN_OPTS="-device $NETSIM_CCN,addr=8 -device $NETSIM_CCN,addr=0xd -device $NETSIM_CCN,addr=0x12 -device $NETSIM_CCN,addr=0x17"
-    fi
-    QEMU_OPTS="--qemu-opts -machine q35,kernel-irqchip=split -global q35-pcihost.pci-hole64-size=40G -device intel-iommu,intremap=on,caching-mode=on -m 2G $CCN_OPTS"
-
-    KERN_OPTS="--kopt iommu=pt --kopt intel_iommu=on --kopt iomem=relaxed"
-    KERN_OPTS="$KERN_OPTS --kopt transparent_hugepage=never --kopt hugepagesz=1g --kopt default_hugepagesz=1g --kopt hugepages=1"
-    VIRTME_OPTS="--rodir=/lib/firmware=${TOP_DIR}/hms-artifacts"
-    if [[ -v KDIR ]]; then
-        KERNEL="--kdir $KDIR --mods=auto"
-    else
-        KERNEL="--installed-kernel"
-    fi
-
-    mkdir -p $(pwd)/tmptests
-    echo "virtme-run $KERNEL --pwd --rwdir=$(pwd)/tmptests " \
-         "--script-sh $1 $VIRTME_OPTS $KERN_OPTS $QEMU_OPTS" > test_cmd.sh
-    chmod +x test_cmd.sh
-    ../../nic-emu/netsim -N $NETSIM_NICS ./test_cmd.sh
+    vm_startvm --rwdir "$(pwd)/tmptests" "$1"
 }
 
 # Returns the log name for the output

@@ -1,18 +1,18 @@
-# Preamble to run a test. Hides the complexity of setting up tests.
-# To be included first by the tests
+# SPDX-License-Identifier: GPL-2.0
+# Preamble to run a test in a VM. Hides the complexity of setting up tests.
+# Sourced first by every test (`. ./preamble.sh`).
+#
+# Thin shim over the shared VM framework in devbootstrap/vm-tools: framework.sh
+# sources the shared launcher and exposes startvm()/vm_in_guest.
 
 [[ $(basename $0) = "preamble.sh" ]] &&
 	echo "This script is only intended to be run by tests. Exiting." && exit 1
 
-# If not in a VM, start one and execute self.
-HYP=$(grep -c "^flags.* hypervisor" /proc/cpuinfo)
+. ./framework.sh
 
-export OMPI_MCA_btl_base_warn_component_unused=0
-
-if [[ $HYP -eq 0 ]]; then
-	. ./framework.sh
-
-	startvm $(realpath $0)
+# If not in a VM, start one and re-run this test inside it, then exit.
+if ! vm_in_guest; then
+	startvm "$(realpath "$0")"
 	exit 0
 fi
 
@@ -20,6 +20,5 @@ fi
 # a temporary directory that the VM can write to.
 SHARNESS_TEST_DIRECTORY=$(pwd)/tmptests
 
-modprobe configfs
-mount -t configfs none /sys/kernel/config
-modprobe ptp
+# Load the baseline modules shared across repos (configfs, ptp, ...).
+. "$VM_TOOLS_DIR/startvm-setup-common.sh"

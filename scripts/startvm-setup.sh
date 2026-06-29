@@ -1,10 +1,10 @@
 #!/bin/sh
 
-# Setup script run in the VM, used by the testit.sh script.
+# In-VM setup for cxi-driver: load the common modules, then the cxi drivers.
+# Run from the scripts/ directory, so paths below are relative to it.
 
-modprobe configfs
-mount -t configfs none /sys/kernel/config
-modprobe ptp
+. ../../vm-tools/startvm-setup-common.sh
+
 insmod ../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko
 insmod ../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko
 insmod ../drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0
