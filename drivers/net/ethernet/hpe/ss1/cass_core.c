@@ -13,6 +13,7 @@
 #include <linux/aer.h>
 
 #include "cass_core.h"
+#include "cxi_internal.h"
 #include "cass_sbl.h"
 #include <linux/hpe/sbl/sbl.h>
 #include "cass_ss1_debugfs.h"
