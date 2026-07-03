@@ -1128,6 +1128,17 @@ void cxi_phys_lac_free(struct cxi_lni *lni, int lac)
 }
 EXPORT_SYMBOL(cxi_phys_lac_free);
 
+/* Release the transient device (GPU/dmabuf) backing of CXI_MAP_DEVICE VF MD */
+static void cass_clr_dev_md_priv_vf(struct cxi_md_priv_vf *md_priv_vf)
+{
+	if (!md_priv_vf->dev_md_priv)
+		return;
+
+	cass_device_put_pages(md_priv_vf->dev_md_priv);
+	kfree(md_priv_vf->dev_md_priv);
+	md_priv_vf->dev_md_priv = NULL;
+}
+
 /**
  * cxi_clear_md_vf() - Clear page tables for a VF-side MD without freeing the MD
  *
@@ -1166,6 +1177,8 @@ static int cxi_clear_md_vf(struct cxi_md *md)
 			unpin_user_pages(md_priv_vf->pages, md_priv_vf->npages);
 		kvfree(md_priv_vf->pages);
 	}
+
+	cass_clr_dev_md_priv_vf(md_priv_vf);
 
 	md_priv_vf->sgt = NULL;
 	md_priv_vf->pages = NULL;
@@ -2155,6 +2168,111 @@ static struct cxi_md *cass_map_alloc_vf(struct cxi_lni *lni, size_t len,
 	return &md_priv_vf->md;
 }
 
+/**
+ * cass_map_device_vf() - Map device (GPU/dmabuf) memory for a VF
+ *
+ * VF equivalent of the CXI_MAP_DEVICE path in cxi_map().  A transient
+ * PF-style md is used to drive the existing device page acquisition
+ * (dmabuf or GPU p2p), producing a DMA-mapped sgt in the VF's own IOMMU
+ * domain.  Those DMA addresses are registered with the PF through
+ * CXI_OP_ATU_MAP_SGT (via cxi_map_sgtable_vf).  The transient md is retained
+ * on the VF md so the device pages can be released at unmap/clear time.
+ *
+ * @lni:   Logical Network Interface
+ * @va:    Device virtual address
+ * @len:   Mapping length in bytes
+ * @flags: Mapping flags (CXI_MAP_DEVICE set)
+ * @hints: Optional hints carrying dmabuf information
+ *
+ * @return: memory descriptor or error pointer
+ */
+static struct cxi_md *cass_map_device_vf(struct cxi_lni *lni, u64 va,
+					 size_t len, u32 flags,
+					 const struct cxi_md_hints *hints)
+{
+	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_dev *dev = lni_priv_vf->dev;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct ac_map_opts m_opts = {
+		.page_shift = PAGE_SHIFT,
+		.huge_shift = PMD_SHIFT,
+		.flags = flags,
+	};
+	struct cxi_md_priv *dev_md;
+	struct cxi_md_priv_vf *md_priv_vf;
+	struct cxi_md *md;
+	int rc;
+
+	/* Transient PF-style md used only to drive device page acquisition. */
+	dev_md = kzalloc(sizeof(*dev_md), GFP_KERNEL);
+	if (!dev_md)
+		return ERR_PTR(-ENOMEM);
+
+	dev_md->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	dev_md->device = &hw->cdev.pdev->dev;
+	refcount_set(&dev_md->refcount, 1);
+	m_opts.md_priv = dev_md;
+
+	if (hints && hints->dmabuf_valid) {
+		dev_md->dmabuf_fd = hints->dmabuf_fd;
+		dev_md->dmabuf_offset = hints->dmabuf_offset;
+		dev_md->dmabuf_length = len;
+	} else {
+		dev_md->dmabuf_fd = INVALID_DMABUF_FD;
+	}
+
+	rc = cass_is_device_memory(hw, &m_opts, va, len);
+	if (rc)
+		goto free_dev_md;
+
+	cass_align_start_len(&m_opts, va, len, m_opts.page_shift);
+
+	dev_md->md.va = m_opts.va_start;
+	dev_md->md.len = m_opts.va_len;
+	dev_md->md.page_shift = m_opts.page_shift;
+
+	rc = cass_device_get_pages(&m_opts);
+	if (rc)
+		goto free_dev_md;
+
+	/* Register the device DMA addresses with the PF. */
+	md = cxi_map_sgtable_vf(lni, dev_md->sgt, flags);
+	if (IS_ERR(md)) {
+		rc = PTR_ERR(md);
+		goto put_pages;
+	}
+
+	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
+	md_priv_vf->dev_md_priv = dev_md;
+
+	/* Device sgt/pages are owned by dev_md_priv; keep the VF-owned
+	 * sgt/pages NULL so the generic VF cleanup path does not
+	 * double-free them.
+	 */
+	md_priv_vf->sgt = NULL;
+	md_priv_vf->pages = NULL;
+	md_priv_vf->npages = 0;
+
+	/* Report page-aligned va/len/iova, matching the PF CXI_MAP_DEVICE
+	 * semantics; the caller applies any within-page offset itself.
+	 */
+	md_priv_vf->md.va = m_opts.va_start;
+	md_priv_vf->md.len = m_opts.va_len;
+	md_priv_vf->olen = m_opts.va_len;
+
+	pr_debug("VF map_device: md:%d iova:%llx lac:%u va:0x%llx len:0x%lx nents:%u\n",
+		 md->id, md->iova, md->lac, m_opts.va_start, m_opts.va_len,
+		 dev_md->sgt->nents);
+
+	return md;
+
+put_pages:
+	cass_device_put_pages(dev_md);
+free_dev_md:
+	kfree(dev_md);
+	return ERR_PTR(rc);
+}
+
 static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 				 u32 flags, const struct cxi_md_hints *hints)
 {
@@ -2177,10 +2295,8 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
-	if (flags & CXI_MAP_DEVICE) {
-		cxidev_err(&hw->cdev, "TODO: VF does not support device memory\n");
-		return ERR_PTR(-EOPNOTSUPP);
-	}
+	if (flags & CXI_MAP_DEVICE)
+		return cass_map_device_vf(lni, va, len, flags, hints);
 
 	/* For now, we map 4K pages, no matter what the page size is.
 	 * This spends more NTA entries. Hugepage VF will be added shortly in
@@ -2406,6 +2522,8 @@ static int cxi_unmap_vf(struct cxi_md *md)
 			unpin_user_pages(md_priv_vf->pages, md_priv_vf->npages);
 		kvfree(md_priv_vf->pages);
 	}
+
+	cass_clr_dev_md_priv_vf(md_priv_vf);
 
 	/* Free the VF MD structure */
 	kfree(md_priv_vf);

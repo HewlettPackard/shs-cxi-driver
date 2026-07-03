@@ -58,6 +58,7 @@ struct cxi_md_priv_vf {
 	size_t olen;                 /* Original allocation size (immutable after map) */
 	/* VF only fields */
 	int npages;                  /* Number of pinned pages */
+	struct cxi_md_priv *dev_md_priv; /* Transient PF-style md backing device memory */
 };
 
 int cass_vf_get_token(struct cxi_dev *cdev, int vf_idx, unsigned int *token);
