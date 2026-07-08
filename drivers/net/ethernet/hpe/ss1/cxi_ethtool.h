@@ -20,6 +20,10 @@
 #define CXI_ETH_PF_LOS_LOL_HIDE              BIT(15) /* hide LOS/LOL down and link up fail cause */
 #define CXI_ETH_PF_R1_LINK_PARTNER           BIT(16) /* R1 link partner */
 
-#define PRIV_FLAGS_COUNT 17
+/* c2 only flags */
+#define CXI_ETH_PF_LOOPBACK_HOST             BIT(17) /* Host side loopback in the transceiver */
+
+#define PRIV_FLAGS_COUNT 18
+#define C2_ONLY_PRIV_FLAGS_COUNT 1
 
 #define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)

@@ -36,7 +36,8 @@ static const char priv_flags_str[PRIV_FLAGS_COUNT][ETH_GSTRING_LEN] = {
 	"ignore-media-error",
 	"use-supported-ss200-cable",
 	"los-lol-hide",
-	"r1-link-partner"
+	"r1-link-partner",
+	"loopback-host"
 };
 
 /* ethtool ops */
@@ -56,14 +57,16 @@ static void cxi_get_drvinfo(struct net_device *ndev,
 		min_t(size_t, sizeof(info->erom_version),
 		      sizeof(dev->eth_info.erom_version)));
 
-	info->n_priv_flags = PRIV_FLAGS_COUNT;
+	info->n_priv_flags = dev->is_c2 ? PRIV_FLAGS_COUNT : PRIV_FLAGS_COUNT - C2_ONLY_PRIV_FLAGS_COUNT;
 }
 
 static int cxi_get_sset_count(struct net_device *ndev, int sset)
 {
+	struct cxi_eth *dev = netdev_priv(ndev);
+
 	switch (sset) {
 	case ETH_SS_PRIV_FLAGS:
-		return PRIV_FLAGS_COUNT;
+		return dev->is_c2 ? PRIV_FLAGS_COUNT : PRIV_FLAGS_COUNT - C2_ONLY_PRIV_FLAGS_COUNT;
 	case ETH_SS_STATS:
 		return CXI_GLOBAL_STATS_LEN;
 	default:
@@ -76,10 +79,12 @@ static void cxi_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 	char *p = data;
 	struct cxi_eth *dev = netdev_priv(ndev);
 	char *dst;
+	u32 flags_count;
 
 	switch (stringset) {
 	case ETH_SS_PRIV_FLAGS:
-		memcpy(p, priv_flags_str, PRIV_FLAGS_COUNT * ETH_GSTRING_LEN);
+		flags_count = dev->is_c2 ? PRIV_FLAGS_COUNT : PRIV_FLAGS_COUNT - C2_ONLY_PRIV_FLAGS_COUNT;
+		memcpy(p, priv_flags_str, flags_count * ETH_GSTRING_LEN);
 		if (cassini_version(&dev->cxi_dev->prop, CASSINI_1)) {
 			dst = p + 7 * ETH_GSTRING_LEN;
 			memset(dst, 0, ETH_GSTRING_LEN);
@@ -619,6 +624,7 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	u32 changes;
 	u32 old_flags;
 	u32 debug_flags;
+	u32 loopback_mask;
 
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 	cxi_link_flags_get(dev->cxi_dev, &debug_flags);
@@ -630,11 +636,12 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	if (!changes)
 		return 0;
 
-	if (changes & LOOPBACK_MODE) {
-		u32 loopback_mode = flags & LOOPBACK_MODE;
+	loopback_mask = dev->is_c2 ? (LOOPBACK_MODE | CXI_ETH_PF_LOOPBACK_HOST) : LOOPBACK_MODE;
 
-		if (loopback_mode ==
-		    (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)) {
+	if ((changes & loopback_mask)) {
+		u32 loopback_mode = flags & loopback_mask;
+
+		if (hweight_long(loopback_mode) > 1) {
 			netdev_err(dev->ndev,
 				   "Loopback private flags are mutually exclusive\n");
 			return -EINVAL;
