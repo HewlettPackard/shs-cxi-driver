@@ -90,6 +90,12 @@ static void cxi_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 			memset(dst, 0, ETH_GSTRING_LEN);
 			strscpy(dst, "disable-pml-recovery", ETH_GSTRING_LEN);
 		}
+
+		if (cassini_version(&dev->cxi_dev->prop, CASSINI_2)) {
+			dst = p + 1 * ETH_GSTRING_LEN;
+			strscpy_pad(dst, "loopback-media", ETH_GSTRING_LEN);
+		}
+
 		break;
 	case ETH_SS_STATS:
 		memcpy(p, cxi_get_ethtool_stats_name, CXI_GLOBAL_STATS_LEN *
