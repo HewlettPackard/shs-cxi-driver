@@ -1117,6 +1117,11 @@ static int vf_notif_handler(void *data)
 err:
 	kfree(msg_buf);
 	kfree(rsp_buf);
+	/* Wait for kthread_stop() before returning, to avoid use-after-free if the
+	 * thread exits before cass_vf_fini() calls kthread_stop().
+	 */
+	while (!kthread_should_stop())
+		schedule_timeout_interruptible(CXI_SRIOV_VF_TIMEOUT);
 	return rc;
 }
 
@@ -1332,6 +1337,13 @@ void cass_vf_fini(struct cass_dev *hw)
 
 	free_irq(hw->pf_vf_vec, hw);
 
+	/* Shut down the notification socket before stopping the handler thread
+	 * so that any blocked recv in vf_notif_handler returns immediately rather
+	 * than waiting up to CXI_SRIOV_VF_TIMEOUT for a timeout.
+	 */
+	if (hw->vf_notif_sock)
+		kernel_sock_shutdown(hw->vf_notif_sock, SHUT_RDWR);
+
 	if (hw->vf_notif_handler) {
 		kthread_stop(hw->vf_notif_handler);
 		hw->vf_notif_handler = NULL;
@@ -1344,7 +1356,6 @@ void cass_vf_fini(struct cass_dev *hw)
 	}
 
 	if (hw->vf_notif_sock) {
-		kernel_sock_shutdown(hw->vf_notif_sock, SHUT_RDWR);
 		sock_release(hw->vf_notif_sock);
 		hw->vf_notif_sock = NULL;
 	}
