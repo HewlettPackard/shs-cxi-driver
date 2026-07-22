@@ -2184,6 +2184,7 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 	struct sg_table *sgt;
 	struct scatterlist *sg;
 	unsigned int i;
+	struct cxi_md_hints hints = {};
 
 	if (!client->is_vf)
 		return -EOPNOTSUPP;
@@ -2214,6 +2215,10 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 		rc = -EINVAL;
 		goto free_obj;
 	}
+
+	hints.huge_shift = cmd->hints.huge_shift;
+	hints.page_shift = cmd->hints.page_shift;
+	hints.ptg_mode = cmd->hints.ptg_mode;
 
 	atomic_inc(&lni_obj->refs);
 	md_obj->deps[0] = lni_obj;
@@ -2251,7 +2256,7 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 		sg = sg_next(sg);
 	}
 
-	md = cxi_map_sgtable(lni_obj->lni, sgt, cmd->flags);
+	md = cxi_map_sgtable_internal(lni_obj->lni, sgt, cmd->flags, &hints);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto free_sgt_table;

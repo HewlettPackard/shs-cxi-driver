@@ -1503,7 +1503,7 @@ int cass_mirror_odp(const struct ac_map_opts *m_opts, struct cass_ac *cac,
 }
 
 static int cass_dma_map_pages(struct cxi_md_priv *md_priv,
-			      struct page **pages, int npages, bool is_huge_page)
+			      struct page **pages, int npages)
 {
 	int ret;
 	struct sg_table *sgt;
@@ -1589,7 +1589,7 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 	if (ret < 0)
 		goto err;
 
-	ret = cass_dma_map_pages(md_priv, pages, npages, m_opts->is_huge_page);
+	ret = cass_dma_map_pages(md_priv, pages, npages);
 	if (ret)
 		goto map_err;
 
@@ -1915,30 +1915,45 @@ static irqreturn_t cass_pri_int_cb(int irq, void *context)
 int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 {
 	int i;
-	int j = 0;
 	int ret;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
 	struct cass_ac *cac = md_priv->cac;
+	size_t plen = BIT(cac->page_shift); /* page_size */
+	size_t hlen = BIT(cac->huge_shift); /* huge_size */
+	u64 pmask = ~MASK(cac->page_shift); /* page_mask */
+	/* Huge pages are only representable when the AC uses a two level
+	 * table (pg_table_size != 0, i.e. huge_shift > page_shift).
+	 */
+	bool huge_ok = cac->huge_shift > cac->page_shift;
 
 	cass_cond_lock(&cac->ac_mutex, need_lock);
 
 	for_each_sgtable_dma_sg(md_priv->sgt, sg, i) {
-		dma_addr_t dma_addr = sg_dma_address(sg) & PAGE_MASK;
-		long len = sg_dma_len(sg) + (sg_dma_address(sg) % PAGE_SIZE);
+		dma_addr_t dma_addr = sg_dma_address(sg) & pmask;
+		long len = sg_dma_len(sg) + (sg_dma_address(sg) % plen);
 
 		atu_debug("dma_addr:%llx len:%lx\n", dma_addr, len);
 
+		/* A single DMA segment is bus contiguous, so a huge page can
+		 * be safely used whenever the base address, the IOVA and the
+		 * remaining length are all huge page aligned/large enough.
+		 */
 		while (len > 0) {
+			bool is_huge_page = huge_ok &&
+					IS_ALIGNED(dma_addr, hlen) &&
+					IS_ALIGNED(iova, hlen) &&
+					len >= hlen;
+			size_t inc = is_huge_page ? hlen : plen;
+
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-						   md_priv->flags, false);
+						   md_priv->flags, is_huge_page);
 			if (ret)
 				goto mirror_error;
 
-			dma_addr += PAGE_SIZE;
-			iova += PAGE_SIZE;
-			len -= PAGE_SIZE;
-			j++;
+			dma_addr += inc;
+			iova += inc;
+			len -= inc;
 		}
 	}
 
@@ -1947,7 +1962,7 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 	return 0;
 
 mirror_error:
-	cass_clear_range(md_priv, md_priv->md.iova, j * PAGE_SIZE);
+	cass_clear_range(md_priv, md_priv->md.iova, iova - md_priv->md.iova);
 	cass_cond_unlock(&cac->ac_mutex, need_lock);
 
 	return ret;

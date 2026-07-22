@@ -251,6 +251,9 @@ static void nvidia_put_pages(struct cxi_md_priv *md_priv)
 					   struct cass_dev, cdev);
 	struct pci_dev *pdev = hw->cdev.pdev;
 
+	if (!p2p_info)
+		return;
+
 	BUG_ON(p2p_info->page_table == NULL);
 
 	p2p_dma_unmap_pages(pdev, p2p_info->page_table, p2p_info->dma_mapping);

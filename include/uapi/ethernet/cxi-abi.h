@@ -718,6 +718,7 @@ struct cxi_atu_map_sgt_cmd {
 	enum cxi_command_opcode op;
 	void __user *resp;
 
+	struct cxi_md_hints hints;
 	unsigned int lni;
 	__u32 flags;
 	__u32 nents;
