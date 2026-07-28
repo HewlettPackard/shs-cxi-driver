@@ -25,6 +25,7 @@
 #include "cxi_ethtool.h"
 #include "cassini_user_defs.h"
 #include "cxi_core.h"
+#include "cxi_eth_mc_sw.h"
 
 /* netif_napi_add defined in RHEL 8.8 */
 #if defined(netif_napi_add) || (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)) || defined(RHEL9_3_PLUS)
@@ -343,6 +344,14 @@ struct cxi_eth {
 	bool all_mcast_active;
 	bool promisc_active;
 	bool bcast_active;
+	/* Serializes access to the HW filter table (uc_mc_filters[] and
+	 * the *_active flags).
+	 */
+	spinlock_t filter_lock;
+
+	struct work_struct rx_mode_work;
+	atomic_t rx_mode_gen;
+	struct cxi_mc_sw *mc_switch;
 
 	/* VF TX source-MAC spoof check; always false on PFs */
 	bool spoof_chk;
@@ -381,6 +390,11 @@ static inline u32 num_small_packets(u32 buf_count)
 size_t get_rxq_eq_buf_size(struct cxi_eth *dev);
 void hw_cleanup(struct cxi_eth *dev);
 int hw_setup(struct cxi_eth *dev);
+void cxi_eth_rx_mode_work_init(struct cxi_eth *dev);
+
+int cxi_eth_add_mc_filter(struct cxi_eth *dev, u64 mac);
+void cxi_eth_del_mc_filter(struct cxi_eth *dev, u64 mac);
+int cxi_eth_set_flag_filters(struct cxi_eth *dev, u16 flags);
 
 /* Netdev methods */
 int cxi_eth_open(struct net_device *ndev);

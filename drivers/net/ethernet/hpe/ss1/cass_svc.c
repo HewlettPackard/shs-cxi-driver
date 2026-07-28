@@ -179,13 +179,39 @@ int cass_svc_init(struct cass_dev *hw)
 
 	for (i = 0; i < CXI_RSRC_TYPE_MAX; i++) {
 		/* Set up resource limits for default service */
-		if (i != CXI_RSRC_TYPE_TLE) {
-			limits.type[i].max = hw->cdev.prop.rsrcs.type[i].max;
-			limits.type[i].res = 0;
-		} else {
+		if (i == CXI_RSRC_TYPE_TLE) {
 			limits.type[i].res = max(CASS_MIN_POOL_TLES,
 						 default_svc_num_tles);
 			limits.type[i].max = limits.type[i].res;
+			continue;
+		}
+
+		limits.type[i].max = hw->cdev.prop.rsrcs.type[i].max;
+
+		/* Budget for VF ethernet children; must cover C_NUM_VFS *
+		 * hw_setup() per-VF res without exceeding global pool sizes.
+		 * PTE: C_NUM_VFS * CXI_ETH_SVC_PTE_RES = 512 << C_NUM_PTLTES=2048.
+		 * LE:  half the per-PE pool leaves room for PF ethernet.
+		 * For more than ~8 VFs needing full LE allocation, use a
+		 * dedicated parent service via sysfs vf/N/svc_id.
+		 */
+		switch (i) {
+		case CXI_RSRC_TYPE_PTE:
+			limits.type[i].res = C_NUM_VFS * CXI_ETH_SVC_PTE_RES;
+			break;
+		case CXI_RSRC_TYPE_TXQ:
+		case CXI_RSRC_TYPE_TGQ:
+		case CXI_RSRC_TYPE_EQ:
+		case CXI_RSRC_TYPE_AC:
+			limits.type[i].res = C_NUM_VFS;
+			break;
+		case CXI_RSRC_TYPE_LE:
+			/* Half the per-PE pool; leaves room for PF ethernet */
+			limits.type[i].res = limits.type[i].max / 2;
+			break;
+		default:
+			limits.type[i].res = 0;
+			break;
 		}
 	}
 	svc_desc.limits = limits;

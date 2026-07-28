@@ -23,6 +23,7 @@
 #include "cxi_internal.h"
 #include "cxi_vf_cmd.h"
 #include "cass_vf.h"
+#include "cass_eth_mc_sw_ops.h"
 
 static int free_cq_obj(int id, void *obj_, void *data);
 static int free_md_obj(int id, void *obj_, void *data);
@@ -393,6 +394,60 @@ static int cxi_user_rmu_eth_free(struct user_client *client,
 	free_rmu_eth_obj(0, obj, client);
 
 	return 0;
+}
+
+static int cxi_user_eth_sync_rx_mode_cmd(struct user_client *client,
+					 const void *cmd_in, size_t cmd_len,
+					 void **resp_out, size_t resp_buf_size,
+					 size_t *resp_out_len)
+{
+	const struct cxi_eth_sync_rx_mode_cmd *cmd = cmd_in;
+	const u64 *mc_mac_addrs;
+	size_t expected_len;
+	int rc;
+
+	if (cmd_len < sizeof(*cmd))
+		return -EINVAL;
+
+	expected_len = struct_size(cmd, mac_addrs, cmd->mc_count);
+	if (cmd_len != expected_len)
+		return -EINVAL;
+
+	mc_mac_addrs = cmd->mc_count ? cmd->mac_addrs : NULL;
+
+	rc = cass_eth_mc_sw_sync_rx_mode(client->ucxi->dev,
+					 mc_mac_addrs, cmd->mc_count,
+					 cmd->ndev_flags,
+					 client->is_vf, client->vf_num);
+
+	return rc;
+}
+
+static int cxi_user_eth_mc_sw_pf_recv_txfwd_from_vf(struct user_client *client,
+						    const void *cmd_in, size_t cmd_len,
+						    void **resp_out, size_t resp_buf_size,
+						    size_t *resp_out_len)
+{
+	const struct cxi_eth_mc_sw_txfwd_cmd *cmd = cmd_in;
+	size_t expected_len;
+	int rc;
+
+	if (cmd_len < offsetof(struct cxi_eth_mc_sw_txfwd_cmd, frame))
+		return -EINVAL;
+
+	/* Sender transmits offsetof(frame)+frame_len bytes (no struct tail
+	 * padding); validate against that exact length.
+	 */
+	expected_len = offsetof(struct cxi_eth_mc_sw_txfwd_cmd, frame) +
+		       cmd->frame_len;
+	if (cmd_len != expected_len)
+		return -EINVAL;
+
+	rc = cass_eth_mc_sw_pf_recv_txfwd_from_vf(client->ucxi->dev,
+						  cmd->frame, cmd->frame_len,
+						  client->is_vf, client->vf_num);
+
+	return rc;
 }
 
 static int cxi_user_rmu_eth_add_mac_filter(struct user_client *client,
@@ -4127,6 +4182,14 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_rmu_eth_add_mac_filter_cmd),
 		.name       = "RMU_ETH_ADD_MAC_FILTER",
 		.handler    = cxi_user_rmu_eth_add_mac_filter, },
+	[CXI_OP_ETH_SYNC_RX_MODE_CMD] = {
+		.req_size   = 0,
+		.name       = "ETH_SYNC_RX_MODE_CMD",
+		.handler    = cxi_user_eth_sync_rx_mode_cmd, },
+	[CXI_OP_ETH_MC_SW_TX_FWD_PKT] = {
+		.req_size   = 0,
+		.name       = "ETH_MC_SW_TX_FWD_PKT",
+		.handler    = cxi_user_eth_mc_sw_pf_recv_txfwd_from_vf, },
 	[CXI_OP_RMU_ETH_ADD_PROMISC_FILTER] = {
 		.req_size   = sizeof(struct cxi_rmu_eth_add_promisc_filter_cmd),
 		.name       = "RMU_ETH_ADD_PROMISC_FILTER",
@@ -4597,6 +4660,9 @@ static void free_client(struct user_client *client)
 	/* Free existing resources that userspace didn't release. This
 	 * must be done in reverse order of dependencies.
 	 */
+	if (client->ucxi && client->is_vf)
+		cass_eth_mc_sw_cleanup_vf(client->ucxi->dev, client->vf_num);
+
 	idr_for_each(&client->rmu_eth_idr, free_rmu_eth_obj, client);
 	idr_destroy(&client->rmu_eth_idr);
 

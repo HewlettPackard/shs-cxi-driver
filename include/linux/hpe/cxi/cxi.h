@@ -456,8 +456,12 @@ int cxi_register_msg_relay(struct cxi_dev *cdev, cxi_msg_relay_t msg_relay,
 int cxi_unregister_msg_relay(struct cxi_dev *cdev);
 int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req,
 		       size_t req_len, void *rsp, size_t *rsp_len);
+int cxi_send_async_msg_to_pf(struct cxi_dev *cdev, const void *req,
+			     size_t req_len);
 int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 		       size_t req_len, void *rsp, size_t *rsp_len);
+int cxi_send_async_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
+			     size_t req_len);
 int cxi_get_dev_properties(struct cxi_dev *cdev, struct cxi_properties_info *prop);
 int cxi_notify_vf_async_event(struct cxi_dev *cdev, int vf_idx,
 			      enum cxi_async_event event);

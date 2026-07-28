@@ -23,6 +23,7 @@
 #include "cxi_eth.h"
 #include "cxi_eth_debugfs.h"
 #include "cxi_user.h"
+#include "cxi_eth_mc_sw.h"
 
 unsigned int rss_indir_size = 64;
 module_param(rss_indir_size, int, 0444);
@@ -160,6 +161,8 @@ static int add_device(struct cxi_dev *cxi_dev)
 	spin_lock_init(&dev->cq_tgt_req_lock);
 	dev->is_c2 = cassini_version(&dev->cxi_dev->prop, CASSINI_2);
 
+	cxi_eth_rx_mode_work_init(dev);
+
 	ndev->netdev_ops = cxi_dev->is_physfn ? &cxi_eth_netdev_ops : &cxi_eth_netdev_ops_vf;
 	ndev->ethtool_ops = &cxi_eth_ethtool_ops;
 	ndev->watchdog_timeo = CXI_ETH_TX_TIMEOUT;
@@ -221,10 +224,14 @@ static int add_device(struct cxi_dev *cxi_dev)
 	if (rc)
 		goto err_free_rxq;
 
+	rc = cxi_eth_mc_sw_init(dev);
+	if (rc)
+		goto err_unregister_netdev;
+
 	netif_carrier_off(ndev);
 	rc = cxi_link_state_get(cxi_dev, &link_up);
 	if (rc)
-		goto err_unregister_netdev;
+		goto err_state_fini;
 
 	if (link_up)
 		netif_carrier_on(ndev);
@@ -240,6 +247,9 @@ static int add_device(struct cxi_dev *cxi_dev)
 
 	return 0;
 
+err_state_fini:
+	cxi_eth_mc_sw_sysfs_remove(dev);
+	cxi_eth_mc_sw_fini(dev);
 err_unregister_netdev:
 	unregister_netdev(ndev);
 err_free_rxq:
@@ -287,7 +297,13 @@ static void remove_device(struct cxi_dev *cxi_dev)
 
 	debugfs_remove(dev->debug);
 
+	cancel_work_sync(&dev->rx_mode_work);
+
+	cxi_eth_mc_sw_sysfs_remove(dev);
+
 	unregister_netdev(dev->ndev);
+
+	cxi_eth_mc_sw_fini(dev);
 
 	kfree(dev->rxqs);
 	kfree(dev->txqs);

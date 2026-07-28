@@ -68,12 +68,26 @@ int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req,
 }
 EXPORT_SYMBOL(cxi_send_msg_to_pf);
 
+int cxi_send_async_msg_to_pf(struct cxi_dev *cdev, const void *req,
+			     size_t req_len)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(cxi_send_async_msg_to_pf);
+
 int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 		       size_t req_len, void *rsp, size_t *rsp_len)
 {
 	return -EOPNOTSUPP;
 }
 EXPORT_SYMBOL(cxi_send_msg_to_vf);
+
+int cxi_send_async_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
+			     size_t req_len)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(cxi_send_async_msg_to_vf);
 
 int cxi_register_msg_relay(struct cxi_dev *cdev, cxi_msg_relay_t msg_relay,
 			   void *msg_relay_data)
@@ -1011,6 +1025,8 @@ static void disable_sriov(struct pci_dev *pdev)
 
 	pci_disable_sriov(pdev);
 
+	cass_eth_mc_sw_sriov_configure(hw, 0);
+
 	if (hw->vf_listener) {
 		kthread_stop(hw->vf_listener);
 		hw->vf_listener = NULL;
@@ -1089,8 +1105,17 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 		goto err_kill_listener;
 	}
 
+	rc = cass_eth_mc_sw_sriov_configure(hw, num_vfs);
+	if (rc) {
+		cxidev_err(&hw->cdev,
+			   "mc-switch dispatcher init failed: %d\n", rc);
+		goto err_disable_sriov;
+	}
+
 	return num_vfs;
 
+err_disable_sriov:
+	pci_disable_sriov(pdev);
 err_kill_listener:
 	kthread_stop(hw->vf_listener);
 	hw->vf_listener = NULL;
@@ -1147,7 +1172,7 @@ static int vf_notif_handler(void *data)
 		msg_len = SMALL_VFMSG_SIZE;
 		memset(rsp_buf, 0, SMALL_VFMSG_SIZE);
 		rsp = rsp_buf;
-		rsp_len = SMALL_VFMSG_SIZE;
+		rsp_len = 0;
 
 		rc = read_message_from_vsock_large(hw->vf_notif_sock, &msg,
 						   &msg_len, NULL,
@@ -1176,7 +1201,7 @@ static int vf_notif_handler(void *data)
 			kvfree(msg);
 		if (rc < 0) {
 			cxidev_err(&hw->cdev, "error handling notification from PF: %d", rc);
-			break;
+			rsp_len = 0;
 		}
 
 		if (!(msg_flags & VF_PF_MSG_F_NO_REPLY)) {
@@ -1584,6 +1609,36 @@ int cxi_send_msg_to_pf(struct cxi_dev *cdev, const void *req,
 EXPORT_SYMBOL(cxi_send_msg_to_pf);
 
 /**
+ * cxi_send_async_msg_to_pf() - Send a VF->PF message without waiting for a reply
+ *
+ * @cdev: the VF device
+ * @req: message data
+ * @req_len: length of message
+ *
+ * Fire-and-forget variant of cxi_send_msg_to_pf() for datapath relays (e.g. BUM
+ * TX forwarding) where the PF reply is not needed. The PF handler processes the
+ * message but skips the response (VF_PF_MSG_F_NO_REPLY).
+ *
+ * Return: 0 on success, negative errno on error.
+ */
+int cxi_send_async_msg_to_pf(struct cxi_dev *cdev, const void *req,
+			     size_t req_len)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	int rc;
+
+	if (cdev->is_physfn)
+		return -EINVAL;
+
+	mutex_lock(&hw->vf_cmd_lock);
+	rc = cxi_vsock_async_send(cdev, hw->vf_req_sock, req, req_len);
+	mutex_unlock(&hw->vf_cmd_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(cxi_send_async_msg_to_pf);
+
+/**
  * cxi_send_msg_to_vf() - Send a message from PF to a specific VF
  *
  * @cdev: the device
@@ -1619,6 +1674,45 @@ int cxi_send_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
 	return rc;
 }
 EXPORT_SYMBOL(cxi_send_msg_to_vf);
+
+/**
+ * cxi_send_async_msg_to_vf() - Send a PF->VF message without waiting for a reply
+ *
+ * @cdev: the PF device
+ * @vf_num: VF index to send the message to
+ * @req: message data
+ * @req_len: length of message
+ *
+ * Fire-and-forget variant of cxi_send_msg_to_vf() for datapath fan-out (e.g. MC
+ * software-switch RX fan-out) where the VF reply is not needed. The VF notif
+ * handler processes the message but skips the response (VF_PF_MSG_F_NO_REPLY),
+ * so a slow or stuck VF cannot stall delivery to the other VFs.
+ *
+ * Return: 0 on success, negative errno on error.
+ */
+int cxi_send_async_msg_to_vf(struct cxi_dev *cdev, int vf_num, const void *req,
+			     size_t req_len)
+{
+	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
+	int rc = 0;
+
+	if (!cdev->is_physfn)
+		return -EINVAL;
+
+	if (vf_num < 0 || vf_num >= hw->num_vfs)
+		return -EINVAL;
+
+	mutex_lock(&hw->vfs[vf_num].notif_lock);
+	if (hw->vfs[vf_num].notif_sock)
+		rc = cxi_vsock_async_send(cdev, hw->vfs[vf_num].notif_sock,
+					  req, req_len);
+	else
+		rc = -ENOTCONN;
+	mutex_unlock(&hw->vfs[vf_num].notif_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(cxi_send_async_msg_to_vf);
 
 /**
  * cxi_notify_vf_async_event() - Forward an async event to a single VF

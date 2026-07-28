@@ -956,6 +956,10 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	idr_init(&hw->rmu_eth_idr);
 	mutex_init(&hw->rmu_eth_lock);
 
+	rc = cass_eth_mc_sw_alloc(hw);
+	if (rc)
+		goto hw_free;
+
 	/* Initialize per-VF Ethernet policy to defaults:
 	 *   trusted   = false  (we do not allow VF to choose)
 	 *   own_mac   = 0      (no MAC assigned yet)
@@ -994,7 +998,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	rc = pci_enable_device(pdev);
 	if (rc) {
 		cxidev_err(&hw->cdev, "pci_enable_device() failed.\n");
-		goto hw_free;
+		goto free_eth_mc_sw;
 	}
 
 	/* The is_physfn and is_virtfn fields of struct pci_dev are only set if
@@ -1396,6 +1400,8 @@ dev_disable:
 	pci_clear_master(pdev);
 	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
+free_eth_mc_sw:
+	cass_eth_mc_sw_free(hw);
 hw_free:
 	kfree(hw);
 
@@ -1447,6 +1453,8 @@ static void cass_remove(struct pci_dev *pdev)
 		cass_telem_fini(hw);
 		cass_vf_fini(hw);
 	}
+
+	cass_eth_mc_sw_free(hw);
 
 	cass_irq_fini(hw);
 

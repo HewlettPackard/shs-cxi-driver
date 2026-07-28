@@ -34,6 +34,7 @@
 #include "cxi_config.h"
 #include "cxi_internal.h"
 #include "cass_vf.h"
+#include "cass_eth_mc_sw_ops.h"
 
 #define PCI_VENDOR_ID_CRAY         0x17db
 #define PCI_DEVICE_ID_CASSINI_1    0x0501
@@ -242,6 +243,8 @@ static inline void pci_disable_pcie_error_reporting(void *p) {}
 #define CASS_NUM_LE_POOLS (C_LPE_CFG_PE_LE_POOLS_ENTRIES / C_PE_COUNT)
 #define CASS_MIN_POOL_TLES 8
 #define ACS_AVAIL (ATU_PHYS_AC - 1)
+/* PTEs reserved per VF ethernet service; must match hw_setup() ptes.res */
+#define CXI_ETH_SVC_PTE_RES 8
 #define CTS_AVAIL (C_NUM_CTS - 1) /* CT 0 invalid */
 #define EQS_AVAIL (C_NUM_EQS - 1) /* EQ 0 invalid */
 
@@ -894,6 +897,11 @@ struct cass_dev {
 
 	/* RMU Ethernet resource management */
 	struct idr rmu_eth_idr;
+
+	/* PF Ethernet multicast software-switch's Opaque handle
+	 * defined and managed in cass_eth_mc_sw_ops.c
+	 */
+	struct cass_eth_mc_sw *eth_mc_sw;
 
 	/* Protects all RMU Eth resources */
 	struct mutex rmu_eth_lock;

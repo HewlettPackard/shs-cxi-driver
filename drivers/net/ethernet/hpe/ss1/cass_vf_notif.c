@@ -3,12 +3,12 @@
 
 #include <linux/kernel.h>
 #include <linux/types.h>
-#include <linux/errno.h>
 #include <linux/vmalloc.h>
 
 #include "cass_core.h"
 #include "cxi_core.h"
 #include "cass_vf_notif.h"
+#include "cass_eth_mc_sw_ops.h"
 
 #if !defined(CXI_DISABLE_SRIOV)
 
@@ -38,8 +38,8 @@ static int cass_vf_notif_async_event_handler(struct cass_dev *hw,
 }
 
 static int cass_vf_notif_mac_addr_change_handler(struct cass_dev *hw,
-					     const void *cmd_in, void **resp,
-					     size_t *resp_len)
+						 const void *cmd_in, void **resp,
+						 size_t *resp_len)
 {
 	/* Notify registered cxi_clients about the MAC change. */
 	cxi_send_async_event(&hw->cdev, CXI_EVENT_MAC_ADDR_CHANGE);
@@ -74,6 +74,10 @@ static const struct cass_vf_notif_info vf_notif_info[] = {
 		.req_size   = sizeof(struct cass_vf_notif_spoof_chk_change),
 		.name       = "SPOOF_CHK_CHANGE",
 		.handler    = cass_vf_notif_spoof_chk_handler, },
+	[CASS_VF_NOTIF_OP_MC_SW_RX_FANOUT_PKT] = {
+		.req_size   = sizeof(struct cass_vf_notif_mc_sw_rx_fanout_pkt),
+		.name       = "MC_SW_RX_FANOUT_PKT",
+		.handler    = cass_eth_mc_sw_vf_notif_rxfanout_hdlr, },
 };
 
 int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,
@@ -91,8 +95,19 @@ int dispatch_vf_notif(struct cass_dev *hw, const void *req, size_t req_len,
 	if (!info->handler)
 		return -EOPNOTSUPP;
 
-	if (req_len != info->req_size)
+	if (op == CASS_VF_NOTIF_OP_MC_SW_RX_FANOUT_PKT) {
+		const struct cass_vf_notif_mc_sw_rx_fanout_pkt *pkt = req;
+		size_t hdr_len = offsetof(struct cass_vf_notif_mc_sw_rx_fanout_pkt,
+					  frame);
+
+		/* Sender transmits offsetof(frame)+frame_len bytes (no struct tail
+		 * padding); validate against that exact length.
+		 */
+		if (req_len < hdr_len || req_len < hdr_len + pkt->frame_len)
+			return -EINVAL;
+	} else if (req_len != info->req_size) {
 		return -EINVAL;
+	}
 
 	cxidev_dbg(&hw->cdev, "VF notification received: %s\n", info->name);
 

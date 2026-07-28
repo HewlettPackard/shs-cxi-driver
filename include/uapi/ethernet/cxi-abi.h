@@ -148,6 +148,8 @@ enum cxi_command_opcode {
 		CXI_OP_ETH_VF_MAC_GET,
 		CXI_OP_ETH_VF_MAC_VALIDATE,
 		CXI_OP_QUERY_VERSION,
+		CXI_OP_ETH_SYNC_RX_MODE_CMD,
+		CXI_OP_ETH_MC_SW_TX_FWD_PKT,
 
 		CXI_OP_TELEM_GET,
 
@@ -201,6 +203,21 @@ struct cxi_rmu_eth_hash_key_get_cmd {
 
 struct cxi_rmu_eth_get_hash_key_resp {
 	__u8 key[CXI_ETH_HASH_KEY_SIZE];
+};
+
+struct cxi_eth_sync_rx_mode_cmd {
+	enum cxi_command_opcode op;
+	__u16 mc_count;
+	__u16 ndev_flags;
+	void __user  *resp;
+	__u64 mac_addrs[];
+};
+
+struct cxi_eth_mc_sw_txfwd_cmd {
+	enum cxi_command_opcode op;
+	void __user  *resp;
+	__u16 frame_len;
+	__u8  frame[];
 };
 
 struct cxi_rmu_eth_add_mac_filter_cmd {

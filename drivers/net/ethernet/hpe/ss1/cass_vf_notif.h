@@ -3,6 +3,7 @@
 
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <linux/errno.h>
 
 #ifndef	_CASS_VF_NOTIF_H
 #define	_CASS_VF_NOTIF_H
@@ -13,6 +14,7 @@ enum cass_vf_notif_ops {
 	CASS_VF_NOTIF_OP_ASYNC_EVENT,
 	CASS_VF_NOTIF_OP_MAC_ADDR_CHANGE,
 	CASS_VF_NOTIF_OP_SPOOF_CHK_CHANGE,
+	CASS_VF_NOTIF_OP_MC_SW_RX_FANOUT_PKT,
 	CASS_VF_NOTIF_OP_MAX,
 };
 
@@ -28,6 +30,15 @@ struct cass_vf_notif_ping {
 struct cass_vf_notif_async_event {
 	enum cass_vf_notif_ops op;
 	unsigned int event; /* enum cxi_async_event */
+};
+
+/* PF -> VF RX software-switch fanout packet notification. */
+struct cass_vf_notif_mc_sw_rx_fanout_pkt {
+	enum cass_vf_notif_ops op;
+	u32 csum;
+	u16 frame_len;
+	u8 csum_state;
+	u8 frame[];
 };
 
 /* Notification: PF admin assigned a new MAC address to the VF. */
