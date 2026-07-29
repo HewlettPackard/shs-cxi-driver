@@ -54,4 +54,9 @@ struct cxi_pte_status_cmd_vf {
 	struct cxi_pte_status status;
 };
 
+struct cxi_svc_alloc_cmd_vf {
+	struct cxi_svc_alloc_cmd base;
+	char name[50];
+};
+
 #endif /* _CXI_VF_CMD_H */

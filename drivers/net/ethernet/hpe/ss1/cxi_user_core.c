@@ -3,6 +3,7 @@
 
 /* Userspace communication. */
 
+#include <linux/cred.h>
 #include <linux/hpe/cxi/cxi.h>
 #include <linux/device.h>
 #include <linux/etherdevice.h>
@@ -31,6 +32,7 @@ static int free_pte_map(int id, void *obj_, void *data);
 static int free_wait_obj(int id, void *obj_, void *data);
 static int free_ct_obj(int id, void *obj_, void *data);
 static int free_cp_obj(int id, void *obj_, void *data);
+static int free_svc_obj(int id, void *obj_, void *data);
 static int free_rmu_eth_obj(int id, void *obj_, void *data);
 
 #ifdef CONFIG_ARM64
@@ -195,6 +197,36 @@ static int copy_response(struct user_client *client, const void *resp,
 	return rc;
 }
 
+/*
+ * For a VF client, translate a VF-local service ID to the PF-global service ID.
+ * Returns the PF global ID (>= 0) or -EINVAL if local_id is not in the client IDR.
+ */
+static int vf_svc_to_pf(struct user_client *client, unsigned int local_id)
+{
+	void *val;
+
+	read_lock(&client->res_lock);
+	val = idr_find(&client->svc_idr, local_id);
+	read_unlock(&client->res_lock);
+	return val ? (int)(unsigned int)(uintptr_t)val : -EINVAL;
+}
+
+/* Reverse lookup: PF svc_id -> VF-local svc_id.
+ * Must be called with client->res_lock held.
+ */
+static int pf_svc_to_vf(struct user_client *client, unsigned int pf_id)
+	__must_hold(&client->res_lock)
+{
+	void *val;
+	int lid;
+
+	idr_for_each_entry(&client->svc_idr, val, lid) {
+		if ((unsigned int)(uintptr_t)val == pf_id)
+			return lid;
+	}
+	return -EINVAL;
+}
+
 /* Allocate an LNI. Return an index. */
 static int cxi_user_lni_alloc(struct user_client *client,
 			      const void *cmd_in, size_t cmd_len,
@@ -208,11 +240,16 @@ static int cxi_user_lni_alloc(struct user_client *client,
 	int rc;
 	struct ucxi_obj *obj;
 
-	if (!client->is_vf)
+	if (!client->is_vf) {
 		lni = cxi_lni_alloc(client->ucxi->dev, cmd->svc_id);
-	else
-		lni = cxi_lni_alloc_internal(client->ucxi->dev, cmd->svc_id, true,
+	} else {
+		int pf_svc = vf_svc_to_pf(client, cmd->svc_id);
+
+		if (pf_svc < 0)
+			return pf_svc;
+		lni = cxi_lni_alloc_internal(client->ucxi->dev, pf_svc, true,
 					     client->vf_num);
+	}
 
 	if (IS_ERR(lni))
 		return PTR_ERR(lni);
@@ -754,7 +791,18 @@ static int cxi_user_svc_get(struct user_client *client,
 	struct cxi_svc_get_resp resp = {};
 	int rc;
 
-	rc = cxi_svc_get(client->ucxi->dev, cmd->svc_id, &resp.svc_desc);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, cmd->svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		rc = cxi_svc_get_internal(client->ucxi->dev, pf_id,
+					  &resp.svc_desc, true, client->vf_num);
+		if (!rc)
+			resp.svc_desc.svc_id = cmd->svc_id;
+	} else {
+		rc = cxi_svc_get(client->ucxi->dev, cmd->svc_id, &resp.svc_desc);
+	}
 	if (rc)
 		return rc;
 
@@ -772,33 +820,39 @@ static int cxi_user_svc_list_get_vf(struct user_client *client,
 {
 	const struct cxi_svc_list_get_cmd *cmd = cmd_in;
 	struct cxi_svc_list_get_resp_vf *resp_vf;
-	size_t count;
 	size_t resp_len;
-	int rc;
+	int count;
+	int rc = 0;
+	int i;
 
-	rc = cxi_svc_list_get(client->ucxi->dev, 0, NULL);
-	if (rc < 0)
-		return rc;
-	count = rc;
+	count = cxi_svc_list_get_internal(client->ucxi->dev, 0, NULL,
+					  true, client->vf_num);
+	if (count < 0)
+		return count;
 
-	resp_len = sizeof(*resp_vf) + (cmd->count * sizeof(struct cxi_svc_desc));
-
+	resp_len = sizeof(*resp_vf) + cmd->count * sizeof(struct cxi_svc_desc);
 	resp_vf = kvzalloc(resp_len, GFP_KERNEL);
 	if (!resp_vf)
 		return -ENOMEM;
 
-	if (cmd->count > 0) {
-		rc = cxi_svc_list_get(client->ucxi->dev, cmd->count,
-				      resp_vf->svc_list);
+	resp_vf->base.count = count;
+
+	if (cmd->count >= count && count > 0) {
+		rc = cxi_svc_list_get_internal(client->ucxi->dev, count,
+					       resp_vf->svc_list,
+					       true, client->vf_num);
 		if (rc < 0)
 			goto free_resp;
 
-		if (rc > count)
-			resp_vf->base.count = count;
-		else
-			resp_vf->base.count = rc;
-	} else {
-		resp_vf->base.count = count;
+		read_lock(&client->res_lock);
+		for (i = 0; i < rc; i++) {
+			int lid = pf_svc_to_vf(client,
+					       resp_vf->svc_list[i].svc_id);
+
+			if (lid >= 0)
+				resp_vf->svc_list[i].svc_id = lid;
+		}
+		read_unlock(&client->res_lock);
 	}
 
 	if (copy_response(client, resp_vf, resp_len, resp_out, resp_buf_size,
@@ -809,7 +863,7 @@ static int cxi_user_svc_list_get_vf(struct user_client *client,
 
 	rc = 0;
 free_resp:
-	kfree(resp_vf);
+	kvfree(resp_vf);
 	return rc;
 }
 
@@ -881,9 +935,18 @@ static int cxi_user_svc_rsrc_get(struct user_client *client,
 {
 	const struct cxi_svc_rsrc_get_cmd *cmd = cmd_in;
 	struct cxi_svc_rsrc_get_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
 	int rc;
 
-	rc = cxi_svc_rsrc_get(client->ucxi->dev, cmd->svc_id, &resp.rsrcs);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	rc = cxi_svc_rsrc_get(client->ucxi->dev, svc_id, &resp.rsrcs);
 	if (rc)
 		return rc;
 
@@ -901,33 +964,37 @@ static int cxi_user_svc_rsrc_list_get_vf(struct user_client *client,
 {
 	const struct cxi_svc_rsrc_list_get_cmd *cmd = cmd_in;
 	struct cxi_svc_rsrc_list_get_resp_vf *resp_vf;
-	size_t count;
 	size_t resp_len;
-	int rc;
+	int count, rc = 0, i;
 
-	rc = cxi_svc_rsrc_list_get(client->ucxi->dev, 0, NULL);
-	if (rc < 0)
-		return rc;
-	count = rc;
+	count = cxi_svc_rsrc_list_get_internal(client->ucxi->dev, 0, NULL,
+					       true, client->vf_num);
+	if (count < 0)
+		return count;
 
-	resp_len = sizeof(*resp_vf) + (cmd->count * sizeof(struct cxi_rsrc_use));
-
+	resp_len = sizeof(*resp_vf) + cmd->count * sizeof(struct cxi_rsrc_use);
 	resp_vf = kvzalloc(resp_len, GFP_KERNEL);
 	if (!resp_vf)
 		return -ENOMEM;
 
-	if (cmd->count > 0) {
-		rc = cxi_svc_rsrc_list_get(client->ucxi->dev, cmd->count,
-					   resp_vf->rsrc_list);
+	resp_vf->base.count = count;
+
+	if (cmd->count >= count && count > 0) {
+		rc = cxi_svc_rsrc_list_get_internal(client->ucxi->dev, count,
+						    resp_vf->rsrc_list,
+						    true, client->vf_num);
 		if (rc < 0)
 			goto free_resp;
 
-		if (rc > count)
-			resp_vf->base.count = count;
-		else
-			resp_vf->base.count = rc;
-	} else {
-		resp_vf->base.count = count;
+		read_lock(&client->res_lock);
+		for (i = 0; i < rc; i++) {
+			int lid = pf_svc_to_vf(client,
+					       resp_vf->rsrc_list[i].svc_id);
+
+			if (lid >= 0)
+				resp_vf->rsrc_list[i].svc_id = lid;
+		}
+		read_unlock(&client->res_lock);
 	}
 
 	if (copy_response(client, resp_vf, resp_len, resp_out, resp_buf_size,
@@ -938,7 +1005,7 @@ static int cxi_user_svc_rsrc_list_get_vf(struct user_client *client,
 
 	rc = 0;
 free_resp:
-	kfree(resp_vf);
+	kvfree(resp_vf);
 	return rc;
 }
 
@@ -1014,13 +1081,46 @@ static int cxi_user_svc_alloc(struct user_client *client,
 	int ret = 0;
 	int rc;
 
-	rc = cxi_svc_alloc(client->ucxi->dev, &cmd->svc_desc, &fail_info,
-			   "user");
-	if (rc < 0) {
-		resp.fail_info = fail_info;
-		ret = rc;
+	if (client->is_vf) {
+		const struct cxi_svc_alloc_cmd_vf *cmd_vf = cmd_in;
+		char name[sizeof(cmd_vf->name) + 1];
+
+		strscpy(name, cmd_vf->name, sizeof(name));
+		if (!name[0])
+			strscpy(name, "user", sizeof(name));
+
+		rc = cxi_svc_alloc_internal(client->ucxi->dev, &cmd->svc_desc,
+					    &fail_info, name,
+					    true, client->vf_num);
+		if (rc < 0) {
+			resp.fail_info = fail_info;
+			ret = rc;
+		} else {
+			int pf_svc_id = rc;
+
+			idr_preload(GFP_KERNEL);
+			write_lock(&client->res_lock);
+			rc = idr_alloc(&client->svc_idr,
+				       (void *)(uintptr_t)(unsigned int)pf_svc_id,
+				       2, 0, GFP_NOWAIT);
+			write_unlock(&client->res_lock);
+			idr_preload_end();
+			if (rc < 0) {
+				cxi_svc_destroy(client->ucxi->dev, pf_svc_id);
+				ret = rc;
+			} else {
+				resp.svc_id = rc; /* VF-local ID */
+			}
+		}
 	} else {
-		resp.svc_id = rc;
+		rc = cxi_svc_alloc(client->ucxi->dev, &cmd->svc_desc, &fail_info,
+				   "user");
+		if (rc < 0) {
+			resp.fail_info = fail_info;
+			ret = rc;
+		} else {
+			resp.svc_id = rc;
+		}
 	}
 
 	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
@@ -1038,7 +1138,20 @@ static int cxi_user_svc_destroy(struct user_client *client,
 	const struct cxi_svc_destroy_cmd *cmd = cmd_in;
 	int rc;
 
-	rc = cxi_svc_destroy(client->ucxi->dev, cmd->svc_id);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, cmd->svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		rc = cxi_svc_destroy(client->ucxi->dev, pf_id);
+		if (!rc) {
+			write_lock(&client->res_lock);
+			idr_remove(&client->svc_idr, cmd->svc_id);
+			write_unlock(&client->res_lock);
+		}
+	} else {
+		rc = cxi_svc_destroy(client->ucxi->dev, cmd->svc_id);
+	}
 
 	return rc;
 }
@@ -1050,9 +1163,18 @@ static int cxi_user_svc_update(struct user_client *client,
 {
 	const struct cxi_svc_update_cmd *cmd = cmd_in;
 	struct cxi_svc_update_resp resp = {};
+	struct cxi_svc_desc svc_desc = cmd->svc_desc;
 	int rc;
 
-	rc = cxi_svc_update(client->ucxi->dev, &cmd->svc_desc);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_desc.svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_desc.svc_id = pf_id;
+	}
+
+	rc = cxi_svc_update(client->ucxi->dev, &svc_desc);
 
 	/* fail_info is not currently filled out */
 	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
@@ -1068,8 +1190,17 @@ static int cxi_user_svc_enable(struct user_client *client,
 			       size_t *resp_out_len)
 {
 	const struct cxi_svc_enable_cmd *cmd = cmd_in;
+	unsigned int svc_id = cmd->svc_id;
 
-	return cxi_svc_enable(client->ucxi->dev, cmd->svc_id, cmd->enable);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	return cxi_svc_enable(client->ucxi->dev, svc_id, cmd->enable);
 }
 
 static int cxi_user_svc_set_lpr(struct user_client *client,
@@ -1078,9 +1209,17 @@ static int cxi_user_svc_set_lpr(struct user_client *client,
 				size_t *resp_out_len)
 {
 	const struct cxi_svc_lpr_cmd *cmd = cmd_in;
+	unsigned int svc_id = cmd->svc_id;
 
-	return cxi_svc_set_lpr(client->ucxi->dev, cmd->svc_id,
-			       cmd->lnis_per_rgid);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	return cxi_svc_set_lpr(client->ucxi->dev, svc_id, cmd->lnis_per_rgid);
 }
 
 static int cxi_user_svc_get_lpr(struct user_client *client,
@@ -1090,8 +1229,17 @@ static int cxi_user_svc_get_lpr(struct user_client *client,
 {
 	const struct cxi_svc_lpr_cmd *cmd = cmd_in;
 	struct cxi_svc_get_value_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
 
-	resp.value = cxi_svc_get_lpr(client->ucxi->dev, cmd->svc_id);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	resp.value = cxi_svc_get_lpr(client->ucxi->dev, svc_id);
 	if (resp.value < 0)
 		return resp.value;
 
@@ -1108,9 +1256,17 @@ static int cxi_user_svc_set_exclusive_cp(struct user_client *client,
 					 size_t *resp_out_len)
 {
 	const struct cxi_svc_set_exclusive_cp_cmd *cmd = cmd_in;
+	unsigned int svc_id = cmd->svc_id;
 
-	return cxi_svc_set_exclusive_cp(client->ucxi->dev, cmd->svc_id,
-					cmd->exclusive_cp);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	return cxi_svc_set_exclusive_cp(client->ucxi->dev, svc_id, cmd->exclusive_cp);
 }
 
 static int cxi_user_svc_get_exclusive_cp(struct user_client *client,
@@ -1120,9 +1276,18 @@ static int cxi_user_svc_get_exclusive_cp(struct user_client *client,
 {
 	const struct cxi_svc_get_exclusive_cp_cmd *cmd = cmd_in;
 	struct cxi_svc_get_exclusive_cp_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
 	int rc;
 
-	rc = cxi_svc_get_exclusive_cp(client->ucxi->dev, cmd->svc_id);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	rc = cxi_svc_get_exclusive_cp(client->ucxi->dev, svc_id);
 	if (rc < 0)
 		return rc;
 
@@ -1141,8 +1306,17 @@ static int cxi_user_svc_set_vni_range(struct user_client *client,
 				      size_t *resp_out_len)
 {
 	const struct cxi_svc_vni_range_cmd *cmd = cmd_in;
+	unsigned int svc_id = cmd->svc_id;
 
-	return cxi_svc_set_vni_range(client->ucxi->dev, cmd->svc_id,
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	return cxi_svc_set_vni_range(client->ucxi->dev, svc_id,
 				     cmd->vni_min, cmd->vni_max);
 }
 
@@ -1153,9 +1327,18 @@ static int cxi_user_svc_get_vni_range(struct user_client *client,
 {
 	const struct cxi_svc_vni_range_cmd *cmd = cmd_in;
 	struct cxi_svc_get_vni_range_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
 	int rc;
 
-	rc = cxi_svc_get_vni_range(client->ucxi->dev, cmd->svc_id,
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	rc = cxi_svc_get_vni_range(client->ucxi->dev, svc_id,
 				   &resp.vni_min, &resp.vni_max);
 	if (rc)
 		return rc;
@@ -1173,8 +1356,17 @@ static int cxi_user_svc_set_netns(struct user_client *client,
 				  size_t *resp_out_len)
 {
 	const struct cxi_svc_set_netns_cmd *cmd = cmd_in;
+	unsigned int svc_id = cmd->svc_id;
 
-	return cxi_svc_set_netns(client->ucxi->dev, cmd->svc_id, cmd->netns);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	return cxi_svc_set_netns(client->ucxi->dev, svc_id, cmd->netns);
 }
 
 static int cxi_user_svc_get_netns(struct user_client *client,
@@ -1184,9 +1376,18 @@ static int cxi_user_svc_get_netns(struct user_client *client,
 {
 	const struct cxi_svc_get_netns_cmd *cmd = cmd_in;
 	struct cxi_svc_get_value_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
 	int rc;
 
-	rc = cxi_svc_get_netns(client->ucxi->dev, cmd->svc_id, &resp.value);
+	if (client->is_vf) {
+		int pf_id = vf_svc_to_pf(client, svc_id);
+
+		if (pf_id < 0)
+			return pf_id;
+		svc_id = pf_id;
+	}
+
+	rc = cxi_svc_get_netns(client->ucxi->dev, svc_id, &resp.value);
 	if (rc)
 		return rc;
 
@@ -3678,10 +3879,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "SVC_RSRC_GET",
 		.handler    = cxi_user_svc_rsrc_get, },
 	[CXI_OP_SVC_ALLOC] = {
-		.req_size   = sizeof(struct cxi_svc_alloc_cmd),
-		.name       = "SVC_ALLOC",
-		.handler    = cxi_user_svc_alloc,
-		.admin_only = true, },
+		.req_size    = sizeof(struct cxi_svc_alloc_cmd),
+		.req_size_vf = sizeof(struct cxi_svc_alloc_cmd_vf),
+		.name        = "SVC_ALLOC",
+		.handler     = cxi_user_svc_alloc,
+		.admin_only  = true, },
 	[CXI_OP_SVC_DESTROY] = {
 		.req_size   = sizeof(struct cxi_svc_destroy_cmd),
 		.name       = "SVC_DESTROY",
@@ -3866,7 +4068,7 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_RETRY_HANDLER_RUNNING] = {
 		.req_size   = sizeof(struct cxi_retry_handler_running_cmd),
 		.name       = "RETRY_HANDLER_RUNNING",
-		.handler    = cxi_user_retry_handler_running, }
+		.handler    = cxi_user_retry_handler_running, },
 };
 
 /* Read and process a command from userspace or from a Virtual
@@ -3946,7 +4148,7 @@ static int dispatch(struct user_client *client,
 		}
 	}
 
-	if (info->admin_only && (!capable(CAP_SYS_ADMIN) || !ucxi->dev->is_physfn)) {
+	if (info->admin_only && !capable(CAP_SYS_ADMIN)) {
 		rc = -EPERM;
 		goto out_free;
 	}
@@ -4067,6 +4269,7 @@ static struct user_client *alloc_client(struct ucxi *ucxi)
 	idr_init(&client->ct_idr);
 	idr_init(&client->cp_idr);
 	idr_init(&client->rmu_eth_idr);
+	idr_init(&client->svc_idr);
 
 	client->cntr_pool_id = 0;
 
@@ -4125,6 +4328,17 @@ static int free_rmu_eth_obj(int id, void *obj_, void *data)
 	if (client->ucxi)
 		cxi_rmu_eth_free(rmu_eth->rmu_eth);
 	free_obj(rmu_eth);
+
+	return 0;
+}
+
+static int free_svc_obj(int id, void *obj_, void *data)
+{
+	struct user_client *client = data;
+	unsigned int pf_id = (unsigned int)(uintptr_t)obj_;
+
+	if (client->ucxi)
+		cxi_svc_destroy(client->ucxi->dev, pf_id);
 
 	return 0;
 }
@@ -4327,6 +4541,9 @@ static void free_client(struct user_client *client)
 	idr_for_each(&client->lni_idr, free_lni_obj, client);
 	idr_destroy(&client->lni_idr);
 
+	idr_for_each(&client->svc_idr, free_svc_obj, client);
+	idr_destroy(&client->svc_idr);
+
 	kobject_put(client->wait_objs_kobj);
 	kobject_put(client->kobj);
 
@@ -4399,8 +4616,54 @@ static int msg_relay(void *data, unsigned int vf_num,
 	client->uid = uid;
 	client->gid = gid;
 
-	*rsp_len = 0;
-	rc = dispatch(client, req, req_len, rsp, resp_buf_size, rsp_len);
+	/* Impersonate the VF user for the duration of this dispatch so that
+	 * all kernel helpers that use current_euid()/current_egid() for access
+	 * control (e.g. cxi_rgroup_valid_user, cxi_dev_find_rx_profile, …)
+	 * see the actual VF userspace credentials rather than the PF kthread's
+	 * root credentials.
+	 */
+	{
+		const struct cred *old_cred;
+		struct cred *new_cred = prepare_creds();
+
+		if (!new_cred)
+			return -ENOMEM;
+
+		new_cred->uid  = make_kuid(&init_user_ns, uid);
+		new_cred->euid = make_kuid(&init_user_ns, uid);
+		new_cred->gid  = make_kgid(&init_user_ns, gid);
+		new_cred->egid = make_kgid(&init_user_ns, gid);
+
+		/*
+		 * prepare_creds() copied the PF vsock kthread's credentials,
+		 * which carry full root capabilities. A VF command runs on
+		 * behalf of an unprivileged guest/host user process, so clear
+		 * all capability sets. Otherwise capable() checks in the
+		 * command path (e.g. CAP_SYS_ADMIN in cxi_user_atu_map) would
+		 * evaluate the VF as privileged, contradicting the policy that
+		 * VFs cannot issue privileged commands.
+		 *
+		 * Exception: preserve capabilities when uid == 0. VF kernel
+		 * drivers (e.g. cxi_eth.ko) send their commands from kernel
+		 * context where current is legitimately root, and they require
+		 * capabilities for functions such as cxi_dev_find_tx_profile().
+		 * Non-root VF user processes (uid != 0) are always stripped of
+		 * capabilities.
+		 */
+		if (uid != 0) {
+			new_cred->cap_effective   = CAP_EMPTY_SET;
+			new_cred->cap_permitted   = CAP_EMPTY_SET;
+			new_cred->cap_inheritable = CAP_EMPTY_SET;
+			new_cred->cap_bset        = CAP_EMPTY_SET;
+			new_cred->cap_ambient     = CAP_EMPTY_SET;
+		}
+
+		old_cred = override_creds(new_cred);
+		*rsp_len = 0;
+		rc = dispatch(client, req, req_len, rsp, resp_buf_size, rsp_len);
+		revert_creds(old_cred);
+		put_cred(new_cred);
+	}
 
 	return rc;
 }

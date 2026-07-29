@@ -419,19 +419,17 @@ static int pf_vf_msghandler(void *data)
 		cxidev_dbg(&hw->cdev, "vf %d: got %ld byte message", vf->vf_idx,
 			   request_len);
 
-		if (vf->kvm_task) {
-			/* VFs associated with a guest virtual machine must use the
-			 * credentials of the VM's process on the host, rather than the
-			 * guest's user creds that come over the vsock.
-			 */
-			const struct cred *cred;
-
-			rcu_read_lock();
-			cred = rcu_dereference(vf->kvm_task->cred);
-			uid = __kuid_val(cred->uid);
-			gid = __kgid_val(cred->gid);
-			rcu_read_unlock();
-		}
+		/* Use the uid/gid that arrived with the VF message directly,
+		 * for both host-bound and VM-bound VFs. Isolation between
+		 * VFs/VMs is enforced structurally on the PF: each VF's
+		 * services are children of the admin-assigned parent service
+		 * and are named through a per-VF id space, so a VF can never
+		 * reach another VF's resources regardless of the forwarded
+		 * credentials. The forwarded uid/gid are only used for
+		 * per-user access control within the VF's own domain, and the
+		 * PF impersonation in msg_relay() strips capabilities so a VF
+		 * is never treated as privileged.
+		 */
 
 		reply_len = SMALL_VFMSG_SIZE;
 		mutex_lock(&hw->msg_relay_lock);
@@ -953,11 +951,26 @@ static void disable_sriov(struct pci_dev *pdev)
 static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 {
 	int rc;
+	int i;
 	int sriov;
 	u16 offset;
 	u16 stride;
 	union c_pi_cfg_pri_sriov pri_sriov = {};
 	struct cass_dev *hw = pci_get_drvdata(pdev);
+
+	/* Refuse if any of the requested VFs has no valid service assigned */
+	mutex_lock(&hw->svc_lock);
+	for (i = 0; i < num_vfs; i++) {
+		if (!hw->vf_cfg[i].svc_id ||
+		    !idr_find(&hw->svc_ids, hw->vf_cfg[i].svc_id)) {
+			cxidev_err(&hw->cdev,
+				   "vf %d has an invalid service assigned; set valid svc_id before enabling SR-IOV",
+				   i);
+			mutex_unlock(&hw->svc_lock);
+			return -EINVAL;
+		}
+	}
+	mutex_unlock(&hw->svc_lock);
 
 	rc = request_module("vsock");
 	if (rc) {

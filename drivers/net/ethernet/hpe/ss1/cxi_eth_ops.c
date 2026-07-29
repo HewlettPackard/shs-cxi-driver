@@ -1101,24 +1101,12 @@ int hw_setup(struct cxi_eth *dev)
 	u8 shared_cp_pcp;
 
 	/* Allocate a Service */
-	if (dev->cxi_dev->is_physfn) {
-		rc = cxi_svc_alloc(dev->cxi_dev, &svc_desc, NULL, "ethernet-svc");
-		if (rc < 0) {
-			netdev_info(ndev, "Can't reserve resources: %d\n", rc);
-			goto err;
-		}
-		dev->svc_id = rc;
-	} else {
-		/* For VF we use the default service 1 until we implement the service
-		 * configurability from the PF: NETCASSINI-8135
-		 */
-		rc = cxi_svc_get(dev->cxi_dev, 1, &svc_desc);
-		if (rc < 0) {
-			netdev_info(ndev, "Can't get resources: %d\n", rc);
-			goto err;
-		}
-		dev->svc_id = 1;
+	rc = cxi_svc_alloc(dev->cxi_dev, &svc_desc, NULL, "ethernet-svc");
+	if (rc < 0) {
+		netdev_info(ndev, "Can't reserve resources: %d\n", rc);
+		goto err;
 	}
+	dev->svc_id = rc;
 
 	dev->rmu_eth = cxi_rmu_eth_alloc(dev->cxi_dev);
 	if (IS_ERR(dev->rmu_eth)) {
@@ -1361,8 +1349,7 @@ err_free_rmu_eth:
 	cxi_rmu_eth_free(dev->rmu_eth);
 	dev->rmu_eth = NULL;
 err_free_svc:
-	if (dev->cxi_dev->is_physfn)
-		cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
+	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 err:
 	return rc;
 }
@@ -1422,8 +1409,7 @@ void hw_cleanup(struct cxi_eth *dev)
 	dev->phys_lac = 0;
 	cxi_lni_free(dev->lni);
 	dev->lni = NULL;
-	if (dev->cxi_dev->is_physfn)
-		cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
+	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 }
 
 static struct sk_buff *eth_rx_copy(struct rx_queue *rx,

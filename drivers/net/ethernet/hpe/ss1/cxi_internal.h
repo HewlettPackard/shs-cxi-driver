@@ -43,4 +43,14 @@ int cxi_get_dev_properties_internal(struct cxi_dev *cdev,
 				    struct cxi_properties_info *prop,
 				    bool is_vf, unsigned int vf_num);
 
+int cxi_svc_alloc_internal(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
+			   struct cxi_svc_fail_info *fail_info, char *name,
+			   bool is_vf, u8 vf_num);
+int cxi_svc_get_internal(struct cxi_dev *dev, unsigned int svc_id,
+			 struct cxi_svc_desc *svc_desc, bool vf_en, u8 vf_num);
+int cxi_svc_list_get_internal(struct cxi_dev *dev, int count,
+			      struct cxi_svc_desc *svc_list, bool vf_en, u8 vf_num);
+int cxi_svc_rsrc_list_get_internal(struct cxi_dev *dev, int count,
+				   struct cxi_rsrc_use *rsrc_list, bool vf_en, u8 vf_num);
+
 #endif /* _CXI_INTERNAL_H */

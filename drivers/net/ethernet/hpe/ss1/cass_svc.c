@@ -167,7 +167,11 @@ int cass_svc_init(struct cass_dev *hw)
 	struct cxi_svc_priv *svc_priv;
 	struct cxi_rsrc_limits limits;
 
-	/* TODO differentiate PF/VF */
+	mutex_init(&hw->svc_lock);
+	idr_init(&hw->svc_ids);
+	INIT_LIST_HEAD(&hw->svc_list);
+	hw->svc_count = 0;
+
 	if (!hw->cdev.is_physfn)
 		return 0;
 
@@ -203,11 +207,6 @@ int cass_svc_init(struct cass_dev *hw)
 		if (!svc_desc.num_vld_vnis)
 			return -EINVAL;
 	}
-
-	mutex_init(&hw->svc_lock);
-	idr_init(&hw->svc_ids);
-	INIT_LIST_HEAD(&hw->svc_list);
-	hw->svc_count = 0;
 
 	/* Create default service. It will get the default ID of
 	 * CXI_DEFAULT_SVC_ID
@@ -254,6 +253,99 @@ static bool rsrc_available(struct cass_dev *hw,
 		return false;
 
 	return true;
+}
+
+/* Check if a child service can fit within the parent's remaining budget.
+ * Caller must hold hw->svc_lock.
+ */
+static bool rsrc_available_child(const struct cxi_svc_priv *parent,
+				 const struct cxi_rsrc_limits *limits,
+				 enum cxi_rsrc_type type,
+				 struct cxi_svc_fail_info *fail_info)
+{
+	/* Use res as the parent budget.  res is what the parent
+	 * actually withdrew from the global shared pool; that is the only
+	 * hard quota children can draw from.
+	 */
+	u16 remaining = parent->svc_desc.limits.type[type].res -
+			parent->child_reserved[type];
+
+	if (fail_info)
+		fail_info->rsrc_avail[type] = remaining;
+
+	return limits->type[type].res <= remaining;
+}
+
+/* Look up the parent service assigned to a VF.
+ * Caller must hold hw->svc_lock.
+ */
+static struct cxi_svc_priv *find_parent_for_vf(struct cass_dev *hw, u8 vf_num)
+{
+	return idr_find(&hw->svc_ids, hw->vf_cfg[vf_num].svc_id);
+}
+
+/* Validate that all VNIs in child_desc are acceptable given the parent's
+ * VNI policy:
+ *  - restricted_vnis=1: each child VNI must appear in parent's vnis[] list.
+ *  - restricted_vnis=0: the parent has a VNI range; each child VNI must fall
+ *    within that range.  Returns -EPERM if the parent has no range set yet.
+ */
+static int validate_child_vnis(struct cxi_dev *dev,
+			       const struct cxi_svc_priv *parent,
+			       const struct cxi_svc_desc *child_desc)
+	__must_hold(&hw->svc_lock)
+{
+	int i;
+	int j;
+
+	if (!parent->svc_desc.restricted_vnis) {
+		struct cxi_tx_attr parent_tx_attr;
+		unsigned int parent_min, parent_max;
+		int rc;
+
+		if (!parent->tx_profile[0]) {
+			pr_debug("%s: parent has no VNI range set\n", __func__);
+			return -EPERM;
+		}
+
+		rc = cxi_tx_profile_get_info(dev, parent->tx_profile[0],
+					     &parent_tx_attr, NULL);
+		if (rc)
+			return rc;
+
+		parent_min = parent_tx_attr.vni_attr.match;
+		parent_max = parent_tx_attr.vni_attr.match +
+			     parent_tx_attr.vni_attr.ignore;
+
+		for (i = 0; i < child_desc->num_vld_vnis; i++) {
+			if (child_desc->vnis[i] < parent_min ||
+			    child_desc->vnis[i] > parent_max) {
+				pr_debug("%s: child VNI %u outside parent range [%u, %u]\n",
+					 __func__, child_desc->vnis[i],
+					 parent_min, parent_max);
+				return -EINVAL;
+			}
+		}
+		return 0;
+	}
+
+	for (i = 0; i < child_desc->num_vld_vnis; i++) {
+		bool found = false;
+
+		for (j = 0; j < parent->svc_desc.num_vld_vnis; j++) {
+			if (child_desc->vnis[i] == parent->svc_desc.vnis[j]) {
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
+			pr_debug("%s: child VNI %u not in parent's VNI list\n",
+				 __func__, child_desc->vnis[i]);
+			return -EINVAL;
+		}
+	}
+	return 0;
 }
 
 /* Return resource reservations upon destruction of a service
@@ -336,6 +428,7 @@ static int reserve_rsrcs(struct cass_dev *hw,
 	int rc = 0;
 	struct cxi_rgroup *rgroup = svc_priv->rgroup;
 	struct cxi_rsrc_limits *limits = &svc_priv->svc_desc.limits;
+	struct cxi_svc_priv *parent = svc_priv->parent;
 
 	/* Default pool for default svc or when there are no LE limits */
 	if (!svc_priv->svc_desc.resource_limits)
@@ -346,12 +439,30 @@ static int reserve_rsrcs(struct cass_dev *hw,
 			continue;
 
 		if (i == CXI_RSRC_TYPE_TLE) {
+			if (parent) {
+				/* Child services inherit the parent's TLE pool.
+				 * Clear any TLE request so no new pool is
+				 * allocated; pool IDs are copied after
+				 * reserve_rsrcs() returns.
+				 */
+				limits->type[i].res = 0;
+				limits->type[i].max = 0;
+				continue;
+			}
 			if (svc_priv->svc_desc.svc_id != CXI_DEFAULT_SVC_ID) {
 				/* Ensure TLE max/res are at least CASS_MIN_POOL_TLES */
 				if (limits->type[i].res < CASS_MIN_POOL_TLES)
 					limits->type[i].res = CASS_MIN_POOL_TLES;
 				/* Force TLE max/res to be equal */
 				limits->type[i].max = limits->type[i].res;
+			}
+		} else if (parent) {
+			/* Child service: check against parent's remaining budget. */
+			if (!rsrc_available_child(parent, limits, i, fail_info)) {
+				pr_debug("resource %s exceeds parent budget\n",
+					 cxi_rsrc_type_to_str(i));
+				rc = -ENOSPC;
+				goto nospace;
 			}
 		} else if (i == CXI_RSRC_TYPE_LE) {
 			for (pe = 0; pe < C_PE_COUNT; pe++) {
@@ -374,6 +485,34 @@ static int reserve_rsrcs(struct cass_dev *hw,
 nospace:
 	if (rc)
 		return rc;
+
+	/* For child services, populate parent_entry[] before calling
+	 * add_resource() so that cass_rgroup_add_resource() can adjust
+	 * the parent rgroup's per-entry reserved counter under rgrp_lock.
+	 */
+	if (parent) {
+		for (i = CXI_RSRC_TYPE_PTE; i < CXI_RSRC_TYPE_MAX; i++) {
+			enum cxi_resource_type rtype = stype_to_rtype(i, 0);
+
+			if (rtype >= CXI_RESOURCE_MAX)
+				continue;
+
+			cxi_rgroup_get_resource_entry(parent->rgroup, rtype,
+						      &rgroup->parent_entry[rtype]);
+			/* For LE, fill all PE entries */
+			if (i == CXI_RSRC_TYPE_LE) {
+				int pe2;
+
+				for (pe2 = 1; pe2 < C_PE_COUNT; pe2++) {
+					rtype = stype_to_rtype(i, pe2);
+					cxi_rgroup_get_resource_entry(
+						parent->rgroup, rtype,
+						&rgroup->parent_entry[rtype]);
+				}
+			}
+		}
+		rgroup->is_child = true;
+	}
 
 	/* Now reserve resources since needed ones are available */
 	for (i = CXI_RSRC_TYPE_PTE; i < CXI_RSRC_TYPE_MAX; i++) {
@@ -428,30 +567,49 @@ static int validate_descriptor(struct cass_dev *hw,
 	int i;
 
 	if (svc_desc->restricted_vnis) {
-		if (svc_desc->num_vld_vnis > CXI_SVC_MAX_VNIS)
+		if (svc_desc->num_vld_vnis > CXI_SVC_MAX_VNIS) {
+			pr_debug("%s: too many VNIs: %u > %u\n", __func__,
+				 svc_desc->num_vld_vnis, CXI_SVC_MAX_VNIS);
 			return -EINVAL;
+		}
 		for (i = 0; i < svc_desc->num_vld_vnis; i++) {
-			if (!is_vni_valid(svc_desc->vnis[i]))
+			if (!is_vni_valid(svc_desc->vnis[i])) {
+				pr_debug("%s: invalid VNI[%d]=%u\n", __func__,
+					 i, svc_desc->vnis[i]);
 				return -EINVAL;
+			}
 		}
 	}
 
 	if (svc_desc->restricted_members) {
 		for (i = 0; i < CXI_SVC_MAX_MEMBERS; i++) {
 			if (svc_desc->members[i].type < 0 ||
-			    svc_desc->members[i].type >= CXI_SVC_MEMBER_MAX)
+			    svc_desc->members[i].type >= CXI_SVC_MEMBER_MAX) {
+				pr_debug("%s: invalid member[%d].type=%d\n",
+					 __func__, i, svc_desc->members[i].type);
 				return -EINVAL;
+			}
 		}
 	}
 
 	if (svc_desc->resource_limits) {
 		for (i = 0; i < CXI_RSRC_TYPE_MAX; i++) {
 			if (svc_desc->limits.type[i].max <
-			    svc_desc->limits.type[i].res)
+			    svc_desc->limits.type[i].res) {
+				pr_debug("%s: rsrc[%d] max(%u) < res(%u)\n",
+					 __func__, i,
+					 svc_desc->limits.type[i].max,
+					 svc_desc->limits.type[i].res);
 				return -EINVAL;
+			}
 			if (svc_desc->limits.type[i].max >
-			    hw->cdev.prop.rsrcs.type[i].max)
+			    hw->cdev.prop.rsrcs.type[i].max) {
+				pr_debug("%s: rsrc[%d] max(%u) > dev_max(%u)\n",
+					 __func__, i,
+					 svc_desc->limits.type[i].max,
+					 hw->cdev.prop.rsrcs.type[i].max);
 				return -EINVAL;
+			}
 		}
 	}
 
@@ -616,6 +774,10 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 {
 	int i;
 
+	/* Child services borrow the parent's profiles; never free them. */
+	if (svc_priv->parent)
+		return;
+
 	remove_profile_ac_entries(dev, svc_priv);
 
 	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
@@ -734,16 +896,21 @@ static int svc_enable(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 		cxi_rgroup_enable(svc_priv->rgroup);
 		svc_priv->svc_desc.enable = 1;
 
-		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
-			rc = cxi_tx_profile_enable(dev,
-						   svc_priv->tx_profile[i]);
-			if (rc)
-				goto disable;
+		/* Child services borrow the parent's profiles which are already
+		 * enabled; skip profile enable/disable to avoid double-toggling.
+		 */
+		if (!svc_priv->parent) {
+			for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
+				rc = cxi_tx_profile_enable(dev,
+							   svc_priv->tx_profile[i]);
+				if (rc)
+					goto disable;
 
-			rc = cxi_rx_profile_enable(dev,
-						   svc_priv->rx_profile[i]);
-			if (rc)
-				goto disable;
+				rc = cxi_rx_profile_enable(dev,
+							   svc_priv->rx_profile[i]);
+				if (rc)
+					goto disable;
+			}
 		}
 
 		return 0;
@@ -753,16 +920,18 @@ disable:
 	cxi_rgroup_disable(svc_priv->rgroup);
 	svc_priv->svc_desc.enable = 0;
 
-	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
-		cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
-		cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
+	if (!svc_priv->parent) {
+		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
+			cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
+			cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
+		}
 	}
 
 	return rc;
 }
 
 /**
- * cxi_svc_alloc() - Allocate a service
+ * cxi_svc_alloc_internal() - Allocate a service
  *
  * @dev: Cassini Device
  * @svc_desc: A service descriptor that contains requests for various resources,
@@ -770,11 +939,15 @@ disable:
  *            cxi_svc_desc.
  * @fail_info: extra information when a failure occurs
  * @name: name for service
+ * @is_vf: whether the service is being allocated for a VF
+ * @vf_num: VF number if is_vf is true
  *
  * Return: Service ID on success. Else, negative errno value.
  */
-int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
-		  struct cxi_svc_fail_info *fail_info, char *name)
+int cxi_svc_alloc_internal(struct cxi_dev *dev,
+			   const struct cxi_svc_desc *svc_desc,
+			   struct cxi_svc_fail_info *fail_info,
+			   char *name, bool is_vf, u8 vf_num)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
@@ -785,10 +958,7 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		.system_service = svc_desc->is_system_svc,
 		.lnis_per_rgid = default_lnis_per_rgid,
 	};
-
-	/* Service allocation is not allowed in VF */
-	if (!dev->is_physfn)
-		return -EPERM;
+	int i;
 
 	rc = validate_descriptor(hw, svc_desc);
 	if (rc)
@@ -798,6 +968,8 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	if (!svc_priv)
 		return -ENOMEM;
 	svc_priv->svc_desc = *svc_desc;
+	svc_priv->is_vf  = is_vf;
+	svc_priv->vf_num = vf_num;
 
 	rgroup = cxi_dev_alloc_rgroup(dev, &attr);
 	if (IS_ERR(rgroup)) {
@@ -827,18 +999,84 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 		goto remove_idr;
 
 	/* If restricted_vnis is set setup profiles now. Otherwise they will
-	 * set up later when a vni range is requested
+	 * be set up later when a vni range is requested.
+	 * VF child services borrow the parent's profiles instead of
+	 * allocating their own (parent profiles already cover these VNIs).
 	 */
-	if (svc_desc->restricted_vnis) {
+	if (svc_desc->restricted_vnis && !is_vf) {
 		rc = alloc_rxtx_profiles(dev, svc_priv, NULL);
 		if (rc)
 			goto remove_rgrp_ac_entries;
 	}
 
 	mutex_lock(&hw->svc_lock);
+
+	if (is_vf) {
+		svc_priv->parent = find_parent_for_vf(hw, vf_num);
+		if (!svc_priv->parent) {
+			rc = -EPERM;
+			goto unlock;
+		}
+
+		/* VNIs requested by VF must be a subset of parent's VNIs */
+		if (svc_desc->restricted_vnis) {
+			rc = validate_child_vnis(dev, svc_priv->parent, svc_desc);
+			if (rc)
+				goto unlock;
+
+			/* Borrow parent's existing profiles for the matching VNIs.
+			 * The parent's profiles are already in the global list and
+			 * cover these VNIs; no new allocation is needed.
+			 *
+			 * When the parent uses a VNI range (restricted_vnis=0),
+			 * its single range profile covers all VNIs in the range;
+			 * borrow it for every child VNI.
+			 */
+			if (!svc_priv->parent->svc_desc.restricted_vnis) {
+				for (i = 0; i < svc_desc->num_vld_vnis; i++) {
+					svc_priv->tx_profile[i] = svc_priv->parent->tx_profile[0];
+					svc_priv->rx_profile[i] = svc_priv->parent->rx_profile[0];
+				}
+			} else {
+				struct cxi_svc_priv *par = svc_priv->parent;
+
+				for (i = 0; i < svc_desc->num_vld_vnis; i++) {
+					int pi;
+
+					for (pi = 0; pi < par->svc_desc.num_vld_vnis; pi++) {
+						if (par->svc_desc.vnis[pi] != svc_desc->vnis[i])
+							continue;
+						svc_priv->tx_profile[i] = par->tx_profile[pi];
+						svc_priv->rx_profile[i] = par->rx_profile[pi];
+						break;
+					}
+				}
+			}
+		}
+	}
+
 	rc = reserve_rsrcs(hw, svc_priv, fail_info);
 	if (rc)
 		goto unlock;
+
+	/* Track child reservation in parent after resources are committed. */
+	if (svc_priv->parent) {
+		int pe;
+		struct cxi_rgroup *parent_rgroup = svc_priv->parent->rgroup;
+
+		for (i = 0; i < CXI_RSRC_TYPE_MAX; i++)
+			svc_priv->parent->child_reserved[i] +=
+				svc_desc->limits.type[i].res;
+
+		/* Inherit hardware LE/TLE pool IDs from the parent so this
+		 * child service uses the same hardware pools as the parent
+		 * rather than the default shared pools.
+		 */
+		for (pe = 0; pe < C_PE_COUNT; pe++)
+			rgroup->pools.le_pool_id[pe] =
+				parent_rgroup->pools.le_pool_id[pe];
+		rgroup->pools.tle_pool_id = parent_rgroup->pools.tle_pool_id;
+	}
 
 	/* SVC is enabled by default for backwards compatibility.
 	 * If disable_default_svc is true, the default service
@@ -862,9 +1100,19 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	mutex_unlock(&hw->svc_lock);
 	refcount_inc(&hw->refcount);
 
+	if (is_vf)
+		cxidev_info(&hw->cdev, "VF %u created service %u (parent svc %u)\n",
+			    vf_num, cxi_rgroup_id(rgroup),
+			    svc_priv->parent ? svc_priv->parent->svc_desc.svc_id : 0);
+
 	return cxi_rgroup_id(rgroup);
 
 free_resources:
+	if (svc_priv->parent) {
+		for (i = 0; i < CXI_RSRC_TYPE_MAX; i++)
+			svc_priv->parent->child_reserved[i] -=
+				svc_desc->limits.type[i].res;
+	}
 	free_rsrcs(svc_priv);
 unlock:
 	mutex_unlock(&hw->svc_lock);
@@ -882,12 +1130,58 @@ free_svc:
 
 	return rc;
 }
+EXPORT_SYMBOL(cxi_svc_alloc_internal);
+
+static int cxi_svc_alloc_vf(struct cxi_dev *dev,
+			    const struct cxi_svc_desc *svc_desc,
+			    struct cxi_svc_fail_info *fail_info,
+			    char *name)
+{
+	struct cxi_svc_alloc_cmd_vf cmd = {
+		.base.op       = CXI_OP_SVC_ALLOC,
+		.base.svc_desc = *svc_desc,
+	};
+	struct cxi_svc_alloc_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	if (name)
+		strscpy(cmd.name, name, sizeof(cmd.name));
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc < 0) {
+		if (fail_info)
+			*fail_info = resp.fail_info;
+		return rc;
+	}
+	return resp.svc_id;
+}
+
+int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
+		  struct cxi_svc_fail_info *fail_info, char *name)
+{
+	if (!dev->is_physfn)
+		return cxi_svc_alloc_vf(dev, svc_desc, fail_info, name);
+
+	return cxi_svc_alloc_internal(dev, svc_desc, fail_info, name, false, 0);
+}
 EXPORT_SYMBOL(cxi_svc_alloc);
 
 static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv)
 {
+	int i;
 	int rc;
 	int svc_id = cxi_rgroup_id(svc_priv->rgroup);
+
+	/* Restore parent's child_reserved[] before tearing down resources.
+	 * The rgroup's parent_entry[] restoration happens automatically inside
+	 * cass_rgroup_remove_resource() under rgrp_lock when is_child is set.
+	 */
+	if (svc_priv->parent) {
+		for (i = 0; i < CXI_RSRC_TYPE_MAX; i++)
+			svc_priv->parent->child_reserved[i] -=
+				svc_priv->svc_desc.limits.type[i].res;
+	}
 
 	free_rsrcs(svc_priv);
 
@@ -906,6 +1200,25 @@ static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv)
 }
 
 /**
+ * cxi_svc_destroy_vf() - Destroy a service on a VF
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to be destroyed.
+ *
+ * Return: 0 on success. Else a negative errno value.
+ */
+static int cxi_svc_destroy_vf(struct cxi_dev *dev, u32 svc_id)
+{
+	const struct cxi_svc_destroy_cmd cmd = {
+		.op     = CXI_OP_SVC_DESTROY,
+		.svc_id = svc_id,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
+/**
  * cxi_svc_destroy() - Destroy a service
  *
  * @dev: Cassini Device
@@ -917,10 +1230,10 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
+	int i;
 
-	/* Service allocation is not allowed in VF */
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_destroy_vf(dev, svc_id);
 
 	/* Don't destroy default svc */
 	if (svc_id == CXI_DEFAULT_SVC_ID)
@@ -940,6 +1253,17 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 		return -EBUSY;
 	}
 
+	/* Don't delete a service that is still assigned to a VF.
+	 * The admin must disable SR-IOV and clear each VF's svc_id
+	 * (echo 0 > /sys/class/cxi/cxiN/vf/<n>/svc_id) first.
+	 */
+	for (i = 0; i < C_NUM_VFS; i++) {
+		if (hw->vf_cfg[i].svc_id == svc_id) {
+			mutex_unlock(&hw->svc_lock);
+			return -EBUSY;
+		}
+	}
+
 	svc_destroy(hw, svc_priv);
 
 	mutex_unlock(&hw->svc_lock);
@@ -947,6 +1271,52 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 	return 0;
 }
 EXPORT_SYMBOL(cxi_svc_destroy);
+
+/**
+ * cxi_vf_set_svc_id() - Assign a parent service to a VF
+ * @hw:     Cassini device (PF)
+ * @vf_num: VF index (0-based, must be < C_NUM_VFS)
+ * @svc_id: Service ID of the parent service; 0 clears the assignment,
+ *          preventing the VF from allocating any services
+ *
+ * Sets the parent service for @vf_num.  This service acts as the resource
+ * budget ceiling for any nested services the VF creates via cxi_svc_alloc().
+ *
+ * Return: 0 on success, -EINVAL if vf_num is out of range or svc_id does not
+ *         exist, -EBUSY if the VF still has live child services
+ */
+int cxi_vf_set_svc_id(struct cass_dev *hw, unsigned int vf_num, int svc_id)
+{
+	struct cxi_svc_priv *svc_priv;
+	int rc = 0;
+
+	if (vf_num >= C_NUM_VFS)
+		return -EINVAL;
+
+	mutex_lock(&hw->svc_lock);
+
+	/* svc_id == 0 clears the assignment (always succeeds);
+	 * any other value must refer to an existing service.
+	 */
+	if (svc_id && !idr_find(&hw->svc_ids, svc_id)) {
+		rc = -EINVAL;
+		goto unlock;
+	}
+
+	/* Refuse if this specific VF has any live child services */
+	list_for_each_entry(svc_priv, &hw->svc_list, list) {
+		if (svc_priv->is_vf && svc_priv->vf_num == vf_num) {
+			rc = -EBUSY;
+			goto unlock;
+		}
+	}
+
+	hw->vf_cfg[vf_num].svc_id = svc_id;
+unlock:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_vf_set_svc_id);
 
 static int cxi_svc_rsrc_list_get_vf(struct cxi_dev *dev, int count,
 				    struct cxi_rsrc_use *rsrc_list)
@@ -977,6 +1347,69 @@ free_buf:
 	return rc;
 }
 
+/**
+ * cxi_svc_rsrc_list_get_internal - Get per-service resource usage.
+ *
+ * @dev: Cassini Device
+ * @count: number of cxi_rsrc_use slots in @rsrc_list (0 to query count)
+ * @rsrc_list: destination buffer
+ * @vf_en: if true, return only services owned by @vf_num
+ * @vf_num: VF number to filter on when @vf_en is true
+ *
+ * Return: number of service descriptors, or negative errno.
+ */
+int cxi_svc_rsrc_list_get_internal(struct cxi_dev *dev, int count,
+				   struct cxi_rsrc_use *rsrc_list, bool vf_en, u8 vf_num)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	unsigned int rgroup_count;
+	unsigned long index;
+	struct cxi_rgroup *rgroup;
+	int n = 0;
+
+	if (vf_en) {
+		mutex_lock(&hw->svc_lock);
+		list_for_each_entry(svc_priv, &hw->svc_list, list) {
+			if (!svc_priv->is_vf || svc_priv->vf_num != vf_num)
+				continue;
+			if (rsrc_list && n < count) {
+				copy_rsrc_use(dev, &rsrc_list[n], svc_priv->rgroup);
+				rsrc_list[n].svc_id = svc_priv->svc_desc.svc_id;
+			}
+			n++;
+		}
+		mutex_unlock(&hw->svc_lock);
+		return n;
+	}
+
+	mutex_lock(&hw->svc_lock);
+	cxi_dev_lock_rgroup_list(hw);
+
+	rgroup_count = cxi_dev_get_rgroup_count(dev);
+	if (count < rgroup_count) {
+		cxi_dev_unlock_rgroup_list(hw);
+		mutex_unlock(&hw->svc_lock);
+		return rgroup_count;
+	}
+
+	for_each_rgroup(index, rgroup) {
+		if (n >= rgroup_count) {
+			pr_debug("Found more rgroups than expected: %u\n",
+				 rgroup_count);
+			break;
+		}
+		copy_rsrc_use(dev, &rsrc_list[n], rgroup);
+		rsrc_list[n].svc_id = rgroup->id;
+		n++;
+	}
+
+	cxi_dev_unlock_rgroup_list(hw);
+	mutex_unlock(&hw->svc_lock);
+	return n;
+}
+EXPORT_SYMBOL(cxi_svc_rsrc_list_get_internal);
+
 /*
  * cxi_svc_rsrc_list_get - Get per service information on resource usage.
  *
@@ -993,41 +1426,10 @@ free_buf:
 int cxi_svc_rsrc_list_get(struct cxi_dev *dev, int count,
 			  struct cxi_rsrc_use *rsrc_list)
 {
-
-	int i = 0;
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-	unsigned int rgroup_count;
-	unsigned long index;
-	struct cxi_rgroup *rgroup;
-
 	if (!dev->is_physfn)
 		return cxi_svc_rsrc_list_get_vf(dev, count, rsrc_list);
 
-	mutex_lock(&hw->svc_lock);
-	cxi_dev_lock_rgroup_list(hw);
-
-	rgroup_count = cxi_dev_get_rgroup_count(dev);
-	if (count < rgroup_count) {
-		cxi_dev_unlock_rgroup_list(hw);
-		mutex_unlock(&hw->svc_lock);
-		return rgroup_count;
-	}
-
-	for_each_rgroup(index, rgroup) {
-		if (i >= rgroup_count) {
-			pr_debug("Found more rgroups than expected: %u\n", rgroup_count);
-			break;
-		}
-
-		copy_rsrc_use(dev, &rsrc_list[i], rgroup);
-		rsrc_list[i].svc_id = rgroup->id;
-		i++;
-	}
-
-	cxi_dev_unlock_rgroup_list(hw);
-	mutex_unlock(&hw->svc_lock);
-
-	return i;
+	return cxi_svc_rsrc_list_get_internal(dev, count, rsrc_list, false, 0);
 }
 EXPORT_SYMBOL(cxi_svc_rsrc_list_get);
 
@@ -1175,37 +1577,44 @@ free_buf:
 	return rc;
 }
 
-/*
- * cxi_svc_list_get - Assemble list of active services descriptors
+/**
+ * cxi_svc_list_get_internal - Assemble list of active service descriptors.
  *
  * @dev: Cassini Device
- * @count: number of services descriptors for which space
- *         has been allocated. 0 initially, to determine count.
- * @svc_list: destination to land service descriptors
+ * @count: number of cxi_svc_desc slots in @svc_list (0 to query count)
+ * @svc_list: destination buffer
+ * @vf_en: if true, return only services owned by @vf_num
+ * @vf_num: VF number to filter on when @vf_en is true
  *
- * Return: number of service descriptors
- * If the specified count is equal to (or greater than) the number of
- * active service descriptors, they are copied to the provided user
- * buffer.
+ * Return: number of service descriptors, or negative errno.
  */
-int cxi_svc_list_get(struct cxi_dev *dev, int count,
-		     struct cxi_svc_desc *svc_list)
+int cxi_svc_list_get_internal(struct cxi_dev *dev, int count,
+			      struct cxi_svc_desc *svc_list, bool vf_en, u8 vf_num)
 {
-
-	int i = 0;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
 	int ret;
 	enum cxi_resource_type rt;
 	enum cxi_rsrc_type svc_rt;
 	unsigned int rgroup_count;
-	struct cxi_svc_priv *svc_priv;
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_desc rgroup_svc_desc;
 	unsigned long index;
 	struct cxi_rgroup *rgroup;
 	struct cxi_resource_entry *entry;
+	int n = 0;
 
-	if (!dev->is_physfn)
-		return cxi_svc_list_get_vf(dev, count, svc_list);
+	if (vf_en) {
+		mutex_lock(&hw->svc_lock);
+		list_for_each_entry(svc_priv, &hw->svc_list, list) {
+			if (!svc_priv->is_vf || svc_priv->vf_num != vf_num)
+				continue;
+			if (svc_list && n < count)
+				svc_list[n] = svc_priv->svc_desc;
+			n++;
+		}
+		mutex_unlock(&hw->svc_lock);
+		return n;
+	}
 
 	mutex_lock(&hw->svc_lock);
 	cxi_dev_lock_rgroup_list(hw);
@@ -1220,7 +1629,7 @@ int cxi_svc_list_get(struct cxi_dev *dev, int count,
 	for_each_rgroup(index, rgroup) {
 		svc_priv = idr_find(&hw->svc_ids, cxi_rgroup_id(rgroup));
 		if (svc_priv) {
-			svc_list[i++] = svc_priv->svc_desc;
+			svc_list[n++] = svc_priv->svc_desc;
 			continue;
 		}
 
@@ -1251,12 +1660,35 @@ int cxi_svc_list_get(struct cxi_dev *dev, int count,
 			}
 			svc_rt++;
 		}
-		svc_list[i++] = rgroup_svc_desc;
+		svc_list[n++] = rgroup_svc_desc;
 	}
 
 	cxi_dev_unlock_rgroup_list(hw);
 	mutex_unlock(&hw->svc_lock);
-	return i;
+	return n;
+}
+EXPORT_SYMBOL(cxi_svc_list_get_internal);
+
+/*
+ * cxi_svc_list_get - Assemble list of active services descriptors
+ *
+ * @dev: Cassini Device
+ * @count: number of services descriptors for which space
+ *         has been allocated. 0 initially, to determine count.
+ * @svc_list: destination to land service descriptors
+ *
+ * Return: number of service descriptors
+ * If the specified count is equal to (or greater than) the number of
+ * active service descriptors, they are copied to the provided user
+ * buffer.
+ */
+int cxi_svc_list_get(struct cxi_dev *dev, int count,
+		     struct cxi_svc_desc *svc_list)
+{
+	if (!dev->is_physfn)
+		return cxi_svc_list_get_vf(dev, count, svc_list);
+
+	return cxi_svc_list_get_internal(dev, count, svc_list, false, 0);
 }
 EXPORT_SYMBOL(cxi_svc_list_get);
 
@@ -1290,6 +1722,40 @@ static int cxi_svc_get_vf(struct cxi_dev *dev, unsigned int svc_id,
 }
 
 /*
+ * cxi_svc_get_internal - Get svc_desc from svc_id with optional VF ownership
+ * check.  When vf_en is true the service is only returned if it was allocated
+ * on behalf of vf_num; any other service ID causes -EINVAL.
+ *
+ * @dev: Cassini Device (must be a PF)
+ * @svc_id: svc_id to look up
+ * @svc_desc: destination for the descriptor
+ * @vf_en: when true, enforce VF ownership
+ * @vf_num: VF number filter (only meaningful when vf_en is true)
+ *
+ * Return: 0 on success, -EINVAL if not found or not owned by the VF.
+ */
+int cxi_svc_get_internal(struct cxi_dev *dev, unsigned int svc_id,
+			 struct cxi_svc_desc *svc_desc, bool vf_en, u8 vf_num)
+{
+	struct cxi_svc_priv *svc_priv;
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+
+	mutex_lock(&hw->svc_lock);
+
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		mutex_unlock(&hw->svc_lock);
+		return -EINVAL;
+	}
+
+	*svc_desc = svc_priv->svc_desc;
+	mutex_unlock(&hw->svc_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_svc_get_internal);
+
+/*
  * cxi_svc_get - Get svc_desc from svc_id
  *
  * @dev: Cassini Device
@@ -1302,25 +1768,10 @@ static int cxi_svc_get_vf(struct cxi_dev *dev, unsigned int svc_id,
 int cxi_svc_get(struct cxi_dev *dev, unsigned int svc_id,
 		struct cxi_svc_desc *svc_desc)
 {
-	struct cxi_svc_priv *svc_priv;
-	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
-
 	if (!dev->is_physfn)
 		return cxi_svc_get_vf(dev, svc_id, svc_desc);
 
-	mutex_lock(&hw->svc_lock);
-
-	/* Find priv descriptor */
-	svc_priv = idr_find(&hw->svc_ids, svc_id);
-	if (!svc_priv) {
-		mutex_unlock(&hw->svc_lock);
-		return -EINVAL;
-	}
-
-	*svc_desc = svc_priv->svc_desc;
-	mutex_unlock(&hw->svc_lock);
-
-	return 0;
+	return cxi_svc_get_internal(dev, svc_id, svc_desc, false, 0);
 }
 EXPORT_SYMBOL(cxi_svc_get);
 
@@ -1340,6 +1791,28 @@ int cxi_alloc_resource(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 }
 
 /**
+ * cxi_svc_enable_vf() - Enable or Disable a service on a VF
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of the service to be enabled.
+ * @enable: Boolean value indicating whether to enable or disable the service.
+ *
+ * Return: 0 on success or negative errno value.
+ */
+static int cxi_svc_enable_vf(struct cxi_dev *dev, unsigned int svc_id,
+			     bool enable)
+{
+	const struct cxi_svc_enable_cmd cmd = {
+		.op     = CXI_OP_SVC_ENABLE,
+		.svc_id = svc_id,
+		.enable = enable,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
+/**
  * cxi_svc_enable() - Enable or Disable a service.
  *
  * @dev: Cassini Device
@@ -1355,7 +1828,7 @@ int cxi_svc_enable(struct cxi_dev *dev, unsigned int svc_id, bool enable)
 	int rc = 0;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_enable_vf(dev, svc_id, enable);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1379,6 +1852,18 @@ unlock:
 }
 EXPORT_SYMBOL(cxi_svc_enable);
 
+static int cxi_svc_update_vf(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
+{
+	const struct cxi_svc_update_cmd cmd = {
+		.op       = CXI_OP_SVC_UPDATE,
+		.svc_desc = *svc_desc,
+	};
+	struct cxi_svc_update_resp resp = {};
+	size_t resp_len = sizeof(resp);
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+}
+
 /**
  * cxi_svc_update() - Modify an existing service.
  *
@@ -1398,7 +1883,7 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	int rc;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_update_vf(dev, svc_desc);
 
 	rc = validate_descriptor(hw, svc_desc);
 	if (rc)
@@ -1447,6 +1932,19 @@ error:
 }
 EXPORT_SYMBOL(cxi_svc_update);
 
+static int cxi_svc_set_lpr_vf(struct cxi_dev *dev, unsigned int svc_id,
+			      unsigned int lnis_per_rgid)
+{
+	const struct cxi_svc_lpr_cmd cmd = {
+		.op            = CXI_OP_SVC_SET_LPR,
+		.svc_id        = svc_id,
+		.lnis_per_rgid = lnis_per_rgid,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
 /**
  * cxi_svc_set_lpr() - Update an existing service to set the LNIs per RGID
  *
@@ -1466,7 +1964,7 @@ int cxi_svc_set_lpr(struct cxi_dev *dev, unsigned int svc_id,
 	struct cxi_svc_priv *svc_priv;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_set_lpr_vf(dev, svc_id, lnis_per_rgid);
 
 	if (lnis_per_rgid > C_NUM_LACS)
 		return -EINVAL;
@@ -1542,6 +2040,19 @@ int cxi_svc_get_lpr(struct cxi_dev *dev, unsigned int svc_id)
 }
 EXPORT_SYMBOL(cxi_svc_get_lpr);
 
+static int cxi_svc_set_exclusive_cp_vf(struct cxi_dev *dev, unsigned int svc_id,
+				       bool exclusive_cp)
+{
+	const struct cxi_svc_set_exclusive_cp_cmd cmd = {
+		.op           = CXI_OP_SVC_SET_EXCLUSIVE_CP,
+		.svc_id       = svc_id,
+		.exclusive_cp = exclusive_cp,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
 /**
  * cxi_svc_set_exclusive_cp() - Set the exclusive_cp bit for a service
  *
@@ -1559,7 +2070,7 @@ int cxi_svc_set_exclusive_cp(struct cxi_dev *dev, unsigned int svc_id,
 	int rc;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_set_exclusive_cp_vf(dev, svc_id, exclusive_cp);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1653,6 +2164,20 @@ unlock:
 }
 EXPORT_SYMBOL(cxi_svc_get_exclusive_cp);
 
+static int cxi_svc_set_vni_range_vf(struct cxi_dev *dev, unsigned int svc_id,
+				    unsigned int vni_min, unsigned int vni_max)
+{
+	const struct cxi_svc_vni_range_cmd cmd = {
+		.op     = CXI_OP_SVC_SET_VNI_RANGE,
+		.svc_id = svc_id,
+		.vni_min = vni_min,
+		.vni_max = vni_max,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
 /**
  * cxi_svc_set_vni_range() - Add TX/RX profiles for a contiguous range of VNIs to a service
  *
@@ -1687,7 +2212,7 @@ int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	int rc = 0;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_set_vni_range_vf(dev, svc_id, vni_min, vni_max);
 
 	mutex_lock(&hw->svc_lock);
 
@@ -1738,6 +2263,64 @@ int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 
 	vni_attr.match = vni_min;
 	vni_attr.ignore = range - 1;
+
+	/* For child services (VF-allocated) whose parent uses a VNI range,
+	 * the requested range must be a subset of the parent's range.
+	 *
+	 * A hardware TX/RX profile covers a contiguous power-of-2 aligned
+	 * range; the overlap check in cxi_dev_alloc_tx_profile() prevents
+	 * two profiles whose ranges overlap from coexisting.  Since the
+	 * parent already holds a profile for its range, allocating a new
+	 * profile for any overlapping subset would fail with -EEXIST.  The
+	 * child therefore borrows the parent's profile directly, which
+	 * means the child's effective VNI scope is the parent's full range
+	 * regardless of the requested subset.
+	 */
+	if (svc_priv->parent && !svc_priv->parent->svc_desc.restricted_vnis) {
+		struct cxi_tx_attr parent_tx_attr;
+		unsigned int parent_min, parent_max;
+
+		if (!svc_priv->parent->tx_profile[0]) {
+			cxidev_err(dev,
+				   "svc_id %u: parent has no VNI range set yet",
+				   svc_id);
+			rc = -EPERM;
+			goto unlock_return;
+		}
+
+		rc = cxi_tx_profile_get_info(dev, svc_priv->parent->tx_profile[0],
+					     &parent_tx_attr, NULL);
+		if (rc)
+			goto unlock_return;
+
+		parent_min = parent_tx_attr.vni_attr.match;
+		parent_max = parent_tx_attr.vni_attr.match +
+			     parent_tx_attr.vni_attr.ignore;
+
+		if (vni_min < parent_min || vni_max > parent_max) {
+			cxidev_err(dev,
+				   "VNI range [%u, %u] is not a subset of parent range [%u, %u]",
+				   vni_min, vni_max, parent_min, parent_max);
+			rc = -EINVAL;
+			goto unlock_return;
+		}
+
+		/* Range validated as a subset of the parent's range.  Borrow
+		 * the parent's TX/RX profile rather than allocating a new one:
+		 * the parent profile already covers the superset, and creating
+		 * any overlapping profile would fail with -EEXIST.  Record the
+		 * caller's requested subrange so cxi_svc_get_vni_range() can
+		 * report it instead of the borrowed profile's wider range.
+		 * release_rxtx_profiles() skips freeing borrowed profiles.
+		 */
+		svc_priv->svc_desc.num_vld_vnis = 1;
+		svc_priv->tx_profile[0] = svc_priv->parent->tx_profile[0];
+		svc_priv->rx_profile[0] = svc_priv->parent->rx_profile[0];
+		svc_priv->has_vni_range  = true;
+		svc_priv->vni_range_min  = vni_min;
+		svc_priv->vni_range_max  = vni_max;
+		goto unlock_return;
+	}
 
 	rc = alloc_rxtx_profiles(dev, svc_priv, &vni_attr);
 
@@ -1823,6 +2406,15 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 		goto unlock_return;
 	}
 
+	/* For VNI-range child services the TX profile covers the parent's full
+	 * range, but the caller configured a subset; return that stored range.
+	 */
+	if (svc_priv->has_vni_range) {
+		*vni_min = svc_priv->vni_range_min;
+		*vni_max = svc_priv->vni_range_max;
+		goto unlock_return;
+	}
+
 	rc = cxi_tx_profile_get_info(dev, svc_priv->tx_profile[0], &tx_attr,
 				     NULL);
 	if (rc) {
@@ -1839,6 +2431,19 @@ unlock_return:
 	return rc;
 }
 EXPORT_SYMBOL(cxi_svc_get_vni_range);
+
+static int cxi_svc_set_netns_vf(struct cxi_dev *dev, unsigned int svc_id,
+				unsigned int netns)
+{
+	const struct cxi_svc_set_netns_cmd cmd = {
+		.op     = CXI_OP_SVC_SET_NETNS,
+		.svc_id = svc_id,
+		.netns  = netns,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
 
 /**
  * cxi_svc_set_netns() - Set netns Access control to existing service
@@ -1862,7 +2467,7 @@ int cxi_svc_set_netns(struct cxi_dev *dev, unsigned int svc_id, unsigned int net
 	int rc;
 
 	if (!dev->is_physfn)
-		return -EPERM;
+		return cxi_svc_set_netns_vf(dev, svc_id, netns);
 
 	mutex_lock(&hw->svc_lock);
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
@@ -1962,8 +2567,10 @@ void cass_svc_fini(struct cass_dev *hw)
 	struct cxi_svc_priv *svc_priv;
 	struct cxi_svc_priv *tmp;
 
-	if (!hw->cdev.is_physfn)
+	if (!hw->cdev.is_physfn) {
+		idr_destroy(&hw->svc_ids);
 		return;
+	}
 
 	debugfs_remove(hw->svc_debug);
 	list_for_each_entry_safe(svc_priv, tmp, &hw->svc_list, list)

@@ -103,6 +103,7 @@ static int dump_rgroups(struct cass_dev *hw, struct seq_file *s)
 	unsigned long index;
 	struct cxi_rgroup *rgroup;
 	struct cxi_resource_entry *entry;
+	struct cxi_svc_priv *svc_priv;
 
 	seq_puts(s, "Rgroups:");
 	for_each_rgroup(index, rgroup) {
@@ -122,6 +123,12 @@ static int dump_rgroups(struct cass_dev *hw, struct seq_file *s)
 			   rgroup->pools.le_pool_id[2],
 			   rgroup->pools.le_pool_id[3],
 			   rgroup->pools.tle_pool_id);
+
+		svc_priv = idr_find(&hw->svc_ids, rgroup->id);
+		if (svc_priv && svc_priv->is_vf)
+			seq_printf(s, "  VF owner: vf%u  parent_svc: %u\n",
+				   svc_priv->vf_num,
+				   svc_priv->parent ? svc_priv->parent->svc_desc.svc_id : 0);
 
 		cxi_rgroup_print_ac_entry_info(rgroup, s);
 

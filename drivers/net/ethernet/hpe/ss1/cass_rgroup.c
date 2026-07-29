@@ -86,6 +86,23 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		}
 	}
 
+	if (rgroup->is_child) {
+		/* Child rgroups share the parent's hardware pools and global
+		 * reservation.  The parent already consumed from the global
+		 * shared pool when it was created; children must not do so
+		 * again.  Track consumption only against the parent resource
+		 * entry so rsrc_available_child() sees accurate remaining budget.
+		 */
+		if (rgroup->parent_entry[resource->type])
+			rgroup->parent_entry[resource->type]->limits.reserved -=
+				resource->limits.reserved;
+		pr_debug("child: type:%s limits.reserved:%ld limits.max:%ld\n",
+			 cxi_resource_type_to_str(resource->type),
+			 resource->limits.reserved, resource->limits.max);
+		goto unlock;
+	}
+
+	/* Top-level rgroup: verify and consume global shared pool */
 	if (resource->limits.reserved > r_use->shared) {
 		pr_debug("Error - %s reserved requested (%lu) > shared available (%lu)\n",
 			 cxi_resource_type_to_str(resource->type),
@@ -102,7 +119,7 @@ int cass_rgroup_add_resource(struct cxi_rgroup *rgroup,
 		goto unlock;
 	}
 
-	/* resources that need extra configuring */
+	/* Resources that need extra configuring (hardware pool allocation) */
 	if (resource->type >= CXI_RESOURCE_PE0_LE &&
 	    resource->type <= CXI_RESOURCE_PE3_LE) {
 		int le_pool_id;
@@ -187,6 +204,22 @@ int cass_rgroup_remove_resource(struct cxi_rgroup *rgroup,
 
 	spin_lock(&hw->rgrp_lock);
 
+	if (rgroup->is_child) {
+		/* Child rgroups: restore the parent resource entry's counter.
+		 * The global pool was never consumed by this child, so no
+		 * global pool restoration is needed.
+		 */
+		if (rgroup->parent_entry[resource->type])
+			rgroup->parent_entry[resource->type]->limits.reserved +=
+				resource->limits.reserved;
+		pr_debug("child: type:%s limits.reserved:%ld limits.max:%ld\n",
+			 cxi_resource_type_to_str(resource->type),
+			 resource->limits.reserved, resource->limits.max);
+		spin_unlock(&hw->rgrp_lock);
+		return 0;
+	}
+
+	/* Top-level rgroup: restore global shared pool */
 	r_use->reserved -= resource->limits.reserved;
 	r_use->shared += resource->limits.reserved;
 

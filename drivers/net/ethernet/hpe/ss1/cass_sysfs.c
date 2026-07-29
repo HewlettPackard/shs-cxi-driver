@@ -804,6 +804,112 @@ static const struct attribute_group cxi_dev_settings_group = {
 	.attrs = cxi_dev_settings,
 };
 
+/* VF sysfs: /sys/class/cxi<N>/vf/<vf_idx>/svc_id */
+
+static ssize_t svc_id_show(struct kobject *kobj, struct kobj_attribute *attr,
+			   char *buf)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", cfg->svc_id);
+}
+
+static ssize_t svc_id_store(struct kobject *kobj, struct kobj_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct cass_dev *hw = container_of(kobj->parent, struct cass_dev, vf_kobj);
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+	unsigned int vf_idx = cfg - hw->vf_cfg;
+	unsigned int svc_id;
+	int rc;
+
+	if (kstrtouint(buf, 0, &svc_id))
+		return -EINVAL;
+
+	rc = cxi_vf_set_svc_id(hw, vf_idx, svc_id);
+	if (rc)
+		return rc;
+
+	return count;
+}
+
+static struct kobj_attribute vf_svc_id_attr = __ATTR_RW(svc_id);
+
+static struct attribute *vf_attrs[] = {
+	&vf_svc_id_attr.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(vf);
+
+static void vf_kobj_release(struct kobject *kobj)
+{
+	/* cass_vf_cfg is embedded in the statically allocated vf_cfg[] array;
+	 * nothing to free here.
+	 */
+}
+
+static struct kobj_type vf_kobj_type = {
+	.release   = vf_kobj_release,
+	.sysfs_ops = &kobj_sysfs_ops,
+	.default_groups = vf_groups,
+};
+
+static void vf_dir_kobj_release(struct kobject *kobj) {}
+
+static struct kobj_type vf_dir_kobj_type = {
+	.release   = vf_dir_kobj_release,
+	.sysfs_ops = &kobj_sysfs_ops,
+};
+
+int create_vf_sysfs(struct cass_dev *hw)
+{
+	int i;
+	int rc;
+
+	memset(&hw->vf_kobj, 0, sizeof(hw->vf_kobj));
+	rc = kobject_init_and_add(&hw->vf_kobj, &vf_dir_kobj_type,
+				  &hw->class_dev.kobj, "vf");
+	if (rc) {
+		kobject_put(&hw->vf_kobj);
+		return rc;
+	}
+
+	for (i = 0; i < C_NUM_VFS; i++) {
+		memset(&hw->vf_cfg[i].kobj, 0, sizeof(hw->vf_cfg[i].kobj));
+		hw->vf_cfg[i].svc_id = CXI_DEFAULT_SVC_ID;
+		rc = kobject_init_and_add(&hw->vf_cfg[i].kobj, &vf_kobj_type,
+					  &hw->vf_kobj, "%d", i);
+		if (rc) {
+			kobject_put(&hw->vf_cfg[i].kobj);
+			goto err;
+		}
+	}
+
+	return 0;
+err:
+	for (--i; i >= 0; i--) {
+		kobject_del(&hw->vf_cfg[i].kobj);
+		kobject_put(&hw->vf_cfg[i].kobj);
+	}
+
+	kobject_del(&hw->vf_kobj);
+	kobject_put(&hw->vf_kobj);
+	return rc;
+}
+
+void destroy_vf_sysfs(struct cass_dev *hw)
+{
+	int i;
+
+	for (i = 0; i < C_NUM_VFS; i++) {
+		kobject_del(&hw->vf_cfg[i].kobj);
+		kobject_put(&hw->vf_cfg[i].kobj);
+	}
+
+	kobject_del(&hw->vf_kobj);
+	kobject_put(&hw->vf_kobj);
+}
+
 int create_sysfs_properties(struct cass_dev *hw)
 {
 	int rc;

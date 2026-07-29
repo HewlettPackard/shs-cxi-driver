@@ -201,6 +201,30 @@ struct cxi_svc_priv {
 	struct cxi_rgroup *rgroup;
 	struct cxi_rx_profile *rx_profile[CXI_SVC_MAX_VNIS];
 	struct cxi_tx_profile *tx_profile[CXI_SVC_MAX_VNIS];
+
+	/* Child service support.
+	 * is_vf is true when this service was created on behalf of a VF.
+	 * parent points to the admin-assigned parent service that provides the
+	 * resource budget ceiling; NULL for top-level (admin) services.
+	 * child_reserved[] tracks the total units reserved by all live child
+	 * services of this service, per resource type.
+	 */
+	bool is_vf;
+	u8 vf_num;
+	struct cxi_svc_priv *parent;
+	u16 child_reserved[CXI_RSRC_TYPE_MAX];
+
+	/* For VNI-range child services: the subset range requested by the
+	 * caller.  The TX/RX profiles are borrowed from the parent (and cover
+	 * the parent's full range at the hardware level), but cxi_svc_get_vni_range()
+	 * reports this narrower range instead of reading from the profile.
+	 * These fields are only meaningful when has_vni_range is true, which
+	 * is only set on child services (is_vf == true, parent != NULL) that
+	 * use a VNI range (restricted_vnis == 0).
+	 */
+	bool has_vni_range;
+	unsigned int vni_range_min; /* only valid when has_vni_range is true */
+	unsigned int vni_range_max; /* only valid when has_vni_range is true */
 };
 
 /* Logical Network Interface */

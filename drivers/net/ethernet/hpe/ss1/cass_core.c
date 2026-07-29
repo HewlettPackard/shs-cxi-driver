@@ -1282,31 +1282,32 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Resource Group setup */
 	cass_dev_rgroup_init(hw);
 
-	/* Service setup */
-	rc = cass_svc_init(hw);
-	if (rc)
-		goto rgroup_fini;
-
 	rc = cxi_configfs_device_init(hw);
 	if (rc) {
 		pr_err("configfs initialize failed\n");
-		goto svc_fini;
+		goto rgroup_fini;
 	}
 
 	if (!is_physfn) {
 		rc = cass_vf_init(hw);
 		if (rc)
 			goto configfs_fini;
+	}
 
+	rc = cass_svc_init(hw);
+	if (rc)
+		goto svc_fini;
+
+	if (!is_physfn) {
 		rc = cxi_get_properties_vf(&hw->cdev, &hw->cdev.prop);
 		if (rc)
-			goto vf_fini;
+			goto svc_fini;
 	}
 
 	/* Export device information. */
 	rc = create_sysfs_properties(hw);
 	if (rc)
-		goto vf_fini;
+		goto svc_fini;
 
 	cxi_add_device(&hw->cdev);
 
@@ -1323,19 +1324,26 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_set_drvdata(&hw->class_dev, hw);
 	if (device_register(&hw->class_dev)) {
 		put_device(&hw->class_dev);
-		goto vf_fini;
+		goto svc_fini;
+	}
+
+	if (is_physfn) {
+		rc = create_vf_sysfs(hw);
+		if (rc)
+			goto unregister_class_dev;
 	}
 
 	return 0;
 
-vf_fini:
-	if (!is_physfn)
-		cass_vf_fini(hw);
+unregister_class_dev:
+	device_unregister(&hw->class_dev);
 
-configfs_fini:
-	cxi_configfs_cleanup(hw);
 svc_fini:
 	cass_svc_fini(hw);
+	if (!is_physfn)
+		cass_vf_fini(hw);
+configfs_fini:
+	cxi_configfs_cleanup(hw);
 rgroup_fini:
 	cass_dev_rgroup_fini(hw);
 	cass_dev_rx_tx_profiles_fini(hw);
@@ -1416,6 +1424,7 @@ static void cass_remove(struct pci_dev *pdev)
 	if (hw->cdev.is_physfn) {
 		if (hw->num_vfs)
 			cass_sriov_configure(hw->cdev.pdev, 0);
+		destroy_vf_sysfs(hw);
 		dma_free_coherent(&pdev->dev, C_MST_DBG_MST_TABLE_SIZE,
 				  hw->mst_entries, hw->mst_entries_dma_addr);
 		cxi_dmac_desc_set_free(&hw->cdev, hw->dmac_pt_id);

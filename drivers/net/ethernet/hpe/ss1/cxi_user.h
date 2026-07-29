@@ -104,6 +104,7 @@ struct user_client {
 	struct idr wait_idr;
 	struct idr ct_idr;
 	struct idr rmu_eth_idr;
+	struct idr svc_idr;
 
 	/*
 	 * for now, max of one counter pool id per client.

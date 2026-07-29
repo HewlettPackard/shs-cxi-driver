@@ -32,6 +32,7 @@
 #include "cass_rx_tx_profile.h"
 #include "cass_rgroup.h"
 #include "cxi_config.h"
+#include "cxi_internal.h"
 #include "cass_vf.h"
 
 #define PCI_VENDOR_ID_CRAY         0x17db
@@ -595,6 +596,20 @@ struct cxi_rmu_eth_priv {
  *             address that does not match @own_mac or the MACs programmed in
  *             the hardware.
  */
+/**
+ * struct cass_vf_cfg - Per-VF policy owned and set by the PF admin.
+ *
+ * Protected by svc_lock.
+ *
+ * @svc_id:       Parent service ID assigned to this VF (0 = none assigned;
+ *                defaults to CXI_DEFAULT_SVC_ID at init).
+ */
+struct cass_vf_cfg {
+	unsigned int svc_id;
+	/* sysfs kobject for /sys/class/cxi<N>/vf/<vf_idx>/ */
+	struct kobject kobj;
+};
+
 struct cxi_eth_vf_cfg {
 	bool trusted;
 	u64  own_mac;
@@ -1039,6 +1054,7 @@ struct cass_dev {
 	struct dentry *svc_debug;
 	struct list_head svc_list;
 	unsigned int svc_count;
+	struct cass_vf_cfg vf_cfg[C_NUM_VFS];
 	struct cxi_resource_use resource_use[CXI_RESOURCE_MAX];
 	spinlock_t rgrp_lock;
 
@@ -1091,6 +1107,7 @@ struct cass_dev {
 	struct kobject properties_kobj;
 	struct kobject fru_kobj;
 	struct kobject link_restarts_kobj;
+	struct kobject vf_kobj;
 
 	/* debugfs support */
 	struct attribute_group  port_group;
@@ -1494,6 +1511,9 @@ void cass_telem_fini(struct cass_dev *hw);
 
 int create_sysfs_properties(struct cass_dev *hw);
 void destroy_sysfs_properties(struct cass_dev *hw);
+int create_vf_sysfs(struct cass_dev *hw);
+void destroy_vf_sysfs(struct cass_dev *hw);
+int cxi_vf_set_svc_id(struct cass_dev *hw, unsigned int vf_num, int svc_id);
 
 void cass_phy_start(struct cass_dev *hw, bool force_reconfig);
 void cass_phy_stop(struct cass_dev *hw, bool block);

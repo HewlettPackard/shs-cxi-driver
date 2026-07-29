@@ -47,6 +47,16 @@ struct cxi_rgroup {
 	struct cxi_resource_entry_list resource_entry_list;
 	struct cxi_ac_entry_list       ac_entry_list;
 	struct cxi_rgroup_pools        pools;
+
+	/* Set when this rgroup belongs to a child service.  Causes
+	 * cass_rgroup_add_resource() to skip the global pool counter update
+	 * (the parent already holds that reservation) and instead subtract
+	 * from the parent resource entry's reserved count.
+	 * parent_entry[] holds per-type pointers into the parent rgroup's
+	 * resource entries; set in reserve_rsrcs() before add_resource().
+	 */
+	bool is_child;
+	struct cxi_resource_entry *parent_entry[CXI_RESOURCE_MAX];
 };
 
 void cxi_dev_rgroup_init(struct cxi_dev *dev);
