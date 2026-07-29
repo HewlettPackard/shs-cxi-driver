@@ -3727,6 +3727,60 @@ static int cxi_user_vf_get_token(struct user_client *client,
 			   resp_out_len);
 }
 
+/**
+ * cxi_user_telem_get - Handler for CXI_OP_TELEM_GET
+ * @client:        user client context
+ * @cmd_in:        pointer to cxi_telem_get_cmd followed by item index array
+ * @cmd_len:       total size of the command buffer
+ * @resp_out:      output pointer for the response buffer
+ * @resp_buf_size: size of the response buffer
+ * @resp_out_len:  set to the number of bytes written into the response buffer
+ *
+ * Reads one or more telemetry items and returns their values together with
+ * a real-time timestamp. Works for both PF (direct BAR read) and VF (each
+ * item is forwarded to the PF over vsock by telem_item_retrieve_vf).
+ */
+static int cxi_user_telem_get(struct user_client *client,
+			      const void *cmd_in, size_t cmd_len,
+			      void **resp_out, size_t resp_buf_size,
+			      size_t *resp_out_len)
+{
+	const struct cxi_telem_get_cmd *cmd = cmd_in;
+	struct cxi_telem_get_resp *resp;
+	struct timespec64 ts;
+	size_t resp_size;
+	int rc;
+
+	if (cmd_len < sizeof(*cmd) || cmd->count == 0 ||
+	    cmd_len != sizeof(*cmd) + cmd->count * sizeof(__u32))
+		return -EINVAL;
+
+	if (client->is_vf &&
+	    !cxi_vf_telem_enabled(client->ucxi->dev, client->vf_num))
+		return -EPERM;
+
+	resp_size = sizeof(*resp) + cmd->count * sizeof(__u64);
+	resp = kvzalloc(resp_size, GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
+
+	rc = cxi_telem_get_selected(client->ucxi->dev, cmd->items,
+				    resp->values, cmd->count);
+	if (rc)
+		goto out;
+
+	ts = ktime_to_timespec64(ktime_get_real());
+	resp->count   = cmd->count;
+	resp->ts_sec  = ts.tv_sec;
+	resp->ts_nsec = ts.tv_nsec;
+
+	rc = copy_response(client, resp, resp_size, resp_out,
+			   resp_buf_size, resp_out_len);
+out:
+	kvfree(resp);
+	return rc;
+}
+
 static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 	[CXI_OP_LNI_ALLOC] = {
 		.req_size   = sizeof(struct cxi_lni_alloc_cmd),
@@ -4069,6 +4123,9 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_retry_handler_running_cmd),
 		.name       = "RETRY_HANDLER_RUNNING",
 		.handler    = cxi_user_retry_handler_running, },
+	[CXI_OP_TELEM_GET] = {
+		.name       = "TELEM_GET",
+		.handler    = cxi_user_telem_get, },
 };
 
 /* Read and process a command from userspace or from a Virtual

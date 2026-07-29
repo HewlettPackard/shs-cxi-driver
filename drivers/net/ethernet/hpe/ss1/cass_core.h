@@ -601,11 +601,13 @@ struct cxi_rmu_eth_priv {
  *
  * Protected by svc_lock.
  *
- * @svc_id:       Parent service ID assigned to this VF (0 = none assigned;
- *                defaults to CXI_DEFAULT_SVC_ID at init).
+ * @svc_id:         Parent service ID assigned to this VF (0 = none assigned;
+ *                  defaults to CXI_DEFAULT_SVC_ID at init).
+ * @telem_enabled:  Whether telemetry access is enabled for this VF.
  */
 struct cass_vf_cfg {
 	unsigned int svc_id;
+	bool telem_enabled;
 	/* sysfs kobject for /sys/class/cxi<N>/vf/<vf_idx>/ */
 	struct kobject kobj;
 };

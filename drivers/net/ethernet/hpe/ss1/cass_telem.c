@@ -18,6 +18,32 @@
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
+static int telem_item_retrieve_vf(struct cass_dev *hw, unsigned int item,
+				  u64 *value)
+{
+	const struct {
+		struct cxi_telem_get_cmd hdr;
+		__u32 items[1];
+	} cmd = {
+		.hdr   = { .op = CXI_OP_TELEM_GET, .resp = NULL, .count = 1 },
+		.items = { item },
+	};
+	struct {
+		struct cxi_telem_get_resp hdr;
+		__u64 values[1];
+	} resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(&hw->cdev, &cmd,
+				sizeof(cmd.hdr) + cmd.hdr.count * sizeof(__u32),
+				&resp, &resp_len);
+	if (rc == 0)
+		*value = resp.values[0];
+
+	return rc;
+}
+
 static int telem_item_retrieve(struct cass_dev *hw, const unsigned int item,
 			       u64 *value)
 {
@@ -31,6 +57,9 @@ static int telem_item_retrieve(struct cass_dev *hw, const unsigned int item,
 
 	if (item >= hw->telemetry.info->total_num_items)
 		return -EINVAL;
+
+	if (!hw->cdev.is_physfn)
+		return telem_item_retrieve_vf(hw, item, value);
 
 	offset	= ((loff_t)hw->telemetry.info->items[item].offset);
 	lsb	= hw->telemetry.info->items[item].lsb;
@@ -163,6 +192,24 @@ int cxi_telem_get_selected(struct cxi_dev *cdev, const unsigned int *items,
 	return retval;
 }
 EXPORT_SYMBOL(cxi_telem_get_selected);
+
+/**
+ * cxi_vf_telem_enabled() - check whether telemetry access is enabled for a VF
+ * @cdev:   the PF device
+ * @vf_num: zero-based VF index
+ *
+ * Return: true if the VF is allowed to read telemetry, false otherwise.
+ */
+bool cxi_vf_telem_enabled(struct cxi_dev *cdev, unsigned int vf_num)
+{
+	struct cass_dev *hw = cxi_to_cass_dev(cdev);
+
+	if (vf_num >= hw->num_vfs)
+		return false;
+
+	return hw->vf_cfg[vf_num].telem_enabled;
+}
+EXPORT_SYMBOL(cxi_vf_telem_enabled);
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 

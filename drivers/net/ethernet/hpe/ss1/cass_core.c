@@ -1302,12 +1302,16 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		rc = cxi_get_properties_vf(&hw->cdev, &hw->cdev.prop);
 		if (rc)
 			goto svc_fini;
+
+		rc = cass_telem_init(hw);
+		if (rc)
+			goto svc_fini;
 	}
 
 	/* Export device information. */
 	rc = create_sysfs_properties(hw);
 	if (rc)
-		goto svc_fini;
+		goto telem_fini_vf;
 
 	cxi_add_device(&hw->cdev);
 
@@ -1324,7 +1328,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_set_drvdata(&hw->class_dev, hw);
 	if (device_register(&hw->class_dev)) {
 		put_device(&hw->class_dev);
-		goto svc_fini;
+		goto telem_fini_vf;
 	}
 
 	if (is_physfn) {
@@ -1337,6 +1341,10 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 unregister_class_dev:
 	device_unregister(&hw->class_dev);
+
+telem_fini_vf:
+	if (!is_physfn)
+		cass_telem_fini(hw);
 
 svc_fini:
 	cass_svc_fini(hw);
@@ -1436,6 +1444,7 @@ static void cass_remove(struct pci_dev *pdev)
 		deregister_error_handlers(hw);
 		fini_hw(hw);
 	} else {
+		cass_telem_fini(hw);
 		cass_vf_fini(hw);
 	}
 

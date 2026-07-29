@@ -148,6 +148,8 @@ enum cxi_command_opcode {
 		CXI_OP_ETH_VF_MAC_GET,
 		CXI_OP_ETH_VF_MAC_VALIDATE,
 
+		CXI_OP_TELEM_GET,
+
 		CXI_OP_MAX,
 };
 
@@ -1567,6 +1569,37 @@ struct cxi_retry_handler_running_cmd {
 
 struct cxi_retry_handler_running_resp {
 	bool running;
+};
+
+/**
+ * struct cxi_telem_get_cmd - Read one or more telemetry items
+ * @op:    CXI_OP_TELEM_GET
+ * @resp:  userspace response pointer (NULL when sent from VF over vsock)
+ * @count: number of C_TELEM_* indices in @items
+ * @items: array of C_TELEM_* item indices to read
+ */
+struct cxi_telem_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	__u32 count;
+	__u32 _pad;
+	__u32 items[0];
+};
+
+/**
+ * struct cxi_telem_get_resp - Response for CXI_OP_TELEM_GET
+ * @count:   number of values returned in @values
+ * @_pad:    reserved, must be zero
+ * @ts_sec:  wall-clock seconds at time of read
+ * @ts_nsec: wall-clock nanoseconds at time of read
+ * @values:  one 64-bit value per requested item, in order
+ */
+struct cxi_telem_get_resp {
+	__u32 count;
+	__u32 _pad;
+	__s64 ts_sec;
+	__u64 ts_nsec;
+	__u64 values[0];
 };
 
 #define CXIERR_GENL_FAMILY_NAME "cxierr"

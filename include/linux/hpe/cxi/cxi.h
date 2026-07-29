@@ -554,6 +554,7 @@ int cxi_dmac_xfer(struct cxi_dev *cdev, int set_id);
 
 int cxi_telem_get_selected(struct cxi_dev *cdev, const unsigned int *items,
 			   u64 *data, unsigned int count);
+bool cxi_vf_telem_enabled(struct cxi_dev *cdev, unsigned int vf_num);
 
 bool cxi_retry_handler_running(struct cxi_dev *cdev);
 

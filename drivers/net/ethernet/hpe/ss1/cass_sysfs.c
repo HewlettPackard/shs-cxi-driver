@@ -835,8 +835,38 @@ static ssize_t svc_id_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 static struct kobj_attribute vf_svc_id_attr = __ATTR_RW(svc_id);
 
+static ssize_t telem_enabled_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", cfg->telem_enabled ? 1 : 0);
+}
+
+static ssize_t telem_enabled_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct cass_dev *hw = container_of(kobj->parent, struct cass_dev, vf_kobj);
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+	bool enabled;
+	int rc;
+
+	rc = kstrtobool(buf, &enabled);
+	if (rc)
+		return rc;
+
+	mutex_lock(&hw->svc_lock);
+	cfg->telem_enabled = enabled;
+	mutex_unlock(&hw->svc_lock);
+	return count;
+}
+
+static struct kobj_attribute vf_telem_enabled_attr = __ATTR_RW(telem_enabled);
+
 static struct attribute *vf_attrs[] = {
 	&vf_svc_id_attr.attr,
+	&vf_telem_enabled_attr.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(vf);
@@ -877,6 +907,7 @@ int create_vf_sysfs(struct cass_dev *hw)
 	for (i = 0; i < C_NUM_VFS; i++) {
 		memset(&hw->vf_cfg[i].kobj, 0, sizeof(hw->vf_cfg[i].kobj));
 		hw->vf_cfg[i].svc_id = CXI_DEFAULT_SVC_ID;
+		hw->vf_cfg[i].telem_enabled = true;
 		rc = kobject_init_and_add(&hw->vf_cfg[i].kobj, &vf_kobj_type,
 					  &hw->vf_kobj, "%d", i);
 		if (rc) {
