@@ -190,6 +190,7 @@ void cxi_apply_for_all(void (*callback)(struct cxi_dev *dev, void *p),
 		       void *p);
 
 void cxi_p2p_fini(void);
+void cass_hni_param_check(void);
 
 #define CXI_DEFAULT_LNIS_PER_RGID 1
 

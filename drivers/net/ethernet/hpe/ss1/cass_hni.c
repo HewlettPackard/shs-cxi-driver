@@ -23,6 +23,8 @@ MODULE_PARM_DESC(pause_too_long_timeout,
 #define RX_CTRL_TIMER_BIT_OFFSET 9U
 #define RX_CTRL_TIMER_BIT_MAX 31
 
+int pause_timeout_bit;
+
 /* Increase pause repeat period to repeat every 156 quantas. With the default
  * pause quanta configuration, repeat period is ~400 nsecs.
  */
@@ -129,37 +131,11 @@ void update_hni_link_up(struct cass_dev *hw)
 
 void cass_hni_init(struct cass_dev *hw)
 {
-	int pause_timeout_bit;
 	union c_hni_cfg_pause_rx_ctrl rx_ctrl;
 	union c_hni_cfg_pause_timing timing;
 
 	/* Clear all default reserved packet buffer space. */
 	cass_clear(hw, C_HNI_CFG_PBUF(0), C_HNI_CFG_PBUF_SIZE);
-
-	if (pause_too_long_timeout) {
-		/* Up align pause too long timeout to a power of 2
-		 * since hardware timeout operates on a specific bit.
-		 */
-		pause_too_long_timeout =
-			roundup_pow_of_two(pause_too_long_timeout);
-
-		/* By HW design, the pause_timeout interrupt is only
-		 * generated after 8 timeouts. Account for that.
-		 */
-		pause_too_long_timeout = max_t(unsigned int,
-					       pause_too_long_timeout / 8, 1);
-
-		pause_timeout_bit = ffs(pause_too_long_timeout) - 1 +
-			PAUSE_MSEC_BIT_OFFSET - RX_CTRL_TIMER_BIT_OFFSET;
-
-		if (pause_timeout_bit > RX_CTRL_TIMER_BIT_MAX) {
-			cxidev_info(&hw->cdev,
-				    "pause_too_long_timeout is too big. Setting to max.\n");
-			pause_timeout_bit = RX_CTRL_TIMER_BIT_MAX;
-		}
-	} else {
-		pause_timeout_bit = 0;
-	}
 
 	cass_read(hw, C_HNI_CFG_PAUSE_RX_CTRL, &rx_ctrl, sizeof(rx_ctrl));
 	rx_ctrl.timer_bit = pause_timeout_bit;
@@ -369,3 +345,33 @@ int cxi_get_max_eth_rxsize(struct cxi_dev *cdev)
 	return hw->max_eth_rxsize;
 }
 EXPORT_SYMBOL(cxi_get_max_eth_rxsize);
+
+/* Validate pause_too_long_timeout module parameter */
+void cass_hni_param_check(void)
+{
+	if (pause_too_long_timeout) {
+		unsigned int pause_too_long_timeout_intr;
+
+		/* Up align pause too long timeout to a power of 2
+		 * since hardware timeout operates on a specific bit.
+		 */
+		pause_too_long_timeout =
+			roundup_pow_of_two(pause_too_long_timeout);
+
+		/* By HW design, the pause_timeout interrupt is only
+		 * generated after 8 timeouts. Account for that.
+		 */
+		pause_too_long_timeout_intr = max_t(unsigned int,
+						    pause_too_long_timeout / 8, 1);
+
+		pause_timeout_bit = ffs(pause_too_long_timeout_intr) - 1 +
+			PAUSE_MSEC_BIT_OFFSET - RX_CTRL_TIMER_BIT_OFFSET;
+
+		if (pause_timeout_bit > RX_CTRL_TIMER_BIT_MAX) {
+			pr_warn("pause_too_long_timeout is too big. Setting to max.\n");
+			pause_timeout_bit = RX_CTRL_TIMER_BIT_MAX;
+		}
+	} else {
+		pause_timeout_bit = 0;
+	}
+}

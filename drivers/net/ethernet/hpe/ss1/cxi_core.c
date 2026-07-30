@@ -220,6 +220,8 @@ static int __init cxi_init(void)
 		return -EINVAL;
 	}
 
+	cass_hni_param_check();
+
 	for (i = 0; i < ARRAY_SIZE(tg_threshold); i++) {
 		if ((tg_threshold[i] >= 1 && tg_threshold[i] <= 3) ||
 		    tg_threshold[i] > 16383) {
