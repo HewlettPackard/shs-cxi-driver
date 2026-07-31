@@ -399,7 +399,7 @@ int cass_ac_phys_alloc(struct cass_dev *hw, bool vf_en, int vf_num)
 		.ats_vf_num = vf_en ? vf_num : 0,
 	};
 
-	acid = ida_simple_get(&hw->atu_table, 1, ATU_PHYS_AC, GFP_KERNEL);
+	acid = ida_alloc_range(&hw->atu_table, 1, ATU_PHYS_AC - 1, GFP_KERNEL);
 	if (acid < 0)
 		return acid;
 
@@ -420,7 +420,7 @@ void cass_ac_phys_free(struct cass_dev *hw, int acid)
 	union c_atu_cfg_ac_table ac = {};
 
 	cass_write_ac(hw, &ac, acid, false, true, false, 0);
-	ida_simple_remove(&hw->atu_table, acid);
+	ida_free(&hw->atu_table, acid);
 }
 
 /**
