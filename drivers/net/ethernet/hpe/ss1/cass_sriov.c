@@ -22,12 +22,20 @@
 #include <linux/kthread.h>
 #include <linux/kvm_host.h>
 #include <linux/net.h>
+#include <linux/version.h>
 #include <linux/vfio.h>
 #include <linux/vm_sockets.h>
 #include <net/sock.h>
 #include <linux/vmalloc.h>
 
 #include "cass_core.h"
+
+/* kernel_bind/connect use sockaddr_unsized since v6.15 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+#define CXI_SOCKADDR(a) ((struct sockaddr_unsized *)(a))
+#else
+#define CXI_SOCKADDR(a) ((struct sockaddr *)(a))
+#endif
 #include "cass_vf_notif.h"
 #include "cxi_core.h"
 
@@ -826,7 +834,7 @@ static int vsock_create_listen(struct socket **sock, unsigned int port,
 	if (rc < 0)
 		return rc;
 
-	rc = kernel_bind(*sock, (struct sockaddr *)&addr, sizeof(addr));
+	rc = kernel_bind(*sock, CXI_SOCKADDR(&addr), sizeof(addr));
 	if (rc < 0)
 		goto release_sock;
 
@@ -1257,7 +1265,7 @@ int cass_vf_init(struct cass_dev *hw)
 	hw->vf_req_sock->sk->sk_rcvtimeo = CXI_SRIOV_VF_TIMEOUT;
 	hw->vf_cmd_seq = 0;
 
-	rc = kernel_connect(hw->vf_req_sock, (struct sockaddr *)&addr,
+	rc = kernel_connect(hw->vf_req_sock, CXI_SOCKADDR(&addr),
 			    sizeof(addr), 0);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "vf socket connect failed: %d", rc);
@@ -1286,7 +1294,7 @@ int cass_vf_init(struct cass_dev *hw)
 	hw->vf_notif_sock->sk->sk_rcvtimeo = CXI_SRIOV_VF_TIMEOUT;
 
 	addr.svm_port = CXI_SRIOV_VSOCK_NOTIF_PORT;
-	rc = kernel_connect(hw->vf_notif_sock, (struct sockaddr *)&addr,
+	rc = kernel_connect(hw->vf_notif_sock, CXI_SOCKADDR(&addr),
 			    sizeof(addr), 0);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "vf notif socket connect failed: %d", rc);

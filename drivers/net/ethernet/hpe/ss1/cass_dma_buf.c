@@ -56,7 +56,11 @@ static void cxi_dma_buf_move_notify(struct dma_buf_attachment *attach)
 
 static const struct dma_buf_attach_ops cxi_dma_buf_attach_ops = {
 	.allow_peer2peer = 1,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+	.invalidate_mappings = cxi_dma_buf_move_notify,
+#else
 	.move_notify = cxi_dma_buf_move_notify,
+#endif
 };
 
 void cxi_dmabuf_put_pages(struct cxi_md_priv *md_priv)
