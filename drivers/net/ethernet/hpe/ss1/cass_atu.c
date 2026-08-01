@@ -2250,58 +2250,58 @@ static struct cxi_md *cass_map_device_vf(struct cxi_lni *lni, u64 va,
 		.ptg_mode = default_ptg_mode,
 		.flags = flags,
 	};
-	struct cxi_md_priv *dev_md;
+	struct cxi_md_priv *dev_md_priv;
 	struct cxi_md_priv_vf *md_priv_vf;
 	struct cxi_md *md;
 	int rc;
 
 	/* Transient PF-style md used only to drive device page acquisition. */
-	dev_md = kzalloc(sizeof(*dev_md), GFP_KERNEL);
-	if (!dev_md)
+	dev_md_priv = kzalloc(sizeof(*dev_md_priv), GFP_KERNEL);
+	if (!dev_md_priv)
 		return ERR_PTR(-ENOMEM);
 
-	dev_md->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
-	dev_md->device = &hw->cdev.pdev->dev;
-	refcount_set(&dev_md->refcount, 1);
-	m_opts.md_priv = dev_md;
+	dev_md_priv->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
+	dev_md_priv->device = &hw->cdev.pdev->dev;
+	refcount_set(&dev_md_priv->refcount, 1);
+	m_opts.md_priv = dev_md_priv;
 
 	if (hints && hints->ptg_mode_valid)
 		m_opts.ptg_mode = hints->ptg_mode;
 
 	if (hints && hints->dmabuf_valid) {
-		dev_md->dmabuf_fd = hints->dmabuf_fd;
-		dev_md->dmabuf_offset = hints->dmabuf_offset;
-		dev_md->dmabuf_length = len;
+		dev_md_priv->dmabuf_fd = hints->dmabuf_fd;
+		dev_md_priv->dmabuf_offset = hints->dmabuf_offset;
+		dev_md_priv->dmabuf_length = len;
 	} else {
-		dev_md->dmabuf_fd = INVALID_DMABUF_FD;
+		dev_md_priv->dmabuf_fd = INVALID_DMABUF_FD;
 	}
 
 	rc = cass_is_device_memory(hw, &m_opts, va, len);
 	if (rc)
-		goto free_dev_md;
+		goto free_dev_md_priv;
 
 	cass_align_start_len(&m_opts, va, len, m_opts.page_shift);
 
-	dev_md->md.va = m_opts.va_start;
-	dev_md->md.len = m_opts.va_len;
-	dev_md->md.page_shift = m_opts.page_shift;
+	dev_md_priv->md.va = m_opts.va_start;
+	dev_md_priv->md.len = m_opts.va_len;
+	dev_md_priv->md.page_shift = m_opts.page_shift;
 
 	rc = cass_device_get_pages(&m_opts);
 	if (rc)
-		goto free_dev_md;
+		goto free_dev_md_priv;
 
 	if (m_opts.ptg_mode == C_ATU_PTG_MODE_SGL)
 		m_opts.huge_shift = m_opts.page_shift;
 
 	/* Register the device DMA addresses with the PF. */
-	md = cxi_map_sgtable_vf(lni, dev_md->sgt, flags, &m_opts);
+	md = cxi_map_sgtable_vf(lni, dev_md_priv->sgt, flags, &m_opts);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto put_pages;
 	}
 
 	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
-	md_priv_vf->dev_md_priv = dev_md;
+	md_priv_vf->dev_md_priv = dev_md_priv;
 
 	/* Device sgt/pages are owned by dev_md_priv; keep the VF-owned
 	 * sgt/pages NULL so the generic VF cleanup path does not
@@ -2320,14 +2320,14 @@ static struct cxi_md *cass_map_device_vf(struct cxi_lni *lni, u64 va,
 
 	pr_debug("VF map_device: md:%d iova:%llx lac:%u va:0x%llx len:0x%lx nents:%u\n",
 		 md->id, md->iova, md->lac, m_opts.va_start, m_opts.va_len,
-		 dev_md->sgt->nents);
+		 dev_md_priv->sgt->nents);
 
 	return md;
 
 put_pages:
-	cass_device_put_pages(dev_md);
-free_dev_md:
-	kfree(dev_md);
+	cass_device_put_pages(dev_md_priv);
+free_dev_md_priv:
+	kfree(dev_md_priv);
 	return ERR_PTR(rc);
 }
 
