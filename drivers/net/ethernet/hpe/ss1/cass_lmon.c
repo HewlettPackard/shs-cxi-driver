@@ -174,12 +174,13 @@ int cass_lmon_request_up(struct cass_dev *hw)
 	case CASS_LINK_STATUS_STOPPING:
 	case CASS_LINK_STATUS_DOWN:
 		/* start it coming up */
-		if (cass_version(hw, CASSINI_1))
+		if (cass_version(hw, CASSINI_1)) {
 			sbl_base_link_enable_start(hw->sbl, 0);
+			hw->port->link_restart_count = 0;
+			hw->port->link_restart_time_idx = 0;
+			memset(hw->port->link_restart_time_buf, 0, sizeof(hw->port->link_restart_time_buf));
+		}
 		hw->port->lmon_dirn = CASS_LMON_DIRECTION_UP;
-		hw->port->link_restart_count = 0;
-		hw->port->link_restart_time_idx = 0;
-		memset(hw->port->link_restart_time_buf, 0, sizeof(hw->port->link_restart_time_buf));
 		wakeup_lmon = true;
 		break;
 
