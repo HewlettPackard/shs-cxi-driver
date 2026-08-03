@@ -30,10 +30,13 @@ T = $(sort $(wildcard *.t))
 
 all: $(DEFAULT_TEST_TARGET)
 
-test: pre-clean
+build-pkt-tools:
+	$(MAKE) -C pkt_test all
+
+test: build-pkt-tools pre-clean
 	$(MAKE) aggregate-results-and-cleanup
 
-prove: pre-clean
+prove: build-pkt-tools pre-clean
 	@rm -rf output
 	@mkdir output
 	@echo "*** prove ***"; $(PROVE) --archive output --exec '$(SHELL_PATH_SQ)' $(PROVE_OPTS) $(T) :: $(TEST_OPTS)
@@ -50,6 +53,7 @@ clean-except-prove-cache:
 
 clean: clean-except-prove-cache
 	$(RM) ${SHARNESS_TEST_DIRECTORY}/.prove
+	$(MAKE) -C pkt_test clean
 
 aggregate-results-and-cleanup: $(T)
 	$(MAKE) aggregate-results
@@ -60,5 +64,5 @@ aggregate-results:
 		echo "$$f"; \
 	done | '$(SHELL_PATH_SQ)' '$(AGGREGATE_SCRIPT)'
 
-.PHONY: all test prove $(T) pre-clean clean
+.PHONY: all test prove $(T) pre-clean clean build-pkt-tools
 .PHONY: aggregate-results-and-cleanup aggregate-results

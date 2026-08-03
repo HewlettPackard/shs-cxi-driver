@@ -3,7 +3,7 @@
 
 export TOPDIR := $(if $(TOPDIR),$(TOPDIR),$(shell readlink -e .))
 
-SUBDIRS = drivers/net/ethernet/hpe/ss1 ucxi
+SUBDIRS = drivers/net/ethernet/hpe/ss1 ucxi tests/pkt_test
 
 all clean: $(SUBDIRS)
 	rm -rf WORKSPACE
