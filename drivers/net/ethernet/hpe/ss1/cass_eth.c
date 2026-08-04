@@ -102,6 +102,8 @@ void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
 		return;
 	}
 
+	memset(eth_info, 0, sizeof(*eth_info));
+
 	cass_read(hw, C_IXE_CFG_PARSER, &cfg_parser, sizeof(cfg_parser));
 	eth_info->max_segment_size = (cfg_parser.eth_segment + 1) * 128;
 	ether_addr_copy(eth_info->default_mac_addr, hw->default_mac_addr);

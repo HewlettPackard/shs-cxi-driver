@@ -50,9 +50,11 @@ static void cxi_get_drvinfo(struct net_device *ndev,
 	strscpy(info->bus_info, dev_name(ndev->dev.parent),
 		sizeof(info->bus_info));
 	strscpy(info->fw_version, dev->eth_info.fw_version,
-		sizeof(info->fw_version));
+		min_t(size_t, sizeof(info->fw_version),
+		      sizeof(dev->eth_info.fw_version)));
 	strscpy(info->erom_version, dev->eth_info.erom_version,
-		sizeof(info->erom_version));
+		min_t(size_t, sizeof(info->erom_version),
+		      sizeof(dev->eth_info.erom_version)));
 
 	info->n_priv_flags = PRIV_FLAGS_COUNT;
 }
