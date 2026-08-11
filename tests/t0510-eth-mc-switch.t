@@ -16,14 +16,10 @@ SHARNESS_TEST_SRCDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export SHARNESS_TEST_DIRECTORY SHARNESS_TEST_SRCDIR
 
 . ./sharness.sh
-# Build pkt_tool in writable temp directory for readonly filesystem compatibility
-PKT_BUILD_DIR="$SHARNESS_TEST_DIRECTORY/pkt_tool_build"
-mkdir -p "$PKT_BUILD_DIR"
-cp "$SHARNESS_TEST_SRCDIR/pkt_test/pkt_tool.c" "$PKT_BUILD_DIR/" || exit 1
-cp "$SHARNESS_TEST_SRCDIR/pkt_test/Makefile" "$PKT_BUILD_DIR/" || exit 1
 
 PKT_ROOT="$SHARNESS_TEST_SRCDIR/pkt_test"
-PKT_TOOL="$PKT_BUILD_DIR/pkt_tool"
+# pkt_tool must be pre-built (e.g. by the top-level make); tests never build it.
+PKT_TOOL="$PKT_ROOT/pkt_tool"
 
 CXI_DIR=$(realpath "$SHARNESS_TEST_SRCDIR/..")
 VF_SCRIPT="$CXI_DIR/scripts/cxi_vf.sh"
@@ -35,6 +31,7 @@ SS1_KO="$CXI_DIR/drivers/net/ethernet/hpe/ss1/cxi-ss1.ko"
 USER_KO="$CXI_DIR/drivers/net/ethernet/hpe/ss1/cxi-user.ko"
 CXI_DEVICE=${CXI_DEVICE:-cxi0}
 NUM_VFS=${NUM_VFS:-2}
+CXI_SVC_BIN="$CXI_DIR/../libcxi/install/bin/cxi_service"
 
 # Load the full CXI driver stack (sbl, sl, ss1, user) if not already present.
 # Each test runs in a fresh harness VM where nothing pre-loads the driver; when
@@ -44,7 +41,7 @@ load_cxi_stack() {
 	[[ -d "/sys/class/cxi/$CXI_DEVICE" ]] && return 0
 	insmod "$SBL_KO"  2>/dev/null || true
 	insmod "$SL_KO"   2>/dev/null || true
-	insmod "$SS1_KO" disable_default_svc=0 || { echo "ERROR: failed to insmod cxi-ss1 ($SS1_KO)" >&2; return 1; }
+	insmod "$SS1_KO" || { echo "ERROR: failed to insmod cxi-ss1 ($SS1_KO)" >&2; return 1; }
 	insmod "$USER_KO" 2>/dev/null || true
 	local i
 	for ((i=0; i<50; i++)); do
@@ -53,6 +50,74 @@ load_cxi_stack() {
 	done
 	echo "ERROR: /sys/class/cxi/$CXI_DEVICE missing after loading driver stack" >&2
 	return 1
+}
+
+# Create a parent CXI service with enough resources for NUM_VFS VF ethernet
+# clients and assign it to each VF slot.  Must be called after the PF driver
+# is loaded (sysfs vf/N/svc_id exists at PF probe time) and before VFs bind.
+setup_vf_parent_svc() {
+	[[ -x "$CXI_SVC_BIN" ]] || {
+		echo "ERROR: cxi_service not found at $CXI_SVC_BIN" >&2
+		return 1
+	}
+
+	if [[ -z "$VF_PARENT_SVC_ID" ]]; then
+	local yaml="$SHARNESS_TEST_DIRECTORY/vf_eth_parent.yaml"
+	cat > "$yaml" << 'YAML'
+resource_limits: 1
+restricted_members: 0
+restricted_tcs: 0
+exclusive_cp: 0
+limits:
+  - name: ACs
+    max: 8
+    res: 8
+  - name: EQs
+    max: 256
+    res: 8
+  - name: PTEs
+    max: 64
+    res: 32
+  - name: TXQs
+    max: 256
+    res: 8
+  - name: TGQs
+    max: 256
+    res: 8
+  - name: TLEs
+    max: 512
+    res: 512
+  - name: LEs
+    max: 16384
+    res: 4096
+  - name: CTs
+    max: 0
+    res: 0
+vnis:
+  vni: 2
+YAML
+
+	local out svc_id
+	out=$("$CXI_SVC_BIN" create -d "$CXI_DEVICE" -y "$yaml" 2>&1) || {
+		echo "ERROR: cxi_service create failed: $out" >&2
+		return 1
+	}
+	svc_id=$(echo "$out" | grep -oP '(?<=Successfully created service: )\d+')
+	[[ -n "$svc_id" ]] || {
+		echo "ERROR: could not parse svc_id from cxi_service output" >&2
+		return 1
+	}
+	VF_PARENT_SVC_ID="$svc_id"
+	fi
+
+	# (Re)assign the parent service to every VF slot before the VFs bind.
+	local i
+	for ((i=0; i<NUM_VFS; i++)); do
+		echo "$VF_PARENT_SVC_ID" > "/sys/class/cxi/$CXI_DEVICE/vf/$i/svc_id" || {
+			echo "ERROR: failed to assign svc_id $VF_PARENT_SVC_ID to VF $i" >&2
+			return 1
+		}
+	done
 }
 
 NS_PF=${NS_PF:-ns_pf}
@@ -421,6 +486,11 @@ ns_create_namespaces() {
 		insmod "$ETH_KO" || true
 	fi
 
+	setup_vf_parent_svc || {
+		echo "ERROR: failed to create/assign VF parent service" >&2
+		return 1
+	}
+
 	echo "Provisioning $NUM_VFS VF(s) with $VF_SCRIPT setup"
 	cd "$SCRIPTS_DIR"
 	"$VF_SCRIPT" setup "$NUM_VFS" || {
@@ -480,7 +550,7 @@ ns_create_namespaces() {
 
 ns_remove_namespaces() {
 	if [[ -x "$VF_SCRIPT" ]]; then
-		"$VF_SCRIPT" remove || true
+		"$VF_SCRIPT" cleanup || true
 	fi
 
 	local ns
@@ -492,9 +562,9 @@ ns_remove_namespaces() {
 }
 
 # ---------------------------------------------------------------------------
-# Setup: wait for PF netdev and build pkt_tool (shared across all tests)
+# Setup: wait for PF netdev and verify pkt_tool (shared across all tests)
 # ---------------------------------------------------------------------------
-test_expect_success "setup and build tools" "
+test_expect_success "setup and check tools" "
 echo \"Checking namespace management setup\" &&
 load_cxi_stack &&
 [[ -x \"$VF_SCRIPT\" ]] || {
@@ -504,24 +574,11 @@ load_cxi_stack &&
 
 # Note: Driver loading and PF netdev verification happens in ns_create_namespaces()
 # called by individual tests. This avoids early setup failures on read-only filesystems.
-# Just verify pkt_tool is available.
-
-if [[ -x \"\$PKT_TOOL\" ]]; then
-	echo \"pkt_tool already available\"
-else
-	# Try to build pkt_tool if filesystem is writable
-	if touch \"\$PKT_BUILD_DIR/.test-writable\" 2>/dev/null; then
-		rm -f \"\$PKT_BUILD_DIR/.test-writable\"
-		echo \"Building pkt_tool in $PKT_BUILD_DIR...\" &&
-		make -C \"\$PKT_BUILD_DIR\" pkt_tool 2>&1 || {
-			echo \"ERROR: Failed to build pkt_tool\" >&2
-			return 1
-		}
-	else
-		echo \"WARN: Filesystem read-only, pkt_tool must be pre-built at $PKT_TOOL\" >&2
-		return 1
-	fi
-fi
+# pkt_tool must be pre-built; the test suite never compiles anything.
+[[ -x \"\$PKT_TOOL\" ]] || {
+	echo \"ERROR: pkt_tool not found at \$PKT_TOOL;\" >&2
+	return 1
+}
 "
 
 # ---------------------------------------------------------------------------

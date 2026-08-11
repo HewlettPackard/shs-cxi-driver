@@ -2657,8 +2657,11 @@ static void cxi_eth_sync_rx_mode(struct net_device *ndev, bool is_vf)
 		if (mc_count) {
 			mc_addrs = kcalloc(mc_count, sizeof(*mc_addrs),
 					   is_vf ? GFP_KERNEL : GFP_ATOMIC);
-			if (!mc_addrs)
-				mc_count = 0;
+			if (!mc_addrs) {
+				netdev_warn(ndev,
+					    "mc list alloc failed; retaining existing multicast state\n");
+				return;
+			}
 		}
 
 		if (mc_addrs) {

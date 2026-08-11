@@ -545,22 +545,27 @@ static int mc_sw_pf_recv_vf_bum_tx_pkt(void *ctx, const u8 *frame, u16 frame_len
 static int mc_sw_sriov_configure(void *ctx, int num_vfs)
 {
 	struct cxi_eth *dev = ctx;
-	int rc;
+	int rc = 0;
 
 	if (!dev)
 		return -ENODEV;
 
-	if (num_vfs > 0) {
+	if (num_vfs < 0) {
+		return -EINVAL;
+	} else if (num_vfs > 0) {
 		rc = mc_sw_rxfout_init(dev);
 		if (rc)
 			return rc;
 
-		return mc_sw_rxfout_sysfs_create(dev);
+		rc = mc_sw_rxfout_sysfs_create(dev);
+		if (rc)
+			mc_sw_rxfout_fini(dev);
+	} else {
+		mc_sw_rxfout_sysfs_remove(dev);
+		mc_sw_rxfout_fini(dev);
 	}
 
-	mc_sw_rxfout_sysfs_remove(dev);
-
-	return 0;
+	return rc;
 }
 
 /* PF-side switch operations, exposed to core through a registered hook. */
