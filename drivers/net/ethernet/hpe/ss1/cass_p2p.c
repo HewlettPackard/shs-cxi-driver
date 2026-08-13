@@ -241,14 +241,15 @@ void cass_device_hugepage_size(int contig_cnt, struct ac_map_opts *m_opts)
 		if (device_hs_array[i] <= align_shift &&
 				page_table_size <= MAX_PG_TABLE_SIZE &&
 				page_table_size >= MIN_DEVICE_PG_TABLE_SIZE) {
-			m_opts->is_huge_page = true;
+			m_opts->flags |= CXI_MAP_HUGEPAGE;
 			m_opts->huge_shift = device_hs_array[i];
 			break;
 		}
 	}
 
 	pr_debug("len:%lx align_shift:%d hs:%d is_hp:%d\n", m_opts->va_len,
-		 align_shift, m_opts->huge_shift, m_opts->is_huge_page);
+		 align_shift, m_opts->huge_shift,
+		 (m_opts->flags & CXI_MAP_HUGEPAGE));
 }
 
 /**

@@ -1044,7 +1044,7 @@ int cass_cpu_page_size(struct cass_dev *hw, struct ac_map_opts *m_opts,
 
 	if (is_vm_hugetlb_page(vma)) {
 		m_opts->huge_shift = largest_hp_size(vma, m_opts->va_end);
-		m_opts->is_huge_page = true;
+		m_opts->flags |= CXI_MAP_HUGEPAGE;
 		*align_shift = align_and_page_shift(m_opts);
 	} else {
 		int vms_fs = ffsl(vma->vm_start);
@@ -1442,13 +1442,12 @@ free_pages:
  *
  * @lni: The Logical Network Interface
  * @sgt: The sg_table object. It is expected to be dma mapped.
- * @flags: Various options affecting the map
- * @m_opts: huge_shift/page_shift/ptg_mode options
+ * @m_opts: huge_shift/page_shift/ptg_mode options and flags
  *
  * @return: memory descriptor or error code
  */
 static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
-					 struct sg_table *sgt, u32 flags,
+					 struct sg_table *sgt,
 					 const struct ac_map_opts *m_opts)
 {
 	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
@@ -1463,6 +1462,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	int i;
 	int rc;
 	size_t sgt_len;
+	u32 flags = m_opts->flags;
 
 	if (!sgt)
 		return ERR_PTR(-EINVAL);
@@ -1489,8 +1489,8 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	md_priv_vf->npages = 0;
 
 	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
-		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid, sgt->nents, sgt_len,
-		 flags);
+		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid,
+		 sgt->nents, sgt_len, flags);
 
 	cmd_len = struct_size(cmd, sge, sgt->nents);
 	if (cmd_len > MAX_VFMSG_SIZE) {
@@ -1575,7 +1575,8 @@ static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
 	struct ac_map_opts m_opts = {
 		.page_shift = PAGE_SHIFT,
 		.huge_shift = PMD_SHIFT,
-		.ptg_mode = default_ptg_mode
+		.ptg_mode = default_ptg_mode,
+		.flags = flags
 	};
 
 	rc = cass_alloc_pages_sgt_vf(hw, va, len, flags, iter, &pages, &sgt,
@@ -1584,7 +1585,7 @@ static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
 	if (rc)
 		return ERR_PTR(rc);
 
-	md = cxi_map_sgtable_vf(lni, sgt, flags, &m_opts);
+	md = cxi_map_sgtable_vf(lni, sgt, &m_opts);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto cleanup;
@@ -1875,7 +1876,9 @@ struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 	struct cxi_lni_priv *lni_priv = container_of(lni, struct cxi_lni_priv, lni);
 	struct cxi_dev *cdev = lni_priv->dev;
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
-	struct ac_map_opts m_opts = {};
+	struct ac_map_opts m_opts = {
+		.flags = flags,
+	};
 
 	/* unsupported flags */
 	if (flags & CXI_MAP_ATS)
@@ -1895,10 +1898,9 @@ struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 		return ERR_PTR(-EINVAL);
 
 	if (!cdev->is_physfn)
-		return cxi_map_sgtable_vf(lni, sgt, flags, &m_opts);
+		return cxi_map_sgtable_vf(lni, sgt, &m_opts);
 
 	m_opts.va_start = 0;
-	m_opts.flags = flags;
 	m_opts.va_len = len;
 	m_opts.va_end = m_opts.va_len;
 
@@ -2294,7 +2296,7 @@ static struct cxi_md *cass_map_device_vf(struct cxi_lni *lni, u64 va,
 		m_opts.huge_shift = m_opts.page_shift;
 
 	/* Register the device DMA addresses with the PF. */
-	md = cxi_map_sgtable_vf(lni, dev_md_priv->sgt, flags, &m_opts);
+	md = cxi_map_sgtable_vf(lni, dev_md_priv->sgt, &m_opts);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto put_pages;

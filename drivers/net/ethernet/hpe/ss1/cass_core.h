@@ -224,7 +224,7 @@ static inline void pci_disable_pcie_error_reporting(void *p) {}
 #define K_PMD_NR(cac) BIT(K_PMD_ORDER(cac))
 #define KPFN_INC(cac, leaf) (leaf ? K_PMD_NR(cac) : ATU_PTE_NR(cac))
 #define ATU_FLAGS_MASK ~(CXI_MAP_READ | CXI_MAP_WRITE | CXI_MAP_ALLOC_MD | \
-			 CXI_MAP_FAULT | CXI_MAP_PREFETCH)
+			 CXI_MAP_FAULT | CXI_MAP_PREFETCH | CXI_MAP_HUGEPAGE)
 #define ATUCQ_INVALIDATE_ALL 0x200000000000000UL
 #define MAX_PG_TABLE_SIZE 15
 #define MIN_PG_TABLE_SIZE 3
@@ -288,7 +288,7 @@ struct ac_map_opts {
 	int huge_shift;
 	int ptg_mode;
 	bool hugepage_test;
-	bool is_huge_page;
+	bool is_huge_page; /* Obsoleted */
 	struct cxi_md_priv *md_priv;
 };
 

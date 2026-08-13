@@ -1423,11 +1423,13 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 	int i;
 	int j = 0;
 	int ret;
+	size_t inc;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
 	struct cass_ac *cac = md_priv->cac;
 	size_t plen = BIT(cac->page_shift);
 	size_t hlen = BIT(cac->huge_shift);
+	bool is_huge_page = md_priv->flags & CXI_MAP_HUGEPAGE;
 
 	mutex_lock(&md_priv->cac->ac_mutex);
 
@@ -1439,22 +1441,23 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 		atu_debug("dma_addr:%llx len:%lx\n", dma_addr, len);
 
 		while (len > 0) {
-			bool is_hp = ffsl(dma_addr) >= cac->huge_shift &&
+			is_huge_page = is_huge_page &&
+					ffsl(dma_addr) >= cac->huge_shift &&
 					ffsl(iova) >= cac->huge_shift &&
 					len >= hlen;
-			size_t inc = is_hp ? hlen : plen;
+			inc = is_huge_page ? hlen : plen;
 
 			atu_debug("iova:%llx dma_addr:%llx inc:%lx\n",
 				  iova, dma_addr, inc);
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
-						   md_priv->flags, is_hp);
+						   md_priv->flags, is_huge_page);
 			if (ret)
 				goto mirror_error;
 
 			iova += inc;
 			dma_addr += inc;
 			len -= inc;
-			i += KPFN_INC(cac, is_hp);
+			i += KPFN_INC(cac, is_huge_page);
 		}
 	}
 
@@ -1560,8 +1563,8 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 {
 	int i;
 	int ret;
-	int addr_inc;
-	bool is_huge_page;
+	size_t addr_inc;
+	bool is_huge_page = md_priv->flags & CXI_MAP_HUGEPAGE;
 	u64 iova = m_opts->iova;
 	struct page **pages = NULL;
 	struct cass_ac *cac = md_priv->cac;
@@ -1600,14 +1603,14 @@ int cass_pin_mirror(struct cxi_md_priv *md_priv, struct ac_map_opts *m_opts)
 		dma_addr_t dma_addr = sg_dma_address(sg);
 
 		while (len > 0 && md_len > 0) {
-			is_huge_page = m_opts->is_huge_page && (len >= hlen) &&
+			is_huge_page = is_huge_page && (len >= hlen) &&
 						!(iova & hmask);
 			addr_inc = is_huge_page ? hlen : plen;
 
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
 						   m_opts->flags, is_huge_page);
 			if (ret) {
-				pr_err("Error populating %d PTEs at index %d iova:%llx inc:%x\n",
+				pr_err("Error populating %d PTEs at index %d iova:%llx inc:%lx\n",
 				       npages, i, iova, addr_inc);
 				goto mirror_error;
 			}
@@ -1922,10 +1925,8 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 	size_t plen = BIT(cac->page_shift); /* page_size */
 	size_t hlen = BIT(cac->huge_shift); /* huge_size */
 	u64 pmask = ~MASK(cac->page_shift); /* page_mask */
-	/* Huge pages are only representable when the AC uses a two level
-	 * table (pg_table_size != 0, i.e. huge_shift > page_shift).
-	 */
-	bool huge_ok = cac->huge_shift > cac->page_shift;
+	bool is_huge_page = md_priv->flags & CXI_MAP_HUGEPAGE;
+	size_t inc;
 
 	cass_cond_lock(&cac->ac_mutex, need_lock);
 
@@ -1940,11 +1941,11 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 		 * remaining length are all huge page aligned/large enough.
 		 */
 		while (len > 0) {
-			bool is_huge_page = huge_ok &&
+			is_huge_page = is_huge_page &&
 					IS_ALIGNED(dma_addr, hlen) &&
 					IS_ALIGNED(iova, hlen) &&
 					len >= hlen;
-			size_t inc = is_huge_page ? hlen : plen;
+			inc = is_huge_page ? hlen : plen;
 
 			ret = cass_dma_addr_mirror(dma_addr, iova, cac,
 						   md_priv->flags, is_huge_page);

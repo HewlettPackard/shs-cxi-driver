@@ -130,7 +130,7 @@ int cass_mirror_fault(const struct ac_map_opts *m_opts, u64 *pfns, int count,
 		      uintptr_t addr, size_t len)
 {
 	long ret;
-	bool is_huge_page = false;
+	bool is_huge_page = m_opts->flags & CXI_MAP_HUGEPAGE;
 	unsigned long timeout;
 	struct hmm_range range = {};
 	u64 end = addr + len;
@@ -200,9 +200,8 @@ again:
 		goto again;
 	}
 
-	if (m_opts->is_huge_page && !(addr & addr_mask) &&
-			(len >= BIT(m_opts->huge_shift)))
-		is_huge_page = true;
+	is_huge_page = is_huge_page && !(addr & addr_mask) &&
+			len >= BIT(m_opts->huge_shift);
 
 	ret = cass_pfns_mirror(md_priv, m_opts, pfns, count, is_huge_page);
 

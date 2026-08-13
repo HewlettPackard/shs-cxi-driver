@@ -645,6 +645,7 @@ enum cxi_atu_map_flags {
 	CXI_MAP_UNUSED    = (1 << 10),
 	CXI_MAP_ALLOC_MD  = (1 << 11),
 	CXI_MAP_PREFETCH  = (1 << 12),
+	CXI_MAP_HUGEPAGE  = (1 << 13),
 };
 
 /* PTE allocation options */
