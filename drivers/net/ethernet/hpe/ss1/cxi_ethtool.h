@@ -21,6 +21,7 @@
 #define CXI_ETH_PF_R1_LINK_PARTNER           BIT(16) /* R1 link partner */
 
 /* c2 override flags */
+#define CXI_ETH_PF_LOOPBACK_SERDES           BIT(0)  /* SerDes loopback */
 #define CXI_ETH_PF_LOOPBACK_MEDIA            BIT(1)  /* Media side loopback in the transceiver */
 
 /* c2 only flags */
@@ -29,4 +30,8 @@
 #define PRIV_FLAGS_COUNT 18
 #define C2_ONLY_PRIV_FLAGS_COUNT 1
 
-#define LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)
+/* Ethtool loopback options for SL devices */
+#define SL_LOOPBACK_MODE (CXI_ETH_PF_LOOPBACK_SERDES | CXI_ETH_PF_LOOPBACK_HOST | CXI_ETH_PF_LOOPBACK_MEDIA)
+
+/* Ethtool loopback options for SBL devices */
+#define SBL_LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_EXTERNAL_LOOPBACK)

@@ -37,8 +37,6 @@
 #define SL_DFLT_PML_REC_RATE_LIMIT_MAX_TIME_MS     60
 #define SL_DFLT_PML_REC_RATE_LIMIT_WINDOW_SIZE_MS  1000
 
-#define CASS_SL_LOOPBACK_MODE (CXI_ETH_PF_INTERNAL_LOOPBACK | CXI_ETH_PF_LOOPBACK_MEDIA | CXI_ETH_PF_LOOPBACK_HOST)
-
 static unsigned int cass_sl_pml_rec_timeout_ms = SL_DFLT_PML_REC_TIMEOUT_MS;
 module_param(cass_sl_pml_rec_timeout_ms, uint, 0644);
 MODULE_PARM_DESC(cass_sl_pml_rec_timeout_ms, "PML recovery timeout in ms");
@@ -140,8 +138,8 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 		link_info->flags |= CXI_ETH_PF_LLR;
 
 	/* loopback */
-	if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE)
-		link_info->flags |= CXI_ETH_PF_INTERNAL_LOOPBACK;
+	if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_LOOPBACK_SERDES_ENABLE)
+		link_info->flags |= CXI_ETH_PF_LOOPBACK_SERDES;
 	else if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_LOOPBACK_HOST_ENABLE)
 		link_info->flags |= CXI_ETH_PF_LOOPBACK_HOST;
 	else if (cass_dev->sl.lgrp_config.options & SL_LGRP_CONFIG_OPT_LOOPBACK_MEDIA_ENABLE)
@@ -212,7 +210,7 @@ void cass_sl_mode_get(struct cass_dev *cass_dev, struct cxi_link_info *link_info
 		   "sl mode get (type = %u, AN = %u, speed = %u, llr = %lu, fec = %u, LB = %lu, R1 = %u)\n",
 		   link_info->port_type, link_info->autoneg, link_info->speed,
 		   link_info->flags & CXI_ETH_PF_LLR, !!(link_info->flags & CXI_ETH_PF_FEC_MONITOR),
-		   link_info->flags & CASS_SL_LOOPBACK_MODE, !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
+		   link_info->flags & SL_LOOPBACK_MODE, !!(link_info->flags & CXI_ETH_PF_R1_LINK_PARTNER));
 }
 
 static void cass_sl_mode_set_autoneg_enable(struct cass_dev *cass_dev)
@@ -318,8 +316,8 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 
 	/* loopback */
 	cxidev_dbg(&cass_dev->cdev, "sl mode set (loopback_mode = %lu)\n",
-		   link_info->flags & CASS_SL_LOOPBACK_MODE);
-	switch (link_info->flags & CASS_SL_LOOPBACK_MODE) {
+		   link_info->flags & SL_LOOPBACK_MODE);
+	switch (link_info->flags & SL_LOOPBACK_MODE) {
 	case 0:
 		if (!(lgrp_config->options & SL_LGRP_CONFIG_OPT_LOOPBACK_MASK))
 			break;
@@ -335,11 +333,11 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 			link_config->hpe_map &= ~SL_LINK_CONFIG_HPE_LINKTRAIN;
 		is_mode_changed = true;
 		break;
-	case CXI_ETH_PF_INTERNAL_LOOPBACK:
-		if (lgrp_config->options & SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE)
+	case CXI_ETH_PF_LOOPBACK_SERDES:
+		if (lgrp_config->options & SL_LGRP_CONFIG_OPT_LOOPBACK_SERDES_ENABLE)
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set serdes loopback to on\n");
-		lgrp_config->options |= SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
+		cxidev_dbg(&cass_dev->cdev, "sl mode set loopback serdes to on\n");
+		lgrp_config->options |= SL_LGRP_CONFIG_OPT_LOOPBACK_SERDES_ENABLE;
 		cass_sl_mode_set_autoneg_disable(cass_dev);
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_HOST_ENABLE;
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_MEDIA_ENABLE;
@@ -354,7 +352,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		cxidev_dbg(&cass_dev->cdev, "sl mode set remote loopback to on\n");
 		lgrp_config->options |= SL_LGRP_CONFIG_OPT_LOOPBACK_MEDIA_ENABLE;
 		cass_sl_mode_set_autoneg_disable(cass_dev);
-		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
+		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_SERDES_ENABLE;
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_HOST_ENABLE;
 		cass_dev->sl.old_an_mode = link_info->autoneg;
 		cass_dev->sl.old_lt_mode = (link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN);
@@ -367,7 +365,7 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		cxidev_dbg(&cass_dev->cdev, "sl mode set loopback host to on\n");
 		lgrp_config->options |= SL_LGRP_CONFIG_OPT_LOOPBACK_HOST_ENABLE;
 		cass_sl_mode_set_autoneg_disable(cass_dev);
-		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_SERDES_LOOPBACK_ENABLE;
+		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_SERDES_ENABLE;
 		lgrp_config->options &= ~SL_LGRP_CONFIG_OPT_LOOPBACK_MEDIA_ENABLE;
 		cass_dev->sl.old_an_mode = link_info->autoneg;
 		cass_dev->sl.old_lt_mode = (link_config->hpe_map & SL_LINK_CONFIG_HPE_LINKTRAIN);

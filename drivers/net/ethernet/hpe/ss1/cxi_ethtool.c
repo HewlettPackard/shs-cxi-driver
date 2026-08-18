@@ -92,6 +92,8 @@ static void cxi_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 		}
 
 		if (cassini_version(&dev->cxi_dev->prop, CASSINI_2)) {
+			strscpy_pad(p, "loopback-serdes", ETH_GSTRING_LEN);
+
 			dst = p + 1 * ETH_GSTRING_LEN;
 			strscpy_pad(dst, "loopback-media", ETH_GSTRING_LEN);
 		}
@@ -609,7 +611,7 @@ cxi_set_link_ksettings(struct net_device *ndev,
 		return -ENOTSUPP;
 
 	if (dev->is_c2 && s->base.autoneg == AUTONEG_ENABLE &&
-	    (link_info.flags & LOOPBACK_MODE) != 0) {
+	    (link_info.flags & SL_LOOPBACK_MODE) != 0) {
 		netdev_err(ndev,
 			   "autoneg must not be enabled in loopback mode\n");
 		return -EINVAL;
@@ -630,7 +632,7 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	u32 changes;
 	u32 old_flags;
 	u32 debug_flags;
-	u32 loopback_mask;
+	u32 loopback_mode;
 
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 	cxi_link_flags_get(dev->cxi_dev, &debug_flags);
@@ -642,10 +644,10 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	if (!changes)
 		return 0;
 
-	loopback_mask = dev->is_c2 ? (LOOPBACK_MODE | CXI_ETH_PF_LOOPBACK_HOST) : LOOPBACK_MODE;
+	loopback_mode = dev->is_c2 ? SL_LOOPBACK_MODE : SBL_LOOPBACK_MODE;
 
-	if ((changes & loopback_mask)) {
-		u32 loopback_mode = flags & loopback_mask;
+	if ((changes & loopback_mode)) {
+		u32 loopback_mode = flags & loopback_mode;
 
 		if (hweight_long(loopback_mode) > 1) {
 			netdev_err(dev->ndev,
