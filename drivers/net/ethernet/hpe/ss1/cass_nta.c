@@ -638,7 +638,7 @@ void cass_nta_free(struct cass_dev *hw, struct cass_nta *nta)
 	dma_unmap_page(&hw->cdev.pdev->dev, nta->root_page_dma_addr,
 		       PAGE_SIZE << nta->root_order, DMA_TO_DEVICE);
 	__free_pages(nta->root_page, nta->root_order);
-	kfree(nta);
+	kvfree(nta);
 }
 
 static struct cass_nta *cass_nta_alloc(struct cass_ac *cac, int l0_entries,
@@ -648,7 +648,7 @@ static struct cass_nta *cass_nta_alloc(struct cass_ac *cac, int l0_entries,
 	struct cass_nta *nta;
 	int ret;
 
-	nta = kzalloc(struct_size(nta, l1, l0_entries), GFP_KERNEL);
+	nta = kvzalloc(struct_size(nta, l1, l0_entries), GFP_KERNEL);
 	if (!nta)
 		return ERR_PTR(-ENOMEM);
 
@@ -685,7 +685,7 @@ static struct cass_nta *cass_nta_alloc(struct cass_ac *cac, int l0_entries,
 map_fail:
 	__free_pages(nta->root_page, nta->root_order);
 alloc_pages_fail:
-	kfree(nta);
+	kvfree(nta);
 
 	return ERR_PTR(ret);
 }
