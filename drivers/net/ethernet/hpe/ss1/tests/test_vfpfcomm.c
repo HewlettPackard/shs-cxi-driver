@@ -13,6 +13,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
+#include <linux/ktime.h>
 #include <uapi/ethernet/cxi-abi.h>
 #include <linux/hpe/cxi/cxi.h>
 #include <linux/vmalloc.h>
@@ -44,7 +45,7 @@ static int msg_relay(void *data, unsigned int vf_num,
 		     const void *req, size_t req_len, uid_t uid, gid_t gid,
 		     void **rsp, size_t rsp_buf_size, size_t *rsp_len)
 {
-	pr_info("Got message from VF %d, len %zu\n", vf_num, req_len);
+	pr_debug("Got message from VF %d, len %zu\n", vf_num, req_len);
 
 	BUG_ON(data == NULL);
 
@@ -54,7 +55,7 @@ static int msg_relay(void *data, unsigned int vf_num,
 	else if (memcmp(request_msg, req, req_len))
 		pr_err("BAD: Request has unexpected data\n");
 	else
-		pr_info("Request is valid\n");
+		pr_debug("Request is valid\n");
 
 	/* Prepare the reply. Reply will get freed by the VF message handler. */
 	*rsp_len = strlen(reply_msg) + 1;
@@ -64,6 +65,63 @@ static int msg_relay(void *data, unsigned int vf_num,
 	strcpy(*rsp, reply_msg);
 
 	return 0;
+}
+
+/* Number of requests sent beyond the burst allowance, to make the resulting
+ * throttling delay clearly measurable above scheduling noise.
+ */
+#define RATE_LIMIT_TEST_OVER_COUNT 200
+
+/* These mirror the VF_REQ_RATE_BURST_DFLT / VF_REQ_RATE_LIMIT_DFLT defaults in
+ * cass_sriov.c. If those defaults change, or vf_req_rate_burst/vf_req_rate_limit
+ * module params are overridden, this test's expected timing will be off.
+ */
+#define RATE_LIMIT_TEST_BURST_ASSUMED 50
+#define RATE_LIMIT_TEST_RATE_ASSUMED  200
+
+/* Flood the VF->PF request channel past its leaky-bucket burst allowance and
+ * verify the PF throttles it rather than processing the flood immediately.
+ */
+static bool test_rate_limit(struct cxi_dev *dev)
+{
+	unsigned int total = RATE_LIMIT_TEST_BURST_ASSUMED + RATE_LIMIT_TEST_OVER_COUNT;
+	char reply[100];
+	size_t reply_len;
+	ktime_t start, end;
+	s64 elapsed_ms, expected_min_ms;
+	unsigned int i;
+	int rc;
+
+	pr_info("Rate limit test: sending %u requests\n", total);
+
+	start = ktime_get();
+	for (i = 0; i < total; i++) {
+		reply_len = sizeof(reply);
+		rc = cxi_send_msg_to_pf(dev, request_msg, strlen(request_msg) + 1,
+					reply, &reply_len);
+		if (rc != 0) {
+			pr_err("BAD: rate limit test: request %u failed: %d\n", i, rc);
+			return false;
+		}
+	}
+	end = ktime_get();
+
+	elapsed_ms = ktime_to_ms(ktime_sub(end, start));
+	expected_min_ms = MSEC_PER_SEC * RATE_LIMIT_TEST_OVER_COUNT / RATE_LIMIT_TEST_RATE_ASSUMED;
+
+	pr_info("Rate limit test: %u requests took %lld ms (expected >= %lld ms)\n",
+		total, elapsed_ms, expected_min_ms);
+
+	/* Generous slack for scheduling jitter; this only needs to show that
+	 * throttling occurred, not match the configured rate precisely.
+	 */
+	if (elapsed_ms < expected_min_ms / 2) {
+		pr_err("BAD: rate limit test: requests were not throttled as expected\n");
+		return false;
+	}
+
+	pr_info("Rate limit test: requests were throttled as expected\n");
+	return true;
 }
 
 /* Send a message to the PF, which will be relayed to msg_relay(), and
@@ -76,21 +134,29 @@ static void test_work(struct work_struct *work)
 	char reply[100];
 	size_t reply_len;
 	int rc;
+	bool pass_msgtest = false;
+	bool pass_ratetest = false;
 
 	reply_len = sizeof(reply);
 	rc = cxi_send_msg_to_pf(dev, request_msg, strlen(request_msg) + 1,
 				reply, &reply_len);
 
-	if (rc != 0)
+	if (rc != 0) {
 		pr_err("BAD: Reply has return code %d\n", rc);
-	else if (reply_len != strlen(reply_msg) + 1)
+	} else if (reply_len != strlen(reply_msg) + 1) {
 		pr_err("BAD: Reply has unexpected length %zu\n", reply_len);
-	else if (memcmp(reply_msg, reply, strlen(reply_msg) + 1))
+	} else if (memcmp(reply_msg, reply, strlen(reply_msg) + 1)) {
 		pr_err("BAD: Reply has unexpected data\n");
-	else
+	} else {
 		pr_info("Reply is valid\n");
+		pass_msgtest = true;
+	}
+
+	pass_ratetest = test_rate_limit(dev);
 
 	pr_info("Test done\n");
+	pr_info("Message test: %s\n", pass_msgtest ? "PASS" : "FAIL");
+	pr_info("Rate limit test: %s\n", pass_ratetest ? "PASS" : "FAIL");
 }
 
 /* Core is adding a new device */

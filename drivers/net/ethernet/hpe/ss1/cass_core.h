@@ -544,6 +544,9 @@ struct cass_vf {
 	struct mutex notif_lock;
 
 	struct task_struct *kvm_task;
+
+	/* Timestamp for rate-limiting VF->PF requests */
+	ktime_t req_bucket_ts;
 };
 
 enum cxi_rmu_eth_filter_mode {
@@ -658,6 +661,10 @@ struct cass_dev {
 	struct task_struct *vf_listener;
 	struct task_struct *vf_notif_handler;
 	struct completion vf_notif_ready;
+
+	/* Timestamp for rate-limiting PF->VF notifications */
+	ktime_t notif_bucket_ts;
+
 	struct cass_vf vfs[C_NUM_VFS];
 	cxi_msg_relay_t msg_relay;
 	void *msg_relay_data;

@@ -18,9 +18,12 @@
 
 #include <linux/pci.h>
 #include <linux/types.h>
+#include <linux/jiffies.h>
 #include <linux/kmod.h>
+#include <linux/ktime.h>
 #include <linux/kthread.h>
 #include <linux/kvm_host.h>
+#include <linux/math64.h>
 #include <linux/net.h>
 #include <linux/version.h>
 #include <linux/vfio.h>
@@ -135,6 +138,62 @@ EXPORT_SYMBOL(cxi_notify_vfs_async_event);
  * CXI_SRIOV_PF_TIMEOUT to ensure VF responds before PF's read times out.
  */
 #define CXI_SRIOV_IRQ_TIMEOUT (CXI_SRIOV_PF_TIMEOUT / 4)
+
+/* Rate limits for the VF vsock message channel. */
+#define VF_RATE_LIMIT_DFLT 200
+#define VF_RATE_BURST_DFLT 50
+
+static unsigned int vf_rate_limit = VF_RATE_LIMIT_DFLT;
+module_param(vf_rate_limit, uint, 0644);
+MODULE_PARM_DESC(vf_rate_limit,
+		 "Max sustained message rate (msgs/sec) accepted over a VF message channel, 0 to disable");
+
+static unsigned int vf_rate_burst = VF_RATE_BURST_DFLT;
+module_param(vf_rate_burst, uint, 0644);
+MODULE_PARM_DESC(vf_rate_burst,
+		 "Max burst (messages) allowed above the sustained VF message rate");
+
+/* Rate-limiting for VF requests and notifications, using the GCRA leaky-bucket
+ * algorithm. bucket_ts is the time at which the bucket is next empty, given no
+ * further arrivals. Charges one message against the bucket, then sleeps as
+ * needed to conform to the given rate (messages/sec) and burst count, in short
+ * slices so a kthread throttled here still reacts promptly to kthread_stop().
+ */
+static void msg_ratelimit(ktime_t *bucket_ts, unsigned int rate, unsigned int burst)
+{
+	const s64 slice_ns = 100LL * NSEC_PER_MSEC;
+	ktime_t now = ktime_get();
+	ktime_t interval;
+	ktime_t max_backlog;
+	ktime_t new_ts;
+	s64 delay_ns;
+
+	if (!rate)
+		return;
+
+	interval = ns_to_ktime(NSEC_PER_SEC / rate);
+	max_backlog = ns_to_ktime(div_u64((u64)burst * NSEC_PER_SEC, rate));
+
+	if (ktime_before(*bucket_ts, now))
+		*bucket_ts = now;
+
+	new_ts = ktime_add(*bucket_ts, interval);
+	delay_ns = ktime_to_ns(ktime_sub(new_ts, ktime_add(now, max_backlog)));
+
+	if (delay_ns > 0)
+		new_ts = ktime_add(now, max_backlog);
+	else
+		delay_ns = 0;
+
+	*bucket_ts = new_ts;
+
+	while (delay_ns > 0 && !kthread_should_stop()) {
+		s64 slice = min(delay_ns, slice_ns);
+
+		schedule_timeout_interruptible(nsecs_to_jiffies(slice));
+		delay_ns -= slice;
+	}
+}
 
 static int write_message_to_vsock(struct socket *sock, const void *msg,
 				  size_t msg_len, int msg_rc, int seq,
@@ -427,6 +486,9 @@ static int pf_vf_msghandler(void *data)
 		cxidev_dbg(&hw->cdev, "vf %d: got %ld byte message", vf->vf_idx,
 			   request_len);
 
+		/* Potentially sleep here to enforce message rate limit */
+		msg_ratelimit(&vf->req_bucket_ts, vf_rate_limit, vf_rate_burst);
+
 		/* Use the uid/gid that arrived with the VF message directly,
 		 * for both host-bound and VM-bound VFs. Isolation between
 		 * VFs/VMs is enforced structurally on the PF: each VF's
@@ -707,6 +769,7 @@ static void handle_vf_req_conn(struct cass_dev *hw,
 	vf->vf_idx = vf_idx;
 	vf->hw = hw;
 	vf->req_sock = incoming;
+	vf->req_bucket_ts = ktime_get();
 	get_random_bytes(&vf->token, sizeof(vf->token));
 
 	rc = cass_ac_phys_alloc(hw, true, vf_idx);
@@ -1105,6 +1168,9 @@ static int vf_notif_handler(void *data)
 
 		cxidev_dbg(&hw->cdev, "received %ld byte notification from PF", msg_len);
 
+		/* Potentially sleep here to enforce message rate limit */
+		msg_ratelimit(&hw->notif_bucket_ts, vf_rate_limit, vf_rate_burst);
+
 		rc = dispatch_vf_notif(hw, msg, msg_len, &rsp, &rsp_len);
 		if (msg != msg_buf)
 			kvfree(msg);
@@ -1335,6 +1401,7 @@ int cass_vf_init(struct cass_dev *hw)
 
 	/* Start notification handler thread */
 	init_completion(&hw->vf_notif_ready);
+	hw->notif_bucket_ts = ktime_get();
 	hw->vf_notif_handler = kthread_run(vf_notif_handler, hw, "cxi_vf_notif");
 	if (IS_ERR(hw->vf_notif_handler)) {
 		cxidev_err(&hw->cdev, "failed to start notification handler");

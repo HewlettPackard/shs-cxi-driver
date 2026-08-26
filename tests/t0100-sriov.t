@@ -79,7 +79,11 @@ test_expect_success SRIOV "Inserting VF/PF comm test driver" "
 "
 
 test_expect_success SRIOV "Check VF/PF comm" "
-	[ $(dmesg | grep -c 'Reply is valid') -eq $TOTALVFS ]
+	[ $(dmesg | grep -c 'Message test: PASS') -eq $TOTALVFS ]
+"
+
+test_expect_success SRIOV "Check VF/PF ratelimit" "
+	[ $(dmesg | grep -c 'Rate limit test: PASS') -eq $TOTALVFS ]
 "
 
 test_expect_success SRIOV "Remove VF/PF comm test drive, reinsert cxi-user" "
