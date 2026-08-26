@@ -17,8 +17,8 @@ Validates the development environment prerequisites. Run before starting work.
 ```
 
 Checks for: build tools (make, gcc, git, perl), required sibling repositories
-(`slingshot_base_link`, `sl-driver`, `nic-emu`, `virtme`, `hms-artifacts`), and
-kernel build tree. Outputs pass/fail with a summary line.
+(`slingshot_base_link`, `sl-driver`, `nic-emu`, `virtme`, `hms-artifacts`,
+`cassini-headers`), and kernel build tree. Outputs pass/fail with a summary line.
 
 ---
 

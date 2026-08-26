@@ -8,6 +8,7 @@ Load it with `useAgentsMdFile: true` in `.vscode/settings.json` (already configu
 | Task | Agent | Use When |
 |------|-------|----------|
 | Writing or modifying C kernel driver code | [coding](.github/agents/coding.agent.md) | Implementing features, fixing bugs, writing cass_*.c or cxi_*.c |
+| Writing or extending integration tests | [testing](.github/agents/testing.agent.md) | New test files, extending existing tests, choosing test number ranges |
 | Reviewing a PR or change for safety | [pr-review](.github/agents/pr-review.agent.md) | Before submitting a PR; reviewing hardware-risk changes |
 | Debugging hardware / driver issues | [debugging](.github/agents/debugging.agent.md) | Kernel panics, hardware hangs, unexpected behavior |
 | Updating READMEs, ABI docs, inline kernel-doc | [documentation](.github/agents/documentation.agent.md) | Adding or updating any documentation file |
@@ -26,6 +27,7 @@ Load it with `useAgentsMdFile: true` in `.vscode/settings.json` (already configu
 |-------|------|--------|
 | All C source files | [kernel-driver-patterns](.github/instructions/kernel-driver-patterns.instructions.md) | Naming, error handling, module load order, memory alignment |
 | Style and commit | [cxi-code-style](.github/instructions/cxi-code-style.instructions.md) | checkpatch rules, commit format, PR checklist |
+| trace-debug/ scripts | [trace-debug](.github/instructions/trace-debug.instructions.md) | bpftrace conventions, tracepoint headers, naming rules |
 
 ## Available Prompts (task templates)
 
@@ -33,6 +35,7 @@ Load it with `useAgentsMdFile: true` in `.vscode/settings.json` (already configu
 |------|--------|
 | Code review | [code-review](.github/prompts/code-review.prompt.md) |
 | Generate test | [generate-test](.github/prompts/generate-test.prompt.md) |
+| Security review | [security-review](.github/prompts/security-review.prompt.md) |
 
 ## Quick Reference
 
