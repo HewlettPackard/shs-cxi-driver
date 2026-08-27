@@ -161,6 +161,8 @@ void cass_sbl_mode_set(struct cass_dev *hw, const struct cxi_link_info *link_inf
 {
 	struct cass_link_attr attrs = hw->port->lattr;
 
+	cass_sbl_link_speed_to_mode(link_info->speed, &attrs.bl.link_mode);
+
 	switch (link_info->flags & LOOPBACK_MODE) {
 	case 0:
 		attrs.bl.loopback_mode = SBL_LOOPBACK_MODE_OFF;
