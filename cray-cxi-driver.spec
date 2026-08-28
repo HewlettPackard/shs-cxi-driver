@@ -29,7 +29,7 @@
 %endif
 
 Name:           cray-cxi-driver
-Version:        1.0.0
+Version:        1.1.0
 Release:        %(echo ${BUILD_METADATA})
 Summary:        HPE Cassini Driver
 License:        GPL-2.0
