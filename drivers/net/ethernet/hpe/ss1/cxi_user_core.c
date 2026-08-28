@@ -1146,7 +1146,7 @@ static int cxi_user_svc_alloc(struct user_client *client,
 
 		rc = cxi_svc_alloc_internal(client->ucxi->dev, &cmd->svc_desc,
 					    &fail_info, name,
-					    true, client->vf_num);
+					    true, client->vf_num, false);
 		if (rc < 0) {
 			resp.fail_info = fail_info;
 			ret = rc;
@@ -1183,6 +1183,65 @@ static int cxi_user_svc_alloc(struct user_client *client,
 		return -EFAULT;
 
 	return ret;
+}
+
+static int cxi_user_svc_alloc_parent(struct user_client *client,
+				     const void *cmd_in, size_t cmd_len,
+				     void **resp_out, size_t resp_buf_size,
+				     size_t *resp_out_len)
+{
+	const struct cxi_svc_alloc_cmd *cmd = cmd_in;
+	struct cxi_svc_fail_info fail_info = {};
+	struct cxi_svc_alloc_resp resp = {};
+	int ret = 0;
+	int rc;
+
+	/* Parent services are a PF-only concept; VFs never own children. */
+	if (client->is_vf)
+		return -EPERM;
+
+	rc = cxi_svc_alloc_parent(client->ucxi->dev, &cmd->svc_desc, &fail_info,
+				  "user");
+	if (rc < 0) {
+		resp.fail_info = fail_info;
+		ret = rc;
+	} else {
+		resp.svc_id = rc;
+	}
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
+			  resp_out_len))
+		return -EFAULT;
+
+	return ret;
+}
+
+static int cxi_user_svc_is_parent_get(struct user_client *client,
+				      const void *cmd_in, size_t cmd_len,
+				      void **resp_out, size_t resp_buf_size,
+				      size_t *resp_out_len)
+{
+	const struct cxi_svc_is_parent_get_cmd *cmd = cmd_in;
+	struct cxi_svc_is_parent_get_resp resp = {};
+	unsigned int svc_id = cmd->svc_id;
+	int rc;
+
+	if (client->is_vf) {
+		rc = vf_svc_to_pf(client, svc_id);
+		if (rc < 0)
+			return rc;
+		svc_id = rc;
+	}
+
+	rc = cxi_svc_is_parent(client->ucxi->dev, svc_id, &resp.is_parent);
+	if (rc)
+		return rc;
+
+	if (copy_response(client, &resp, sizeof(resp), resp_out, resp_buf_size,
+			  resp_out_len))
+		return -EFAULT;
+
+	return 0;
 }
 
 static int cxi_user_svc_destroy(struct user_client *client,
@@ -4031,6 +4090,15 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.name       = "SVC_UPDATE",
 		.handler    = cxi_user_svc_update,
 		.admin_only = true, },
+	[CXI_OP_SVC_ALLOC_PARENT] = {
+		.req_size   = sizeof(struct cxi_svc_alloc_cmd),
+		.name       = "SVC_ALLOC_PARENT",
+		.handler    = cxi_user_svc_alloc_parent,
+		.admin_only = true, },
+	[CXI_OP_SVC_IS_PARENT_GET] = {
+		.req_size   = sizeof(struct cxi_svc_is_parent_get_cmd),
+		.name       = "SVC_IS_PARENT_GET",
+		.handler    = cxi_user_svc_is_parent_get, },
 	[CXI_OP_SBUS_OP_RESET] = {
 		.req_size   = sizeof(struct cxi_sbus_op_reset_cmd),
 		.name       = "SBUS_OP_RESET",

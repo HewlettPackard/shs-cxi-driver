@@ -906,7 +906,7 @@ int create_vf_sysfs(struct cass_dev *hw)
 
 	for (i = 0; i < C_NUM_VFS; i++) {
 		memset(&hw->vf_cfg[i].kobj, 0, sizeof(hw->vf_cfg[i].kobj));
-		hw->vf_cfg[i].svc_id = CXI_DEFAULT_SVC_ID;
+		hw->vf_cfg[i].svc_id = 0;
 		hw->vf_cfg[i].telem_enabled = true;
 		rc = kobject_init_and_add(&hw->vf_cfg[i].kobj, &vf_kobj_type,
 					  &hw->vf_kobj, "%d", i);

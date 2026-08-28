@@ -68,6 +68,7 @@ resource_limits: 1
 restricted_members: 0
 restricted_tcs: 0
 exclusive_cp: 0
+is_parent: 1
 limits:
   - name: ACs
     max: 8

@@ -406,6 +406,9 @@ int cxi_inbound_wait(struct cxi_dev *cdev);
 
 int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc,
 		  struct cxi_svc_fail_info *fail_info, char *name);
+int cxi_svc_alloc_parent(struct cxi_dev *dev, const struct cxi_svc_desc *svc,
+			 struct cxi_svc_fail_info *fail_info, char *name);
+int cxi_svc_is_parent(struct cxi_dev *dev, unsigned int svc_id, bool *is_parent);
 int cxi_svc_destroy(struct cxi_dev *dev, unsigned int svc_id);
 int cxi_svc_list_get(struct cxi_dev *dev, int count,
 		     struct cxi_svc_desc *svc_list);

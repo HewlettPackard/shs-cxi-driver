@@ -152,6 +152,8 @@ enum cxi_command_opcode {
 		CXI_OP_ETH_MC_SW_TX_FWD_PKT,
 
 		CXI_OP_TELEM_GET,
+		CXI_OP_SVC_ALLOC_PARENT,
+		CXI_OP_SVC_IS_PARENT_GET,
 
 		CXI_OP_MAX,
 };
@@ -1308,6 +1310,16 @@ struct cxi_inbound_wait_cmd {
 
 struct cxi_svc_get_exclusive_cp_resp {
 	bool exclusive_cp;
+};
+
+struct cxi_svc_is_parent_get_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+	unsigned int svc_id;
+};
+
+struct cxi_svc_is_parent_get_resp {
+	bool is_parent;
 };
 
 /**

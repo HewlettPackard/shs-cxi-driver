@@ -99,6 +99,7 @@ struct cxi_lni *cxi_lni_alloc_internal(struct cxi_dev *dev, unsigned int svc_id,
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_lni_priv *lni_priv;
+	struct cxi_svc_priv *svc_priv;
 	struct cxi_rgroup *rgroup;
 	int rc;
 	int id;
@@ -114,6 +115,17 @@ struct cxi_lni *cxi_lni_alloc_internal(struct cxi_dev *dev, unsigned int svc_id,
 		err = ERR_PTR(-EKEYREVOKED);
 		goto dec_svc;
 	}
+
+	mutex_lock(&hw->svc_lock);
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (svc_priv && svc_priv->is_parent) {
+		cxidev_err(dev, "Cannot allocate LNI using a VF-parent service (ID %d)\n",
+			   svc_id);
+		mutex_unlock(&hw->svc_lock);
+		err = ERR_PTR(-EINVAL);
+		goto dec_svc;
+	}
+	mutex_unlock(&hw->svc_lock);
 
 	/* Verify calling user/group has permission to use this service */
 	if (!cxi_rgroup_valid_user(rgroup)) {

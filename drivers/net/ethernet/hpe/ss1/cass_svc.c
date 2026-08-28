@@ -299,23 +299,15 @@ static int validate_child_vnis(struct cxi_dev *dev,
 	int j;
 
 	if (!parent->svc_desc.restricted_vnis) {
-		struct cxi_tx_attr parent_tx_attr;
 		unsigned int parent_min, parent_max;
-		int rc;
 
-		if (!parent->tx_profile[0]) {
+		if (!parent->has_vni_range) {
 			pr_debug("%s: parent has no VNI range set\n", __func__);
 			return -EPERM;
 		}
 
-		rc = cxi_tx_profile_get_info(dev, parent->tx_profile[0],
-					     &parent_tx_attr, NULL);
-		if (rc)
-			return rc;
-
-		parent_min = parent_tx_attr.vni_attr.match;
-		parent_max = parent_tx_attr.vni_attr.match +
-			     parent_tx_attr.vni_attr.ignore;
+		parent_min = parent->vni_range_min;
+		parent_max = parent->vni_range_max;
 
 		for (i = 0; i < child_desc->num_vld_vnis; i++) {
 			if (child_desc->vnis[i] < parent_min ||
@@ -774,10 +766,6 @@ static void release_rxtx_profiles(struct cxi_dev *dev,
 {
 	int i;
 
-	/* Child services borrow the parent's profiles; never free them. */
-	if (svc_priv->parent)
-		return;
-
 	remove_profile_ac_entries(dev, svc_priv);
 
 	for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
@@ -889,38 +877,56 @@ static int svc_enable(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 		      bool enable)
 	__must_hold(&hw->svc_lock)
 {
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	int i;
 	int rc = 0;
 
 	if (enable) {
+		if (svc_priv->parent && !svc_priv->parent->svc_desc.enable) {
+			cxidev_err(dev, "Cannot enable child service %u when parent service %u is disabled\n",
+				   svc_priv->svc_desc.svc_id,
+				   svc_priv->parent->svc_desc.svc_id);
+			return -EKEYREVOKED;
+		}
+
 		cxi_rgroup_enable(svc_priv->rgroup);
 		svc_priv->svc_desc.enable = 1;
 
-		/* Child services borrow the parent's profiles which are already
-		 * enabled; skip profile enable/disable to avoid double-toggling.
-		 */
-		if (!svc_priv->parent) {
-			for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
-				rc = cxi_tx_profile_enable(dev,
-							   svc_priv->tx_profile[i]);
-				if (rc)
-					goto disable;
+		if (svc_priv->is_parent)
+			/* Parent service is enabled, but child services
+			 * are not yet created.  Do not enable profiles
+			 * until child services are created.
+			 */
+			return 0;
 
-				rc = cxi_rx_profile_enable(dev,
-							   svc_priv->rx_profile[i]);
-				if (rc)
-					goto disable;
-			}
+		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
+			rc = cxi_tx_profile_enable(dev,
+						   svc_priv->tx_profile[i]);
+			if (rc)
+				goto disable;
+
+			rc = cxi_rx_profile_enable(dev,
+						   svc_priv->rx_profile[i]);
+			if (rc)
+				goto disable;
 		}
 
 		return 0;
 	}
 
 disable:
+	for (i = 0; i < C_NUM_VFS; i++) {
+		if (hw->vf_cfg[i].svc_id == svc_priv->svc_desc.svc_id) {
+			cxidev_err(dev, "Service %d is in use by VFs",
+				   svc_priv->svc_desc.svc_id);
+			return -EBUSY;
+		}
+	}
+
 	cxi_rgroup_disable(svc_priv->rgroup);
 	svc_priv->svc_desc.enable = 0;
 
-	if (!svc_priv->parent) {
+	if (!svc_priv->is_parent) {
 		for (i = 0; i < svc_priv->svc_desc.num_vld_vnis; i++) {
 			cxi_tx_profile_disable(dev, svc_priv->tx_profile[i]);
 			cxi_rx_profile_disable(dev, svc_priv->rx_profile[i]);
@@ -941,13 +947,14 @@ disable:
  * @name: name for service
  * @is_vf: whether the service is being allocated for a VF
  * @vf_num: VF number if is_vf is true
+ * @is_parent: whether this service acts as a VF resource budget ceiling
  *
  * Return: Service ID on success. Else, negative errno value.
  */
 int cxi_svc_alloc_internal(struct cxi_dev *dev,
 			   const struct cxi_svc_desc *svc_desc,
 			   struct cxi_svc_fail_info *fail_info,
-			   char *name, bool is_vf, u8 vf_num)
+			   char *name, bool is_vf, u8 vf_num, bool is_parent)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
@@ -960,6 +967,9 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	};
 	int i;
 
+	if (is_vf && is_parent)
+		return -EINVAL;
+
 	rc = validate_descriptor(hw, svc_desc);
 	if (rc)
 		return rc;
@@ -970,6 +980,7 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	svc_priv->svc_desc = *svc_desc;
 	svc_priv->is_vf  = is_vf;
 	svc_priv->vf_num = vf_num;
+	svc_priv->is_parent = is_parent;
 
 	rgroup = cxi_dev_alloc_rgroup(dev, &attr);
 	if (IS_ERR(rgroup)) {
@@ -998,17 +1009,6 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	if (rc)
 		goto remove_idr;
 
-	/* If restricted_vnis is set setup profiles now. Otherwise they will
-	 * be set up later when a vni range is requested.
-	 * VF child services borrow the parent's profiles instead of
-	 * allocating their own (parent profiles already cover these VNIs).
-	 */
-	if (svc_desc->restricted_vnis && !is_vf) {
-		rc = alloc_rxtx_profiles(dev, svc_priv, NULL);
-		if (rc)
-			goto remove_rgrp_ac_entries;
-	}
-
 	mutex_lock(&hw->svc_lock);
 
 	if (is_vf) {
@@ -1023,41 +1023,22 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 			rc = validate_child_vnis(dev, svc_priv->parent, svc_desc);
 			if (rc)
 				goto unlock;
-
-			/* Borrow parent's existing profiles for the matching VNIs.
-			 * The parent's profiles are already in the global list and
-			 * cover these VNIs; no new allocation is needed.
-			 *
-			 * When the parent uses a VNI range (restricted_vnis=0),
-			 * its single range profile covers all VNIs in the range;
-			 * borrow it for every child VNI.
-			 */
-			if (!svc_priv->parent->svc_desc.restricted_vnis) {
-				for (i = 0; i < svc_desc->num_vld_vnis; i++) {
-					svc_priv->tx_profile[i] = svc_priv->parent->tx_profile[0];
-					svc_priv->rx_profile[i] = svc_priv->parent->rx_profile[0];
-				}
-			} else {
-				struct cxi_svc_priv *par = svc_priv->parent;
-
-				for (i = 0; i < svc_desc->num_vld_vnis; i++) {
-					int pi;
-
-					for (pi = 0; pi < par->svc_desc.num_vld_vnis; pi++) {
-						if (par->svc_desc.vnis[pi] != svc_desc->vnis[i])
-							continue;
-						svc_priv->tx_profile[i] = par->tx_profile[pi];
-						svc_priv->rx_profile[i] = par->rx_profile[pi];
-						break;
-					}
-				}
-			}
 		}
+	}
+
+	/* If restricted_vnis is set setup profiles now. Otherwise they will
+	 * be set up later when a vni range is requested. Parent services defer
+	 * profile creation until child services are created.
+	 */
+	if (svc_desc->restricted_vnis && !is_parent) {
+		rc = alloc_rxtx_profiles(dev, svc_priv, NULL);
+		if (rc)
+			goto unlock;
 	}
 
 	rc = reserve_rsrcs(hw, svc_priv, fail_info);
 	if (rc)
-		goto unlock;
+		goto release_profiles;
 
 	/* Track child reservation in parent after resources are committed. */
 	if (svc_priv->parent) {
@@ -1114,11 +1095,14 @@ free_resources:
 				svc_desc->limits.type[i].res;
 	}
 	free_rsrcs(svc_priv);
+release_profiles:
+	/* Only alloc_rxtx_profiles() success reaches here; its own failure
+	 * already released profiles internally and jumps straight to unlock.
+	 */
+	if (svc_desc->restricted_vnis && !is_parent)
+		release_rxtx_profiles(dev, svc_priv);
 unlock:
 	mutex_unlock(&hw->svc_lock);
-	if (svc_desc->restricted_vnis)
-		release_rxtx_profiles(dev, svc_priv);
-remove_rgrp_ac_entries:
 	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
 remove_idr:
 	idr_remove(&hw->svc_ids, cxi_rgroup_id(rgroup));
@@ -1163,9 +1147,83 @@ int cxi_svc_alloc(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc,
 	if (!dev->is_physfn)
 		return cxi_svc_alloc_vf(dev, svc_desc, fail_info, name);
 
-	return cxi_svc_alloc_internal(dev, svc_desc, fail_info, name, false, 0);
+	return cxi_svc_alloc_internal(dev, svc_desc, fail_info, name, false, 0,
+				      false);
 }
 EXPORT_SYMBOL(cxi_svc_alloc);
+
+/**
+ * cxi_svc_alloc_parent() - Allocate a service that acts as a VF resource
+ *			    budget ceiling (PF only)
+ *
+ * @dev: Cassini Device
+ * @svc_desc: Service descriptor
+ * @fail_info: extra information when a failure occurs
+ * @name: name for service
+ *
+ * Return: Service ID on success. Else, negative errno value.
+ */
+int cxi_svc_alloc_parent(struct cxi_dev *dev,
+			 const struct cxi_svc_desc *svc_desc,
+			 struct cxi_svc_fail_info *fail_info, char *name)
+{
+	if (!dev->is_physfn)
+		return -EPERM;
+
+	return cxi_svc_alloc_internal(dev, svc_desc, fail_info, name, false, 0,
+				      true);
+}
+EXPORT_SYMBOL(cxi_svc_alloc_parent);
+
+static int cxi_svc_is_parent_vf(struct cxi_dev *dev, unsigned int svc_id, bool *is_parent)
+{
+	struct cxi_svc_is_parent_get_cmd cmd = {
+		.op = CXI_OP_SVC_IS_PARENT_GET,
+		.svc_id = svc_id,
+	};
+	struct cxi_svc_is_parent_get_resp resp;
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(dev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc < 0)
+		return rc;
+
+	*is_parent = resp.is_parent;
+	return 0;
+}
+
+/**
+ * cxi_svc_is_parent() - Query whether a service is a VF-parent service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID to query
+ * @is_parent: set to true if the service is a parent service
+ *
+ * Return: 0 on success. Else, negative errno value.
+ */
+int cxi_svc_is_parent(struct cxi_dev *dev, unsigned int svc_id, bool *is_parent)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *svc_priv;
+	int rc = 0;
+
+	if (!dev->is_physfn)
+		return cxi_svc_is_parent_vf(dev, svc_id, is_parent);
+
+	mutex_lock(&hw->svc_lock);
+	svc_priv = idr_find(&hw->svc_ids, svc_id);
+	if (!svc_priv) {
+		rc = -EINVAL;
+		goto unlock;
+	}
+
+	*is_parent = svc_priv->is_parent;
+unlock:
+	mutex_unlock(&hw->svc_lock);
+	return rc;
+}
+EXPORT_SYMBOL(cxi_svc_is_parent);
 
 static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv)
 {
@@ -1296,11 +1354,19 @@ int cxi_vf_set_svc_id(struct cass_dev *hw, unsigned int vf_num, int svc_id)
 	mutex_lock(&hw->svc_lock);
 
 	/* svc_id == 0 clears the assignment (always succeeds);
-	 * any other value must refer to an existing service.
+	 * any other value must refer to an existing parent service.
 	 */
-	if (svc_id && !idr_find(&hw->svc_ids, svc_id)) {
-		rc = -EINVAL;
-		goto unlock;
+	if (svc_id) {
+		svc_priv = idr_find(&hw->svc_ids, svc_id);
+		if (!svc_priv || !svc_priv->is_parent) {
+			rc = -EINVAL;
+			goto unlock;
+		}
+
+		if (!svc_priv->svc_desc.enable) {
+			rc = -EKEYREVOKED;
+			goto unlock;
+		}
 	}
 
 	/* Refuse if this specific VF has any live child services */
@@ -1881,6 +1947,7 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 	int rc;
+	int i;
 
 	if (!dev->is_physfn)
 		return cxi_svc_update_vf(dev, svc_desc);
@@ -1902,6 +1969,12 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	if (refcount_read(&svc_priv->rgroup->state.refcount) > 1) {
 		rc = -EBUSY;
 		goto error;
+	}
+	for (i = 0; i < C_NUM_VFS; i++) {
+		if (hw->vf_cfg[i].svc_id == svc_desc->svc_id) {
+			rc = -EBUSY;
+			goto error;
+		}
 	}
 
 	/* TODO Handle Resource Reservation Changes */
@@ -2269,33 +2342,37 @@ int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 	 *
 	 * A hardware TX/RX profile covers a contiguous power-of-2 aligned
 	 * range; the overlap check in cxi_dev_alloc_tx_profile() prevents
-	 * two profiles whose ranges overlap from coexisting.  Since the
-	 * parent already holds a profile for its range, allocating a new
-	 * profile for any overlapping subset would fail with -EEXIST.  The
-	 * child therefore borrows the parent's profile directly, which
-	 * means the child's effective VNI scope is the parent's full range
-	 * regardless of the requested subset.
+	 * two profiles whose ranges overlap from coexisting. For non-parent
+	 * services, hardware TX/RX profiles get allocated for the specified
+	 * VNI range. Parent services only get their ranges recorded in
+	 * software, for validation of child service VNI ranges.
 	 */
-	if (svc_priv->parent && !svc_priv->parent->svc_desc.restricted_vnis) {
-		struct cxi_tx_attr parent_tx_attr;
+	if (svc_priv->parent) {
 		unsigned int parent_min, parent_max;
 
-		if (!svc_priv->parent->tx_profile[0]) {
-			cxidev_err(dev,
-				   "svc_id %u: parent has no VNI range set yet",
-				   svc_id);
+		if (svc_priv->parent->is_parent) {
+			if (svc_priv->parent->svc_desc.restricted_vnis) {
+				cxidev_err(dev,
+					   "svc_id %u: parent has restricted VNIs",
+					   svc_id);
+				rc = -EPERM;
+				goto unlock_return;
+			}
+			if (!svc_priv->parent->has_vni_range) {
+				cxidev_err(dev,
+					   "svc_id %u: parent has no VNI range set yet",
+					   svc_id);
+				rc = -EPERM;
+				goto unlock_return;
+			}
+
+			parent_min = svc_priv->parent->vni_range_min;
+			parent_max = svc_priv->parent->vni_range_max;
+		} else {
+			cxidev_err(dev, "svc_id %u: parent service is not valid", svc_id);
 			rc = -EPERM;
 			goto unlock_return;
 		}
-
-		rc = cxi_tx_profile_get_info(dev, svc_priv->parent->tx_profile[0],
-					     &parent_tx_attr, NULL);
-		if (rc)
-			goto unlock_return;
-
-		parent_min = parent_tx_attr.vni_attr.match;
-		parent_max = parent_tx_attr.vni_attr.match +
-			     parent_tx_attr.vni_attr.ignore;
 
 		if (vni_min < parent_min || vni_max > parent_max) {
 			cxidev_err(dev,
@@ -2305,20 +2382,20 @@ int cxi_svc_set_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 			goto unlock_return;
 		}
 
-		/* Range validated as a subset of the parent's range.  Borrow
-		 * the parent's TX/RX profile rather than allocating a new one:
-		 * the parent profile already covers the superset, and creating
-		 * any overlapping profile would fail with -EEXIST.  Record the
-		 * caller's requested subrange so cxi_svc_get_vni_range() can
-		 * report it instead of the borrowed profile's wider range.
-		 * release_rxtx_profiles() skips freeing borrowed profiles.
-		 */
-		svc_priv->svc_desc.num_vld_vnis = 1;
-		svc_priv->tx_profile[0] = svc_priv->parent->tx_profile[0];
-		svc_priv->rx_profile[0] = svc_priv->parent->rx_profile[0];
+		rc = alloc_rxtx_profiles(dev, svc_priv, &vni_attr);
+		if (rc)
+			goto unlock_return;
+
 		svc_priv->has_vni_range  = true;
 		svc_priv->vni_range_min  = vni_min;
 		svc_priv->vni_range_max  = vni_max;
+		goto unlock_return;
+	}
+
+	if (svc_priv->is_parent) {
+		svc_priv->has_vni_range = true;
+		svc_priv->vni_range_min = vni_min;
+		svc_priv->vni_range_max = vni_max;
 		goto unlock_return;
 	}
 
@@ -2395,6 +2472,13 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 		rc = -EINVAL;
 		goto unlock_return;
 	}
+
+	if (svc_priv->has_vni_range) {
+		*vni_min = svc_priv->vni_range_min;
+		*vni_max = svc_priv->vni_range_max;
+		goto unlock_return;
+	}
+
 	if (!svc_priv->svc_desc.num_vld_vnis) {
 		cxidev_err(dev, "svc_id %u has no valid TX/RX profiles", svc_id);
 		rc = -EINVAL;
@@ -2403,15 +2487,6 @@ int cxi_svc_get_vni_range(struct cxi_dev *dev, unsigned int svc_id,
 
 	if (!svc_priv->tx_profile[0]) {
 		rc = -ENOENT;
-		goto unlock_return;
-	}
-
-	/* For VNI-range child services the TX profile covers the parent's full
-	 * range, but the caller configured a subset; return that stored range.
-	 */
-	if (svc_priv->has_vni_range) {
-		*vni_min = svc_priv->vni_range_min;
-		*vni_max = svc_priv->vni_range_max;
 		goto unlock_return;
 	}
 

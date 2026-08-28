@@ -10,11 +10,15 @@ test_description="Basic tests for cxi-ss1"
 
 . ./sharness.sh
 
+CXI_DIR=$(realpath "$(dirname "$0")/..")
+
 # Originally, only the PF device is present, so it should be cxi0
-PFDEV=/sys/class/cxi/cxi0/device
+PFDEV=/sys/class/cxi/cxi0
 
 # The first VF should be cxi1
-VFDEV=/sys/class/cxi/cxi1/device
+VFDEV=/sys/class/cxi/cxi1
+
+TOTALVFS=64
 
 # Check the number of cxi device is correct
 # Arg 1 is the number of expected cxi device
@@ -25,8 +29,77 @@ function check_cxi {
 
 # Create a given number of VFs
 function create_vfs {
-	echo $1 > $PFDEV/sriov_numvfs &&
-	[[ $(cat $PFDEV/sriov_numvfs) -eq $1 ]]
+	echo $1 > $PFDEV/device/sriov_numvfs &&
+	[[ $(cat $PFDEV/device/sriov_numvfs) -eq $1 ]]
+}
+
+VF_PARENT_SVC_ID=
+VF_PARENT_SVC_YAML=/tmp/cxi-vf-parent.yaml
+
+function create_vf_parent_service {
+	local cxi_service="$CXI_DIR/../libcxi/install/bin/cxi_service"
+	local service_output
+
+	cat > "$VF_PARENT_SVC_YAML" << EOF
+resource_limits: 1
+restricted_vnis: 0
+restricted_members: 0
+restricted_tcs: 0
+exclusive_cp: 0
+is_parent: 1
+limits:
+  - name: ACs
+    max: 1022
+    res: 1022
+  - name: EQs
+    max: 2047
+    res: 2047
+  - name: CTs
+    max: 2047
+    res: 2047
+  - name: PTEs
+    max: 2047
+    res: 2047
+  - name: TXQs
+    max: 1022
+    res: 1022
+  - name: TGQs
+    max: 511
+    res: 511
+  - name: TLEs
+    max: 1536
+    res: 1536
+  - name: LEs
+    max: 16383
+    res: 16383
+vnis:
+  vni_min: 32
+  vni_max: 63
+EOF
+
+	service_output=$($cxi_service create -d cxi0 \
+		-y "$VF_PARENT_SVC_YAML" 2>&1) || {
+		echo "$service_output" >&5
+		return 1
+	}
+	VF_PARENT_SVC_ID=$(printf '%s\n' "$service_output" |
+		sed -n 's/^Successfully created service:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
+		tail -n 1)
+	[[ -n "$VF_PARENT_SVC_ID" ]] || {
+		echo "$service_output" >&5
+		return 1
+	}
+
+	service_output=$($cxi_service enable -d cxi0 \
+		-s "$VF_PARENT_SVC_ID" 2>&1) || {
+		echo "$service_output" >&5
+		return 1
+	}
+
+	local vf
+	for ((vf = 0; vf < TOTALVFS; vf++)); do
+		echo "$VF_PARENT_SVC_ID" > "$PFDEV/vf/$vf/svc_id" 2>&5 || { echo "failed to set svc_id $VF_PARENT_SVC_ID for VF $vf: $?" >&5; return 1; }
+	done
 }
 
 test_expect_success "Inserting driver" "
@@ -37,25 +110,27 @@ test_expect_success "Inserting driver" "
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
-if [[ $(cat $PFDEV/sriov_totalvfs) -gt 0 ]]; then
+if [[ $(cat $PFDEV/device/sriov_totalvfs) -gt 0 ]]; then
 	test_set_prereq SRIOV
 else
 	echo "Driver built without SR-IOV support, skipping SR-IOV tests"
 fi
 
-TOTALVFS=64
-
 test_expect_success SRIOV "Number of total VFs" "
-	[[ $(cat $PFDEV/sriov_totalvfs) -eq $TOTALVFS ]]
+	[[ $(cat $PFDEV/device/sriov_totalvfs) -eq $TOTALVFS ]]
 "
 
 test_expect_success SRIOV "No VFs at first" "
-	[[ $(cat $PFDEV/sriov_numvfs) -eq 0 ]] && check_cxi 1
+	[[ $(cat $PFDEV/device/sriov_numvfs) -eq 0 ]] && check_cxi 1
+"
+
+test_expect_success SRIOV "Create parent service and assign it to all VFs" "
+	create_vf_parent_service
 "
 
 test_expect_success SRIOV "Create VFs" "
     create_vfs $((TOTALVFS / 3)) && check_cxi $((TOTALVFS / 3 + 1)) &&
-    [[ $(cat $PFDEV/properties/rdzv_get_idx) -eq $(cat $PFDEV/properties/rdzv_get_idx) ]]
+    [[ $(cat $PFDEV/device/properties/rdzv_get_idx) -eq $(cat $PFDEV/device/properties/rdzv_get_idx) ]]
 "
 
 test_expect_success SRIOV "Can't change the number of VFs" "
@@ -63,7 +138,7 @@ test_expect_success SRIOV "Can't change the number of VFs" "
 "
 
 test_expect_success SRIOV "Remove existing VFs" "
-	echo 0 > $PFDEV/sriov_numvfs && check_cxi 1
+	echo 0 > $PFDEV/device/sriov_numvfs && check_cxi 1
 "
 
 test_expect_success SRIOV "Create the maximum number of VFs" "

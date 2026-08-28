@@ -203,12 +203,14 @@ struct cxi_svc_priv {
 	struct cxi_tx_profile *tx_profile[CXI_SVC_MAX_VNIS];
 
 	/* Child service support.
+	 * is_parent is true for VF-parent services
 	 * is_vf is true when this service was created on behalf of a VF.
 	 * parent points to the admin-assigned parent service that provides the
 	 * resource budget ceiling; NULL for top-level (admin) services.
 	 * child_reserved[] tracks the total units reserved by all live child
 	 * services of this service, per resource type.
 	 */
+	bool is_parent;
 	bool is_vf;
 	u8 vf_num;
 	struct cxi_svc_priv *parent;
