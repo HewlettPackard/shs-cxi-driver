@@ -6,7 +6,7 @@
 #   cxi_vf.sh list                               Show PF and all VF details
 #   cxi_vf.sh setup <N> [--no-ama] [--wait-ama] Create N VFs (kills any running VMs first)
 #   cxi_vf.sh cleanup                             Remove all VFs (equivalent to setup 0)
-#   cxi_vf.sh self-test <N> [--no-ama] [--wait-ama]  Self-contained loopback test setup:
+#   cxi_vf.sh self-test <N> [--no-ama] [--wait-ama] [--static-arp]  Self-contained loopback test setup:
 #                                                  sets PF MAC to 02:00:00:00:00:00, creates N VFs
 #                                                  with AMA-derived MACs, places each interface in
 #                                                  its own netns (ns_pf, ns_vf0, ns_vf1, ...),
@@ -16,6 +16,7 @@
 # Options:
 #   --no-ama    Skip automatic AMA MAC address assignment to VFs
 #   --wait-ama  Wait until the PF has an AMA MAC before creating VFs
+#   --static-arp Add static ARP entries for all interfaces in self-test namespaces
 #
 # Environment variable CXI_DEVICE controls the PF device. Default: cxi0.
 
@@ -24,6 +25,7 @@ CMD=${1:-list}
 NO_AMA=0
 WAIT_AMA=0
 ENSURE_PF_MAC=0
+STATIC_ARP=0
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 CXI_ETH_KO="${SCRIPT_DIR}/../drivers/net/ethernet/hpe/ss1/cxi-eth.ko"
@@ -428,18 +430,19 @@ cmd_self_test() {
 	done
 
 	# Step 3: Add static ARP entries in every namespace for all other interfaces.
-	echo "Adding static ARP entries..." >&2
 	local total=${#NS[@]}
-	for ((a=0; a<total; a++)); do
-		for ((b=0; b<total; b++)); do
-			[[ $a -eq $b ]] && continue
-			# Strip prefix length from IP (e.g. 192.168.1.2/16 -> 192.168.1.2).
-			local peer_ip="${IP[$b]%%/*}"
-			echo "  [${NS[$a]}] ${peer_ip} lladdr ${MAC[$b]} dev ${IFACE[$a]}" >&2
-			ip -n "${NS[$a]}" neigh replace "$peer_ip" \
-				lladdr "${MAC[$b]}" dev "${IFACE[$a]}" nud permanent
+	if [[ $STATIC_ARP -eq 1 ]]; then
+		echo "Adding static ARP entries..." >&2
+		for ((a=0; a<total; a++)); do
+			for ((b=0; b<total; b++)); do
+				[[ $a -eq $b ]] && continue
+				local peer_ip="${IP[$b]%%/*}"
+				echo "  [${NS[$a]}] ${peer_ip} lladdr ${MAC[$b]} dev ${IFACE[$a]}" >&2
+				ip -n "${NS[$a]}" neigh replace "$peer_ip" \
+					lladdr "${MAC[$b]}" dev "${IFACE[$a]}" nud permanent
+			done
 		done
-	done
+	fi
 
 	# Step 4: Ensure all interfaces are up after full configuration.
 	echo "Bringing all interfaces up..." >&2
@@ -551,19 +554,20 @@ case "$CMD" in
 		cmd_setup 0
 		;;
 	self-test)
-		[[ -n "$2" ]] || die "Usage: $0 self-test <num_vfs> [--no-ama] [--wait-ama]"
+		[[ -n "$2" ]] || die "Usage: $0 self-test <num_vfs> [--no-ama] [--wait-ama] [--static-arp]"
 		[[ "$2" =~ ^[0-9]+$ ]] || die "num_vfs must be a non-negative integer"
 		for opt in "${@:3}"; do
 			case "$opt" in
-				--no-ama)   NO_AMA=1 ;;
-				--wait-ama) WAIT_AMA=1 ;;
+				--no-ama)     NO_AMA=1 ;;
+				--wait-ama)   WAIT_AMA=1 ;;
+				--static-arp) STATIC_ARP=1 ;;
 				*) die "Unknown option: $opt" ;;
 			esac
 		done
 		cmd_self_test "$2"
 		;;
 	*)
-		echo "Usage: $0 {list|setup <N> [--no-ama] [--wait-ama]|cleanup|self-test <N> [--no-ama] [--wait-ama]}" >&2
+		echo "Usage: $0 {list|setup <N> [--no-ama] [--wait-ama]|cleanup|self-test <N> [--no-ama] [--wait-ama] [--static-arp]}" >&2
 		exit 1
 		;;
 esac
