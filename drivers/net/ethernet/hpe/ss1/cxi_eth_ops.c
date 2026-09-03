@@ -2298,8 +2298,28 @@ netdev_tx_t cxi_eth_start_xmit_vf(struct sk_buff *skb, struct net_device *ndev)
 
 	if (unlikely(dev->spoof_chk)) {
 		const struct ethhdr *eth = (const struct ethhdr *)skb->data;
+		const struct netdev_hw_addr *ha;
+		bool allowed;
 
-		if (unlikely(!ether_addr_equal(eth->h_source, ndev->dev_addr))) {
+		/* Allow the primary MAC assigned to the VF. */
+		allowed = ether_addr_equal(eth->h_source, ndev->dev_addr);
+
+		/* Also allow secondary UC addresses (e.g. a MACVLAN interface
+		 * created on top of this VF).  These are registered by the
+		 * kernel via ndo_set_rx_mode when the upper device is added.
+		 */
+		if (!allowed) {
+			rcu_read_lock();
+			netdev_for_each_uc_addr(ha, ndev) {
+				if (ether_addr_equal(eth->h_source, ha->addr)) {
+					allowed = true;
+					break;
+				}
+			}
+			rcu_read_unlock();
+		}
+
+		if (unlikely(!allowed)) {
 			dev_kfree_skb_any(skb);
 			ndev->stats.tx_dropped++;
 			return NETDEV_TX_OK;
