@@ -34,65 +34,20 @@ function create_vfs {
 }
 
 VF_PARENT_SVC_ID=
-VF_PARENT_SVC_YAML=/tmp/cxi-vf-parent.yaml
+SVC_TOOL="$CXI_DIR/tests/svc_tool/svc_tool"
 
 function create_vf_parent_service {
-	local cxi_service="$CXI_DIR/../libcxi/install/bin/cxi_service"
-	local service_output
-
-	cat > "$VF_PARENT_SVC_YAML" << EOF
-resource_limits: 1
-restricted_vnis: 0
-restricted_members: 0
-restricted_tcs: 0
-exclusive_cp: 0
-is_parent: 1
-limits:
-  - name: ACs
-    max: 1022
-    res: 1022
-  - name: EQs
-    max: 2047
-    res: 2047
-  - name: CTs
-    max: 2047
-    res: 2047
-  - name: PTEs
-    max: 2047
-    res: 2047
-  - name: TXQs
-    max: 1022
-    res: 1022
-  - name: TGQs
-    max: 511
-    res: 511
-  - name: TLEs
-    max: 1536
-    res: 1536
-  - name: LEs
-    max: 16383
-    res: 16383
-vnis:
-  vni_min: 32
-  vni_max: 63
-EOF
-
-	service_output=$($cxi_service create -d cxi0 \
-		-y "$VF_PARENT_SVC_YAML" 2>&1) || {
-		echo "$service_output" >&5
+	[[ -x "$SVC_TOOL" ]] || {
+		echo "ERROR: svc_tool not found at $SVC_TOOL" >&5
 		return 1
 	}
-	VF_PARENT_SVC_ID=$(printf '%s\n' "$service_output" |
-		sed -n 's/^Successfully created service:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
-		tail -n 1)
+
+	VF_PARENT_SVC_ID=$("$SVC_TOOL" sriov cxi0 2>&5) || {
+		echo "failed to create parent service via svc_tool" >&5
+		return 1
+	}
 	[[ -n "$VF_PARENT_SVC_ID" ]] || {
-		echo "$service_output" >&5
-		return 1
-	}
-
-	service_output=$($cxi_service enable -d cxi0 \
-		-s "$VF_PARENT_SVC_ID" 2>&1) || {
-		echo "$service_output" >&5
+		echo "svc_tool returned empty svc_id" >&5
 		return 1
 	}
 

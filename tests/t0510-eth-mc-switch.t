@@ -20,6 +20,7 @@ export SHARNESS_TEST_DIRECTORY SHARNESS_TEST_SRCDIR
 PKT_ROOT="$SHARNESS_TEST_SRCDIR/pkt_test"
 # pkt_tool must be pre-built (e.g. by the top-level make); tests never build it.
 PKT_TOOL="$PKT_ROOT/pkt_tool"
+SVC_TOOL="$SHARNESS_TEST_SRCDIR/svc_tool/svc_tool"
 
 CXI_DIR=$(realpath "$SHARNESS_TEST_SRCDIR/..")
 VF_SCRIPT="$CXI_DIR/scripts/cxi_vf.sh"
@@ -31,7 +32,6 @@ SS1_KO="$CXI_DIR/drivers/net/ethernet/hpe/ss1/cxi-ss1.ko"
 USER_KO="$CXI_DIR/drivers/net/ethernet/hpe/ss1/cxi-user.ko"
 CXI_DEVICE=${CXI_DEVICE:-cxi0}
 NUM_VFS=${NUM_VFS:-2}
-CXI_SVC_BIN="$CXI_DIR/../libcxi/install/bin/cxi_service"
 
 # Load the full CXI driver stack (sbl, sl, ss1, user) if not already present.
 # Each test runs in a fresh harness VM where nothing pre-loads the driver; when
@@ -56,59 +56,22 @@ load_cxi_stack() {
 # clients and assign it to each VF slot.  Must be called after the PF driver
 # is loaded (sysfs vf/N/svc_id exists at PF probe time) and before VFs bind.
 setup_vf_parent_svc() {
-	[[ -x "$CXI_SVC_BIN" ]] || {
-		echo "ERROR: cxi_service not found at $CXI_SVC_BIN" >&2
+	[[ -x "$SVC_TOOL" ]] || {
+		echo "ERROR: svc_tool not found at $SVC_TOOL" >&2
 		return 1
 	}
 
 	if [[ -z "$VF_PARENT_SVC_ID" ]]; then
-	local yaml="$SHARNESS_TEST_DIRECTORY/vf_eth_parent.yaml"
-	cat > "$yaml" << 'YAML'
-resource_limits: 1
-restricted_members: 0
-restricted_tcs: 0
-exclusive_cp: 0
-is_parent: 1
-limits:
-  - name: ACs
-    max: 8
-    res: 8
-  - name: EQs
-    max: 256
-    res: 8
-  - name: PTEs
-    max: 64
-    res: 32
-  - name: TXQs
-    max: 256
-    res: 8
-  - name: TGQs
-    max: 256
-    res: 8
-  - name: TLEs
-    max: 512
-    res: 512
-  - name: LEs
-    max: 16384
-    res: 4096
-  - name: CTs
-    max: 0
-    res: 0
-vnis:
-  vni: 2
-YAML
-
-	local out svc_id
-	out=$("$CXI_SVC_BIN" create -d "$CXI_DEVICE" -y "$yaml" 2>&1) || {
-		echo "ERROR: cxi_service create failed: $out" >&2
-		return 1
-	}
-	svc_id=$(echo "$out" | grep -oP '(?<=Successfully created service: )\d+')
-	[[ -n "$svc_id" ]] || {
-		echo "ERROR: could not parse svc_id from cxi_service output" >&2
-		return 1
-	}
-	VF_PARENT_SVC_ID="$svc_id"
+		local svc_id
+		svc_id=$("$SVC_TOOL" eth "$CXI_DEVICE") || {
+			echo "ERROR: failed to create parent service via svc_tool" >&2
+			return 1
+		}
+		[[ -n "$svc_id" ]] || {
+			echo "ERROR: svc_tool returned empty svc_id" >&2
+			return 1
+		}
+		VF_PARENT_SVC_ID="$svc_id"
 	fi
 
 	# (Re)assign the parent service to every VF slot before the VFs bind.
@@ -563,7 +526,7 @@ ns_remove_namespaces() {
 }
 
 # ---------------------------------------------------------------------------
-# Setup: wait for PF netdev and verify pkt_tool (shared across all tests)
+# Setup: wait for PF netdev and verify pkt_tool and svc_tool (shared across all tests)
 # ---------------------------------------------------------------------------
 test_expect_success "setup and check tools" "
 echo \"Checking namespace management setup\" &&
@@ -575,9 +538,13 @@ load_cxi_stack &&
 
 # Note: Driver loading and PF netdev verification happens in ns_create_namespaces()
 # called by individual tests. This avoids early setup failures on read-only filesystems.
-# pkt_tool must be pre-built; the test suite never compiles anything.
+# Tools must be pre-built; the test suite never compiles anything.
 [[ -x \"\$PKT_TOOL\" ]] || {
 	echo \"ERROR: pkt_tool not found at \$PKT_TOOL;\" >&2
+	return 1
+} &&
+[[ -x \"\$SVC_TOOL\" ]] || {
+	echo \"ERROR: svc_tool not found at \$SVC_TOOL;\" >&2
 	return 1
 }
 "

@@ -28,6 +28,7 @@
 /tests/output/*
 /tests/*.dbg
 /tests/pkt_test/pkt_tool
+/tests/svc_tool/svc_tool
 /tests/test_cmd.sh
 /scripts/*.dbg
 *cscope.*
