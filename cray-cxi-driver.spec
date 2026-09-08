@@ -29,7 +29,7 @@
 %endif
 
 Name:           cray-cxi-driver
-Version:        1.1.1
+Version:        1.1.2
 Release:        %(echo ${BUILD_METADATA})
 Summary:        HPE Cassini Driver
 License:        GPL-2.0
@@ -193,8 +193,9 @@ echo "%{dkms_source_dir}" >> dkms-files
 
 %pre dkms
 
-# DKMS build/install runs in the posttrans scriptlet so the old module is removed first on upgrade.
-%posttrans dkms
+# Build in %post: this module is versioned (no upgrade collision), and %post runs in
+# dependency order so its build-deps (sl-driver, slingshot-base-link) are built first.
+%post dkms
 if [ -f /usr/libexec/dkms/common.postinst ] && [ -x /usr/libexec/dkms/common.postinst ]
 then
     postinst=/usr/libexec/dkms/common.postinst
@@ -269,6 +270,9 @@ ${postinst} %{name} %{version}-%{release}
 %files dkms -f dkms-files
 
 %changelog
+* Mon Sep 08 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.1.2
+- Build the DKMS module in %post (dependency-ordered) instead of %posttrans; cxi-driver is
+  versioned (no upgrade collision) and its build-deps build first via Requires order (ENCASSINI-2814).
 * Wed Sep 02 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.1.1
 - Move the DKMS build/install to the posttrans scriptlet so the old module is removed first on upgrade.
 - Standardize kmod/dkms Conflicts.
