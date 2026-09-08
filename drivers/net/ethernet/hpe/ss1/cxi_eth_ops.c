@@ -1121,7 +1121,12 @@ int hw_setup(struct cxi_eth *dev)
 	uc_mc_base = dev->cxi_dev->is_physfn ? RMU_ETH_FILTER_UC_MC
 					     : RMU_ETH_FILTER_VF_UC_MC;
 
-	if (WARN_ON(dev->rmu_eth->max_filters <= uc_mc_base)) {
+	dev->uc_mc_filters = NULL;
+	dev->num_uc_mc_filters = 0;
+	if (dev->rmu_eth->max_filters < uc_mc_base) {
+		netdev_err(ndev,
+			   "Too few RMU filter slots (%u); need at least %u\n",
+			   dev->rmu_eth->max_filters, uc_mc_base);
 		rc = -EINVAL;
 		goto err_free_rmu_eth;
 	}
@@ -1129,12 +1134,23 @@ int hw_setup(struct cxi_eth *dev)
 				       dev->rmu_eth->max_filters - uc_mc_base,
 				       BITS_PER_TYPE(u64));
 
-	dev->uc_mc_filters = kcalloc(dev->num_uc_mc_filters,
-				     sizeof(*dev->uc_mc_filters), GFP_KERNEL);
-	if (!dev->uc_mc_filters) {
-		rc = -ENOMEM;
-		netdev_info(ndev, "Can't allocate MAC filter map\n");
-		goto err_free_rmu_eth;
+	if (dev->num_uc_mc_filters) {
+		dev->uc_mc_filters = kcalloc(dev->num_uc_mc_filters,
+					     sizeof(*dev->uc_mc_filters),
+					     GFP_KERNEL);
+		if (!dev->uc_mc_filters) {
+			rc = -ENOMEM;
+			netdev_info(ndev, "Can't allocate MAC filter map\n");
+			goto err_free_rmu_eth;
+		}
+	} else {
+		/* No slots left for dynamic secondary unicast MACs. The
+		 * interface still works with its own MAC; MACVLAN and extra
+		 * unicast addresses are not available (common when many VFs
+		 * share a small filter pool).
+		 */
+		netdev_warn(ndev,
+			    "No RMU filter slots for secondary unicast MACs; MACVLAN and additional unicast addresses not supported\n");
 	}
 
 	dev->lni = cxi_lni_alloc(dev->cxi_dev, dev->svc_id);
