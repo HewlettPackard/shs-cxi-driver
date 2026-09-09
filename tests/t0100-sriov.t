@@ -57,6 +57,16 @@ function create_vf_parent_service {
 	done
 }
 
+function apply_ratelimits {
+	local limit=$1
+	local burst=$2
+
+	for ((vf = 0; vf < TOTALVFS; vf++)); do
+		echo "$limit" > "$PFDEV/vf/$vf/msg_rate_limit" 2>&5 || { echo "failed to set msg_rate_limit $limit for VF $vf: $?" >&5; return 1; }
+		echo "$burst" > "$PFDEV/vf/$vf/msg_rate_burst" 2>&5 || { echo "failed to set msg_rate_burst $burst for VF $vf: $?" >&5; return 1; }
+	done
+}
+
 test_expect_success "Inserting driver" "
 	insmod ../../../../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko &&
 	insmod ../../../../sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko &&
@@ -104,6 +114,7 @@ test_expect_success SRIOV "Create the maximum number of VFs" "
 test_expect_success SRIOV "Inserting VF/PF comm test driver" "
     rmmod cxi_user &&
 	insmod ../../../drivers/net/ethernet/hpe/ss1/tests/test-vfpfcomm.ko &&
+	apply_ratelimits 200 50 &&
 	sleep 4 &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "

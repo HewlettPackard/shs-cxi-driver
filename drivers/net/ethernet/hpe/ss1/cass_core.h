@@ -587,6 +587,30 @@ struct cxi_rmu_eth_priv {
 };
 
 /**
+ * struct cass_vf_cfg - Per-VF policy owned and set by the PF admin.
+ *
+ * Service fields use svc_lock; rate fields use READ_ONCE()/WRITE_ONCE().
+ *
+ * @svc_id:         Parent service ID assigned to this VF (0 = none assigned;
+ *                  defaults to CXI_DEFAULT_SVC_ID at init).
+ * @telem_enabled:  Whether telemetry access is enabled for this VF.
+ * @msg_rate_limit: Per-VF override of vsock message rate limit.
+ * @msg_rate_burst: Per-VF override of vsock message rate burst tolerance.
+ */
+struct cass_vf_cfg {
+	unsigned int svc_id;
+	bool telem_enabled;
+	unsigned int msg_rate_limit;
+	unsigned int msg_rate_burst;
+	/* sysfs kobject for /sys/class/cxi<N>/vf/<vf_idx>/ */
+	struct kobject kobj;
+};
+
+/* Global default VF message rate limits (set by module params) */
+extern unsigned int vf_msg_rate_limit;
+extern unsigned int vf_msg_rate_burst;
+
+/**
  * struct cxi_eth_vf_cfg - Per-VF Ethernet policy, owned and set by PF admin.
  *
  * Lives in cass_dev (outside rmu_eth_priv) so it persists across
@@ -602,22 +626,6 @@ struct cxi_rmu_eth_priv {
  *             address that does not match @own_mac or the MACs programmed in
  *             the hardware.
  */
-/**
- * struct cass_vf_cfg - Per-VF policy owned and set by the PF admin.
- *
- * Protected by svc_lock.
- *
- * @svc_id:         Parent service ID assigned to this VF (0 = none assigned;
- *                  defaults to CXI_DEFAULT_SVC_ID at init).
- * @telem_enabled:  Whether telemetry access is enabled for this VF.
- */
-struct cass_vf_cfg {
-	unsigned int svc_id;
-	bool telem_enabled;
-	/* sysfs kobject for /sys/class/cxi<N>/vf/<vf_idx>/ */
-	struct kobject kobj;
-};
-
 struct cxi_eth_vf_cfg {
 	bool trusted;
 	u64  own_mac;

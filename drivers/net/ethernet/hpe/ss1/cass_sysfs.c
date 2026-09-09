@@ -864,9 +864,65 @@ static ssize_t telem_enabled_store(struct kobject *kobj,
 
 static struct kobj_attribute vf_telem_enabled_attr = __ATTR_RW(telem_enabled);
 
+static ssize_t msg_rate_limit_show(struct kobject *kobj, struct kobj_attribute *attr,
+				   char *buf)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", READ_ONCE(cfg->msg_rate_limit));
+}
+
+static ssize_t msg_rate_limit_store(struct kobject *kobj, struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) < 0 || val < -1)
+		return -EINVAL;
+
+	/* -1 resets the override to the current global default */
+	if (val == -1)
+		val = READ_ONCE(vf_msg_rate_limit);
+	WRITE_ONCE(cfg->msg_rate_limit, val);
+
+	return count;
+}
+
+static struct kobj_attribute vf_msg_rate_limit_attr = __ATTR_RW(msg_rate_limit);
+
+static ssize_t msg_rate_burst_show(struct kobject *kobj, struct kobj_attribute *attr,
+				   char *buf)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", READ_ONCE(cfg->msg_rate_burst));
+}
+
+static ssize_t msg_rate_burst_store(struct kobject *kobj, struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct cass_vf_cfg *cfg = container_of(kobj, struct cass_vf_cfg, kobj);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) < 0 || val < -1)
+		return -EINVAL;
+
+	/* -1 resets the override to the current global default */
+	if (val == -1)
+		val = READ_ONCE(vf_msg_rate_burst);
+	WRITE_ONCE(cfg->msg_rate_burst, val);
+
+	return count;
+}
+
+static struct kobj_attribute vf_msg_rate_burst_attr = __ATTR_RW(msg_rate_burst);
+
 static struct attribute *vf_attrs[] = {
 	&vf_svc_id_attr.attr,
 	&vf_telem_enabled_attr.attr,
+	&vf_msg_rate_limit_attr.attr,
+	&vf_msg_rate_burst_attr.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(vf);
@@ -908,6 +964,8 @@ int create_vf_sysfs(struct cass_dev *hw)
 		memset(&hw->vf_cfg[i].kobj, 0, sizeof(hw->vf_cfg[i].kobj));
 		hw->vf_cfg[i].svc_id = 0;
 		hw->vf_cfg[i].telem_enabled = true;
+		WRITE_ONCE(hw->vf_cfg[i].msg_rate_limit, vf_msg_rate_limit);
+		WRITE_ONCE(hw->vf_cfg[i].msg_rate_burst, vf_msg_rate_burst);
 		rc = kobject_init_and_add(&hw->vf_cfg[i].kobj, &vf_kobj_type,
 					  &hw->vf_kobj, "%d", i);
 		if (rc) {

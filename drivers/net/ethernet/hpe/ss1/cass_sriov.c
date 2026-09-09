@@ -44,6 +44,20 @@
 
 MODULE_SOFTDEP("pre: vsock vsock_loopback");
 
+/* Rate limits for the VF vsock message channel. */
+#define VF_MSG_RATE_LIMIT_DFLT 200
+#define VF_MSG_RATE_BURST_DFLT 50
+
+unsigned int vf_msg_rate_limit = VF_MSG_RATE_LIMIT_DFLT;
+module_param(vf_msg_rate_limit, uint, 0644);
+MODULE_PARM_DESC(vf_msg_rate_limit,
+		 "Max sustained message rate (msgs/sec) accepted over a VF message channel, 0 to disable");
+
+unsigned int vf_msg_rate_burst = VF_MSG_RATE_BURST_DFLT;
+module_param(vf_msg_rate_burst, uint, 0644);
+MODULE_PARM_DESC(vf_msg_rate_burst,
+		 "Max burst (messages) allowed above the sustained VF message rate");
+
 #if defined(CXI_DISABLE_SRIOV)
 #warning "SR-IOV support is disabled."
 
@@ -152,20 +166,6 @@ EXPORT_SYMBOL(cxi_notify_vfs_async_event);
  * CXI_SRIOV_PF_TIMEOUT to ensure VF responds before PF's read times out.
  */
 #define CXI_SRIOV_IRQ_TIMEOUT (CXI_SRIOV_PF_TIMEOUT / 4)
-
-/* Rate limits for the VF vsock message channel. */
-#define VF_RATE_LIMIT_DFLT 200
-#define VF_RATE_BURST_DFLT 50
-
-static unsigned int vf_rate_limit = VF_RATE_LIMIT_DFLT;
-module_param(vf_rate_limit, uint, 0644);
-MODULE_PARM_DESC(vf_rate_limit,
-		 "Max sustained message rate (msgs/sec) accepted over a VF message channel, 0 to disable");
-
-static unsigned int vf_rate_burst = VF_RATE_BURST_DFLT;
-module_param(vf_rate_burst, uint, 0644);
-MODULE_PARM_DESC(vf_rate_burst,
-		 "Max burst (messages) allowed above the sustained VF message rate");
 
 /* Rate-limiting for VF requests and notifications, using the GCRA leaky-bucket
  * algorithm. bucket_ts is the time at which the bucket is next empty, given no
@@ -501,7 +501,9 @@ static int pf_vf_msghandler(void *data)
 			   request_len);
 
 		/* Potentially sleep here to enforce message rate limit */
-		msg_ratelimit(&vf->req_bucket_ts, vf_rate_limit, vf_rate_burst);
+		msg_ratelimit(&vf->req_bucket_ts,
+			      READ_ONCE(hw->vf_cfg[vf->vf_idx].msg_rate_limit),
+			      READ_ONCE(hw->vf_cfg[vf->vf_idx].msg_rate_burst));
 
 		/* Use the uid/gid that arrived with the VF message directly,
 		 * for both host-bound and VM-bound VFs. Isolation between
@@ -1194,7 +1196,7 @@ static int vf_notif_handler(void *data)
 		cxidev_dbg(&hw->cdev, "received %ld byte notification from PF", msg_len);
 
 		/* Potentially sleep here to enforce message rate limit */
-		msg_ratelimit(&hw->notif_bucket_ts, vf_rate_limit, vf_rate_burst);
+		msg_ratelimit(&hw->notif_bucket_ts, vf_msg_rate_limit, vf_msg_rate_burst);
 
 		rc = dispatch_vf_notif(hw, msg, msg_len, &rsp, &rsp_len);
 		if (msg != msg_buf)
