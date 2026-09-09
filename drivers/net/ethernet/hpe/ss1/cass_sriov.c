@@ -45,7 +45,7 @@
 MODULE_SOFTDEP("pre: vsock vsock_loopback");
 
 /* Rate limits for the VF vsock message channel. */
-#define VF_MSG_RATE_LIMIT_DFLT 200
+#define VF_MSG_RATE_LIMIT_DFLT 0
 #define VF_MSG_RATE_BURST_DFLT 50
 
 unsigned int vf_msg_rate_limit = VF_MSG_RATE_LIMIT_DFLT;
