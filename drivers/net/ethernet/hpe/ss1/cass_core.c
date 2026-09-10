@@ -87,6 +87,13 @@ static void cass_dev_release(struct device *dev)
 	kfree(hw);
 }
 
+/* Device numbers are handed out lowest-first and freed on removal. This
+ * keeps a re-created VF, or a PF/VF returning from a VFIO passthrough
+ * detach, on the same cxiN name as long as nothing else claims its
+ * number in the meantime.
+ */
+static DEFINE_IDA(cxi_num_ida);
+
 /**
  * cxi_get_csrs_range() - Return the whole physical range of the CSRs
  *
@@ -1130,7 +1137,12 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	hw->with_vf_support = pdev->is_physfn || pci_msix_vec_count(pdev) != 2;
 
-	hw->cdev.cxi_num = atomic_inc_return(&cxi_num);
+	rc = ida_alloc(&cxi_num_ida, GFP_KERNEL);
+	if (rc < 0) {
+		cxidev_err(&hw->cdev, "cxi_num allocation failed: %d\n", rc);
+		goto unmap_regions;
+	}
+	hw->cdev.cxi_num = rc;
 	dev_set_name(&hw->class_dev, "cxi%u", hw->cdev.cxi_num);
 	strcpy(hw->cdev.name, dev_name(&hw->class_dev));
 
@@ -1139,7 +1151,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	rc = cass_irq_init(hw);
 	if (rc) {
 		cxidev_err(&hw->cdev, "cass_irq_init failed: %d\n", rc);
-		goto unmap_regions;
+		goto free_cxi_num;
 	}
 
 	if (is_physfn) {
@@ -1389,6 +1401,8 @@ fini_hw:
 		fini_hw(hw);
 free_irqs:
 	cass_irq_fini(hw);
+free_cxi_num:
+	ida_free(&cxi_num_ida, hw->cdev.cxi_num);
 unmap_regions:
 	if (is_physfn)
 		iounmap(hw->regs);
@@ -1457,6 +1471,8 @@ static void cass_remove(struct pci_dev *pdev)
 	cass_eth_mc_sw_free(hw);
 
 	cass_irq_fini(hw);
+
+	ida_free(&cxi_num_ida, hw->cdev.cxi_num);
 
 	if (hw->cdev.is_physfn)
 		iounmap(hw->regs);

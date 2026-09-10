@@ -174,7 +174,6 @@ extern unsigned int tg_threshold[4];
 extern int untagged_eth_pcp;
 extern bool switch_connected;
 
-extern atomic_t cxi_num;
 extern struct class cxi_class;
 extern struct dentry *cxi_debug_dir;
 

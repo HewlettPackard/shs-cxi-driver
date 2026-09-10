@@ -50,9 +50,6 @@ struct class cxi_class = {
 	.name = "cxi",
 };
 
-/* For device naming purposes */
-atomic_t cxi_num = ATOMIC_INIT(-1);
-
 /* root debugfs directory for all devices */
 struct dentry *cxi_debug_dir;
 
