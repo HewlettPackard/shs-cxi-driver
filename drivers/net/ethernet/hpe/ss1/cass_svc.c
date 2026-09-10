@@ -1358,12 +1358,20 @@ int cxi_vf_set_svc_id(struct cass_dev *hw, unsigned int vf_num, int svc_id)
 	 */
 	if (svc_id) {
 		svc_priv = idr_find(&hw->svc_ids, svc_id);
-		if (!svc_priv || !svc_priv->is_parent) {
+		if (!svc_priv) {
+			cxidev_err(&hw->cdev, "Invalid svc_id %d\n", svc_id);
+			rc = -EINVAL;
+			goto unlock;
+		}
+
+		if (!svc_priv->is_parent) {
+			cxidev_err(&hw->cdev, "svc_id %d is not a parent service\n", svc_id);
 			rc = -EINVAL;
 			goto unlock;
 		}
 
 		if (!svc_priv->svc_desc.enable) {
+			cxidev_err(&hw->cdev, "svc_id %d is not enabled\n", svc_id);
 			rc = -EKEYREVOKED;
 			goto unlock;
 		}
