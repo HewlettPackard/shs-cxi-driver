@@ -1557,19 +1557,25 @@ free_md_priv:
  * @iter:  Optional kernel iov_iter backing the mapping.  When supplied, pages
  *         are taken from the iterator segments (multi-segment safe); when NULL
  *         the mapping is treated as a single contiguous @va range.
+ * @hints: Optional user page-size hints.  Only consulted for CXI_MAP_USER_ADDR
+ *         mappings to select the hugepage size; NULL for kernel/iov backings.
  *
  * @return: memory descriptor or error pointer
  */
 static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
-					u32 flags, const struct iov_iter *iter)
+					u32 flags, const struct iov_iter *iter,
+					const struct cxi_md_hints *hints)
 {
-	struct cxi_lni_priv_vf *lni_priv_vf = container_of(lni, struct cxi_lni_priv_vf, lni);
+	struct cxi_lni_priv_vf *lni_priv_vf =
+		container_of(lni, struct cxi_lni_priv_vf, lni);
 	struct cxi_dev *dev = lni_priv_vf->dev;
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_md *md;
 	struct cxi_md_priv_vf *md_priv_vf;
 	struct sg_table *sgt;
 	struct page **pages;
+	u64 map_va = va;
+	size_t map_len = len;
 	int npages;
 	int rc;
 	struct ac_map_opts m_opts = {
@@ -1579,9 +1585,28 @@ static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
 		.flags = flags
 	};
 
-	rc = cass_alloc_pages_sgt_vf(hw, va, len, flags, iter, &pages, &sgt,
-				     &npages);
+	/* For user memory, inspect the backing VMA to detect hugepages and
+	 * align the mapping to the hugepage boundary. This sets huge_shift
+	 * and CXI_MAP_HUGEPAGE in m_opts, both forwarded to the PF so it
+	 * can install hugepage PTEs. Kernel iov_iter backings are not user
+	 * mapped and stay at base page size.
+	 */
+	if ((flags & CXI_MAP_USER_ADDR) && !iter) {
+		int align_shift = m_opts.page_shift;
 
+		m_opts.va_end = va + len;
+		rc = cass_cpu_page_size(hw, &m_opts, current->mm, va,
+					hints, &align_shift);
+		if (rc)
+			return ERR_PTR(rc);
+
+		cass_align_start_len(&m_opts, va, len, align_shift);
+		map_va = m_opts.va_start;
+		map_len = m_opts.va_len;
+	}
+
+	rc = cass_alloc_pages_sgt_vf(hw, map_va, map_len, flags, iter,
+				     &pages, &sgt, &npages);
 	if (rc)
 		return ERR_PTR(rc);
 
@@ -1592,7 +1617,7 @@ static struct cxi_md *cass_map_pages_vf(struct cxi_lni *lni, u64 va, size_t len,
 	}
 
 	md_priv_vf = container_of(md, struct cxi_md_priv_vf, md);
-	md_priv_vf->md.va = va & PAGE_MASK;
+	md_priv_vf->md.va = map_va & PAGE_MASK;
 	md_priv_vf->sgt = sgt;
 	md_priv_vf->pages = pages;
 	md_priv_vf->npages = npages;
@@ -1662,7 +1687,7 @@ static struct cxi_md *cxi_map_iov_vf(struct cxi_lni *lni,
 	if (rc)
 		return ERR_PTR(rc);
 
-	return cass_map_pages_vf(lni, va, len, flags, iter);
+	return cass_map_pages_vf(lni, va, len, flags, iter, NULL);
 }
 
 /**
@@ -2358,11 +2383,7 @@ static struct cxi_md *cxi_map_vf(struct cxi_lni *lni, uintptr_t va, size_t len,
 	if (flags & CXI_MAP_DEVICE)
 		return cass_map_device_vf(lni, va, len, flags, hints);
 
-	/* For now, we map 4K pages, no matter what the page size is.
-	 * This spends more NTA entries. Hugepage VF will be added shortly in
-	 * NETCASSINI-8429.
-	 */
-	return cass_map_pages_vf(lni, va, len, flags, NULL);
+	return cass_map_pages_vf(lni, va, len, flags, NULL, hints);
 }
 
 /**
