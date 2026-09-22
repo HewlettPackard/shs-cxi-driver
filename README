@@ -135,7 +135,7 @@ options are also available, but may not make sense within the cxi
 driver context:
 
     $ ./startvm.sh -h
-    netsim [-D blk][-a][-d][-h][-n nv][-N nn][-P][-p port][-r r][-q] [command]
+    netsim [-D blk][-a][-d][-h][-n nv][-N nn][-P][-t][-c ver] [command]
         -D   debug verbosity for a block (may be specified more than once)
         -a   abort on NIC call to error
         -d   debug verbosity (may be specified more than once)
@@ -146,6 +146,13 @@ driver context:
         -N   number of NICs per node
         -P   turn on performance mode
         -t   test mode
+        -c   cassini version: 1.1 (default) or 2.0
+
+By default startvm.sh will emulate a Cassini 1 device. To emulate
+Cassini 2, a couple extra arguments are needed, but otherwise it is
+the same thing:
+
+    VM_FIRMWARE_RODIR=<path_to>/sl-driver/staging_dir/lib/firmware/ ./startvm.sh -c 2.0
 
 
 How to test
