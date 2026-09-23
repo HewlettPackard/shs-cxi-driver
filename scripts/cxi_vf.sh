@@ -4,9 +4,9 @@
 #
 # Usage:
 #   cxi_vf.sh list                               Show PF and all VF details
-#   cxi_vf.sh setup <N> [--no-ama] [--wait-ama] Create N VFs (kills any running VMs first)
+#   cxi_vf.sh setup <N> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama] Create N VFs
 #   cxi_vf.sh cleanup                             Remove all VFs (equivalent to setup 0)
-#   cxi_vf.sh self-test <N> [--no-ama] [--wait-ama] [--static-arp]  Self-contained loopback test setup:
+#   cxi_vf.sh self-test <N> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama] [--static-arp]  Self-contained loopback test setup:
 #                                                  sets PF MAC to 02:00:00:00:00:00, creates N VFs
 #                                                  with AMA-derived MACs, places each interface in
 #                                                  its own netns (ns_pf, ns_vf0, ns_vf1, ...),
@@ -17,6 +17,8 @@
 #   --no-ama    Skip automatic AMA MAC address assignment to VFs
 #   --wait-ama  Wait until the PF has an AMA MAC before creating VFs
 #   --static-arp Add static ARP entries for all interfaces in self-test namespaces
+#   --create-service Create a parent service from preset: eth (default), sriov, or criterion
+#   --use-service    Assign an existing parent service ID to all VFs
 #
 # Environment variable CXI_DEVICE controls the PF device. Default: cxi0.
 
@@ -24,16 +26,139 @@ CXI_DEVICE=${CXI_DEVICE:='cxi0'}
 CMD=${1:-list}
 NO_AMA=0
 WAIT_AMA=0
+CREATE_SERVICE_PRESET=eth
+CREATE_SERVICE_REQUESTED=0
+USE_SERVICE_ID=
+USE_SERVICE_REQUESTED=0
 ENSURE_PF_MAC=0
 STATIC_ARP=0
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 CXI_ETH_KO="${SCRIPT_DIR}/../drivers/net/ethernet/hpe/ss1/cxi-eth.ko"
+SVC_TOOL="${SCRIPT_DIR}/../tests/svc_tool/svc_tool"
 
 # --------------------------------------------------------------------------- #
 # Helpers
 
 die() { echo "Error: $*" >&2; exit 1; }
+
+validate_service_options() {
+	if [[ $USE_SERVICE_REQUESTED -eq 1 && $CREATE_SERVICE_REQUESTED -eq 1 ]]; then
+		die "--use-service and --create-service are mutually exclusive"
+	fi
+	if [[ $CREATE_SERVICE_REQUESTED -eq 1 && ( -z "$CREATE_SERVICE_PRESET" || "$CREATE_SERVICE_PRESET" == --* ) ]]; then
+		die "--create-service requires a preset"
+	fi
+	if [[ $USE_SERVICE_REQUESTED -eq 1 && ! "$USE_SERVICE_ID" =~ ^[1-9][0-9]*$ ]]; then
+		die "--use-service requires a positive numeric service ID"
+	fi
+}
+
+parse_setup_options() {
+	local allow_static_arp="$1"
+	shift
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--no-ama)   NO_AMA=1; shift ;;
+			--wait-ama) WAIT_AMA=1; shift ;;
+			--static-arp)
+				[[ $allow_static_arp -eq 1 ]] || die "Unknown option: $1"
+				STATIC_ARP=1
+				shift
+				;;
+			--create-service=*)
+				CREATE_SERVICE_PRESET="${1#*=}"
+				CREATE_SERVICE_REQUESTED=1
+				shift
+				;;
+			--create-service)
+				[[ -n "${2:-}" ]] || die "--create-service requires a preset"
+				CREATE_SERVICE_PRESET="$2"
+				CREATE_SERVICE_REQUESTED=1
+				shift 2
+				;;
+			--use-service=*)
+				USE_SERVICE_ID="${1#*=}"
+				USE_SERVICE_REQUESTED=1
+				shift
+				;;
+			--use-service)
+				[[ -n "${2:-}" ]] || die "--use-service requires a service ID"
+				USE_SERVICE_ID="$2"
+				USE_SERVICE_REQUESTED=1
+				shift 2
+				;;
+			--service|--service=*) die "Use --create-service PRESET instead of --service" ;;
+			*) die "Unknown option: $1" ;;
+		esac
+	done
+
+	validate_service_options
+}
+
+create_vf_parent_svc() {
+	local preset="$1"
+	local svc_id
+
+	if [ ! -x "$SVC_TOOL" ]; then
+		echo "svc_tool not found at $SVC_TOOL." >&2
+		echo "Create a parent service, e.g.:" >&2
+		echo "  cxi_service create -y cxi_service_template_parent.yaml" >&2
+		echo "Then assign it with --use-service <svc_id>, or manually:" >&2
+		echo "  echo <svc_id> > /sys/class/cxi/${CXI_DEVICE}/vf/<vf>/svc_id" >&2
+		die "No svc_tool available; assign a parent service to the VFs and re-run"
+	fi
+
+	svc_id=$("$SVC_TOOL" "$preset" "$CXI_DEVICE") ||
+		die "Failed to create $preset parent service via svc_tool"
+	[[ -n "$svc_id" ]] || die "svc_tool returned empty svc_id"
+
+	echo "$svc_id"
+}
+
+# Assign a parent service to all VFs
+assign_vf_parent_svc() {
+	local count="$1"
+	local svc_id="$2"
+	local i
+
+	for ((i=0; i<count; i++)); do
+		echo "$svc_id" > "/sys/class/cxi/${CXI_DEVICE}/vf/${i}/svc_id" ||
+			die "Failed to assign svc_id $svc_id to VF $i"
+	done
+}
+
+ensure_vf_parent_svc() {
+	local count="$1"
+	local i svc_id needs_svc=0
+
+	if [[ -n "$USE_SERVICE_ID" ]]; then
+		echo "Assigning parent service $USE_SERVICE_ID to all VFs." >&2
+		assign_vf_parent_svc "$count" "$USE_SERVICE_ID"
+		return 0
+	fi
+
+	if [[ $CREATE_SERVICE_REQUESTED -eq 1 ]]; then
+		echo "Creating $CREATE_SERVICE_PRESET parent service and assigning it to all VFs." >&2
+		svc_id=$(create_vf_parent_svc "$CREATE_SERVICE_PRESET")
+		assign_vf_parent_svc "$count" "$svc_id"
+		return 0
+	fi
+
+	for ((i=0; i<count; i++)); do
+		svc_id=$(cat "/sys/class/cxi/${CXI_DEVICE}/vf/${i}/svc_id" 2>/dev/null || echo 0)
+		if [[ "$svc_id" -eq 0 ]]; then
+			needs_svc=1
+			break
+		fi
+	done
+	[[ $needs_svc -eq 0 ]] && return 0
+
+	echo "No service assigned to the VFs. Creating a default parent service and assigning it to all VFs." >&2
+	svc_id=$(create_vf_parent_svc "$CREATE_SERVICE_PRESET")
+	assign_vf_parent_svc "$count" "$svc_id"
+}
 
 # Populate PF_PCI_PATH and PF_NET_DEV globals for the current CXI_DEVICE.
 init_pf() {
@@ -283,6 +408,9 @@ cmd_setup() {
 		echo "All VFs removed from ${CXI_DEVICE}." >&2
 		return
 	fi
+
+	# The svc_id sysfs nodes must be assigned before VFs bind to cxi_ss1.
+	ensure_vf_parent_svc "$num_vfs"
 
 	# Disable autoprobe before creating VFs so vfio-pci (or any other driver
 	# with a registered dynamic ID) cannot claim them at creation time.
@@ -539,35 +667,26 @@ case "$CMD" in
 		cmd_list
 		;;
 	setup)
-		[[ -n "$2" ]] || die "Usage: $0 setup <num_vfs> [--no-ama] [--wait-ama]"
+		[[ -n "$2" ]] || die "Usage: $0 setup <num_vfs> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama]"
 		[[ "$2" =~ ^[0-9]+$ ]] || die "num_vfs must be a non-negative integer"
-		for opt in "${@:3}"; do
-			case "$opt" in
-				--no-ama)   NO_AMA=1 ;;
-				--wait-ama) WAIT_AMA=1 ;;
-				*) die "Unknown option: $opt" ;;
-			esac
-		done
-		cmd_setup "$2"
+		num_vfs="$2"
+		shift 2
+		parse_setup_options 0 "$@"
+		cmd_setup "$num_vfs"
 		;;
 	cleanup)
 		cmd_setup 0
 		;;
 	self-test)
-		[[ -n "$2" ]] || die "Usage: $0 self-test <num_vfs> [--no-ama] [--wait-ama] [--static-arp]"
+		[[ -n "$2" ]] || die "Usage: $0 self-test <num_vfs> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama] [--static-arp]"
 		[[ "$2" =~ ^[0-9]+$ ]] || die "num_vfs must be a non-negative integer"
-		for opt in "${@:3}"; do
-			case "$opt" in
-				--no-ama)     NO_AMA=1 ;;
-				--wait-ama)   WAIT_AMA=1 ;;
-				--static-arp) STATIC_ARP=1 ;;
-				*) die "Unknown option: $opt" ;;
-			esac
-		done
-		cmd_self_test "$2"
+		num_vfs="$2"
+		shift 2
+		parse_setup_options 1 "$@"
+		cmd_self_test "$num_vfs"
 		;;
 	*)
-		echo "Usage: $0 {list|setup <N> [--no-ama] [--wait-ama]|cleanup|self-test <N> [--no-ama] [--wait-ama] [--static-arp]}" >&2
+		echo "Usage: $0 {list|setup <N> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama]|cleanup|self-test <N> [--create-service PRESET|--use-service ID] [--no-ama] [--wait-ama] [--static-arp]}" >&2
 		exit 1
 		;;
 esac
