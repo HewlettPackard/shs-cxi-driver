@@ -331,11 +331,11 @@ struct cxi_eth {
 
 	/* Incremental UC/MC filter map.
 	 *
-	 * all_mcast_active tracks whether RMU_ETH_FILTER_ALL_MCAST is currently
-	 * installed in hardware.
+	 * all_mcast_active tracks whether the all-multicast semantic filter is
+	 * currently installed in hardware.
 	 *
-	 * uc_mc_filters[] is indexed by dynamic slot number (index 0 corresponds
-	 * to hardware slot RMU_ETH_FILTER_UC_MC, index 1 to the next, etc.).
+	 * uc_mc_filters[] is indexed by dynamic slot number owned by the RMU
+	 * manager.
 	 * A zero entry means the slot is free; a non-zero entry holds the u64 MAC
 	 * address of the filter installed there.
 	 */
@@ -344,6 +344,8 @@ struct cxi_eth {
 	bool all_mcast_active;
 	bool promisc_active;
 	bool bcast_active;
+	/* Primary "own MAC" currently in hardware, or 0. Protected by filter_lock. */
+	u64 own_mac;
 	/* Serializes access to the HW filter table (uc_mc_filters[] and
 	 * the *_active flags).
 	 */

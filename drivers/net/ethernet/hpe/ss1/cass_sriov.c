@@ -1029,6 +1029,8 @@ static void disable_sriov(struct pci_dev *pdev)
 
 	cass_eth_mc_sw_sriov_configure(hw, 0);
 
+	cass_rmu_eth_sriov_disable(hw);
+
 	if (hw->vf_listener) {
 		kthread_stop(hw->vf_listener);
 		hw->vf_listener = NULL;
@@ -1103,10 +1105,15 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 	cass_write(hw, C_PI_CFG_PRI_SRIOV, &pri_sriov,
 		   sizeof(union c_pi_cfg_pri_sriov));
 
+	/* Carve the VF share of the RMU set_list before the VFs can appear. */
+	rc = cass_rmu_eth_sriov_enable(hw, num_vfs);
+	if (rc)
+		goto err_kill_listener;
+
 	rc = pci_enable_sriov(pdev, num_vfs);
 	if (rc) {
 		cxidev_err(&hw->cdev, "SRIOV enable failed %d\n", rc);
-		goto err_kill_listener;
+		goto err_rmu_disable;
 	}
 
 	rc = cass_eth_mc_sw_sriov_configure(hw, num_vfs);
@@ -1120,6 +1127,8 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 
 err_disable_sriov:
 	pci_disable_sriov(pdev);
+err_rmu_disable:
+	cass_rmu_eth_sriov_disable(hw);
 err_kill_listener:
 	kthread_stop(hw->vf_listener);
 	hw->vf_listener = NULL;

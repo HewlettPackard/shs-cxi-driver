@@ -660,14 +660,47 @@ static int cass_rmu_eth_filters_show(struct seq_file *s, void *unused)
 	struct cxi_rmu_eth *rmu_eth;
 	int id;
 	int active_filters = 0;
+	int reservations = 0;
 
 	mutex_lock(&hw->rmu_eth_lock);
+	seq_printf(s,
+		   "layout set_list_used=%u/%u vf_filter_quota=%u rss_pf=[0,%u) rss_vf=[%u,%u)\n",
+		   bitmap_weight(hw->rmu_set_list_map, C_RMU_CFG_PTLTE_SET_LIST_ENTRIES),
+		   C_RMU_CFG_PTLTE_SET_LIST_ENTRIES, hw->rmu_vf_set_list_quota,
+		   hw->rmu_vf_indir_base, hw->rmu_vf_indir_base, hw->rmu_vf_indir_end);
+	seq_puts(s, "reservations:\n");
+	idr_for_each_entry(&hw->rmu_eth_idr, rmu_eth, id) {
+		struct cxi_rmu_eth_priv *priv =
+			container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
+		char func[8];
+		const char *role;
+
+		if (priv->is_vf) {
+			scnprintf(func, sizeof(func), "vf%u", priv->vf_num + 1);
+			role = "vf";
+		} else {
+			scnprintf(func, sizeof(func), "pf");
+			role = priv->kernel_eth ? "kernel-eth" : "generic";
+		}
+
+		seq_printf(s,
+			   "func=%-4s client=%-3d role=%-10s filters_req=%-3u filters_grant=%-3u rss_req=%-3u rss_grant=%-3u rss=[%u,%u)\n",
+			   func, id, role, priv->requested_filters,
+			   priv->max_filters,
+			   priv->requested_indir, priv->indir_size,
+			   priv->indir_base, priv->indir_base + priv->indir_size);
+		reservations++;
+	}
+	if (!reservations)
+		seq_puts(s, "none\n");
+
+	seq_puts(s, "active_filters:\n");
 	idr_for_each_entry(&hw->rmu_eth_idr, rmu_eth, id) {
 		struct cxi_rmu_eth_priv *priv =
 			container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
 		unsigned int i;
 
-		for (i = 0; i < priv->set_list_quota; i++) {
+		for (i = 0; i < priv->max_filters; i++) {
 			union c_rmu_cfg_ptlte_set_list set_list;
 			union c_rmu_cfg_ptlte_set_list set_list_mask;
 			unsigned int hw_idx;
@@ -676,15 +709,15 @@ static int cass_rmu_eth_filters_show(struct seq_file *s, void *unused)
 			const char *type;
 			const char *rss;
 
-			if (!priv->mac_filter_slots[i])
+			if (priv->slots[i].mode == CXI_RMU_ETH_FILTER_NONE)
 				continue;
 
-			hw_idx = priv->set_list_base + i;
+			hw_idx = priv->slots[i].hw_idx;
 			if (priv->is_vf)
 				scnprintf(func, sizeof(func), "vf%u", priv->vf_num + 1);
 			else
 				scnprintf(func, sizeof(func), "pf");
-			rss = priv->mac_filter_slots[i] == CXI_RMU_ETH_FILTER_RSS ?
+			rss = priv->slots[i].mode == CXI_RMU_ETH_FILTER_RSS ?
 				"on" : "off";
 
 			spin_lock(&hw->rmu_lock);

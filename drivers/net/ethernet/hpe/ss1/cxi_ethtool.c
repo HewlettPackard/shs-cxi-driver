@@ -247,6 +247,9 @@ int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels)
 
 	if (!valid_rx_channel_count(num_rx_channels))
 		return -EINVAL;
+	if (num_rx_channels > 1 &&
+	    num_rx_channels > dev->rmu_eth->max_indir_entries)
+		return -ENOSPC;
 
 	if (num_rx_channels == dev->rss_queues)
 		return 0;
@@ -256,11 +259,16 @@ int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels)
 		if (rc)
 			return rc;
 	} else {
+		/* Drop references to the old RSS PTEs before freeing queues. */
+		rc = cxi_rmu_eth_set_rss_queues(dev->rmu_eth, 0, NULL, 0);
+		if (rc)
+			return rc;
 		cxi_shrink_rx_channels(dev, num_rx_channels);
 	}
 
 	dev->rss_queues = num_rx_channels;
-	dev->rss_indir_size = num_rx_channels > 1 ? rss_indir_size : 0;
+	dev->rss_indir_size = num_rx_channels > 1 ?
+		min(rss_indir_size, dev->rmu_eth->max_indir_entries) : 0;
 
 	rc = netif_set_real_num_rx_queues(dev->ndev, num_rx_channels);
 	if (rc)

@@ -558,23 +558,42 @@ enum cxi_rmu_eth_filter_mode {
 	CXI_RMU_ETH_FILTER_RSS,
 };
 
+struct cxi_rmu_eth_fixed_filter {
+	u8 mode;
+	bool active;
+};
+
+/**
+ * struct cxi_rmu_eth_slot - One client-relative filter index
+ *
+ * @mode: enum cxi_rmu_eth_filter_mode value; NONE if this idx is inactive.
+ * @hw_idx: Physical set_list index reserved for this client-relative idx.
+ */
+struct cxi_rmu_eth_slot {
+	u8 mode;
+	u16 hw_idx;
+	u64 mac_addr;
+};
+
 /**
  * struct cxi_rmu_eth_priv - Private Ethernet resource tracking (INTERNAL)
  *
  * Full internal structure containing all resource management state.
- * One allocation per function (PF or VF).
+ * One allocation per RMU Ethernet client.
  */
 struct cxi_rmu_eth_priv {
 	struct cxi_rmu_eth rmu_eth;     /* Public opaque handle */
 	struct cxi_dev *dev;            /* Device this allocation belongs to */
 	bool is_vf;                     /* True if this is a VF allocation */
 	unsigned int vf_num;            /* VF number (if is_vf=true) */
+	bool kernel_eth;                /* True for the in-kernel PF Ethernet client */
 
 	/* Resource allocation */
-	unsigned int indir_base;        /* Absolute offset in HW indirection table */
-	unsigned int indir_size;        /* Number of indir entries allocated */
-	unsigned int set_list_base;     /* Absolute offset in HW set_list (4+ for dynamic) */
-	unsigned int set_list_quota;    /* Max set_list entries for this function */
+	unsigned int requested_filters; /* Number of filters requested by this client */
+	unsigned int requested_indir;   /* Number of indirection entries requested by this client */
+	unsigned int indir_base;        /* Absolute HW indirection-table offset for this client */
+	unsigned int indir_size;        /* Indirection entries allocated to this client */
+	unsigned int max_filters;       /* set_list count quota for this client */
 
 	/* Default RSS configuration (used by all MACs when use_rss=true) */
 	unsigned int rss_queues;
@@ -582,8 +601,13 @@ struct cxi_rmu_eth_priv {
 	u32 hash_types;
 	unsigned int indir_entries;     /* Active indirection table size */
 
-	/* Filter tracking [0..quota-1]: enum cxi_rmu_eth_filter_mode values */
-	u8 *mac_filter_slots;
+	/* Filter tracking [0..max_filters-1], reserved at allocation time.
+	 * slot_lock serialises slot search/claim/release
+	 */
+	spinlock_t slot_lock;
+	struct cxi_rmu_eth_slot *slots;
+	struct cxi_rmu_eth_fixed_filter all_mcast;
+	struct cxi_rmu_eth_fixed_filter promisc;
 };
 
 /**
@@ -913,6 +937,29 @@ struct cass_dev {
 
 	/* Protects all RMU Eth resources */
 	struct mutex rmu_eth_lock;
+
+	/* RMU Ethernet set_list (MAC filter) allocator, 128 HW entries.
+	 * The kernel PF Ethernet driver has a parameter-configured reserved
+	 * range at the end; generic PF and VF clients share all other entries.
+	 * The last two entries remain fixed for the PF Ethernet all-multicast and
+	 * promiscuous filters (see cass_rmu_eth.c) so they cannot consume dynamic
+	 * client capacity or shadow more specific filters.
+	 * Protected by rmu_eth_lock.
+	 */
+	DECLARE_BITMAP(rmu_set_list_map, C_RMU_CFG_PTLTE_SET_LIST_ENTRIES);
+	/* Fixed slots permanently reserved for the kernel PF Ethernet
+	 * all-multicast and promiscuous filters; never returned to the dynamic
+	 * pool.
+	 */
+#define RMU_ETH_ALL_MCAST_HW_IDX (C_RMU_CFG_PTLTE_SET_LIST_ENTRIES - 2)
+#define RMU_ETH_PROMISC_HW_IDX (C_RMU_CFG_PTLTE_SET_LIST_ENTRIES - 1)
+	unsigned int rmu_vf_set_list_quota;	/* per-VF filter count share (0 = SR-IOV off) */
+	unsigned int rmu_vf_set_list_used[C_NUM_VFS];
+	DECLARE_BITMAP(rmu_indir_map,
+		       C_RMU_CFG_PORTAL_INDEX_INDIR_TABLE_ENTRIES);
+	unsigned int rmu_vf_indir_base;
+	unsigned int rmu_vf_indir_end;
+	unsigned int rmu_vf_indir_quota;	/* per-VF RSS partition size */
 
 	/* Protects C_RMU_CFG_PORTAL_LIST_X/Y. */
 	spinlock_t rmu_portal_list_lock;
@@ -1376,6 +1423,8 @@ int register_error_handlers(struct cass_dev *hw);
 void deregister_error_handlers(struct cass_dev *hw);
 int cass_sriov_configure(struct pci_dev *pdev, int num_vfs);
 void cass_vf_eth_cfg_reset(struct cass_dev *hw);
+int cass_rmu_eth_sriov_enable(struct cass_dev *hw, int num_vfs);
+void cass_rmu_eth_sriov_disable(struct cass_dev *hw);
 int cass_vf_init(struct cass_dev *hw);
 void cass_vf_fini(struct cass_dev *hw);
 

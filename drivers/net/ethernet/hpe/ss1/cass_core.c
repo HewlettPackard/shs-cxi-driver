@@ -992,6 +992,13 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	idr_init(&hw->rmu_eth_idr);
 	mutex_init(&hw->rmu_eth_lock);
 
+	/* Permanently reserve the fixed slots used by the kernel PF Ethernet
+	 * all-multicast and promiscuous filters; they are never returned to the
+	 * dynamic pool.
+	 */
+	set_bit(RMU_ETH_ALL_MCAST_HW_IDX, hw->rmu_set_list_map);
+	set_bit(RMU_ETH_PROMISC_HW_IDX, hw->rmu_set_list_map);
+
 	rc = cass_eth_mc_sw_alloc(hw);
 	if (rc)
 		goto hw_free;

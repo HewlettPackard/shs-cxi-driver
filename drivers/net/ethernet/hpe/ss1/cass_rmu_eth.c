@@ -16,23 +16,45 @@ _Static_assert(CXI_ETH_MAX_INDIR_ENTRIES <=
 	       C_RMU_CFG_PORTAL_INDEX_INDIR_TABLE_ENTRIES,
 	       "CXI_ETH_MAX_INDIR_ENTRIES exceeds NIC table size");
 
-/* Maximum number of concurrent clients allowed in PF */
-static unsigned int rmu_pf_max_clients = 2;
-module_param(rmu_pf_max_clients, uint, 0444);
-MODULE_PARM_DESC(rmu_pf_max_clients, "Maximum number of concurrent RMU Ethernet clients in PF");
-
-/* Total MAC filter allocation (set_list entries)
- * - PF gets fixed quota: rmu_pf_client_max_filters (default 20, module parameter)
- * - VFs split remaining pool equally.
+/* set_list entries (lowest match priority, bottom of the table) reserved
+ * exclusively for the in-kernel PF Ethernet driver.  Anchoring it at the
+ * bottom keeps its promiscuous catch-all from shadowing VF or userspace PF
+ * filters, regardless of client start order.  All other clients share the
+ * remaining entries on demand.
  */
-static unsigned int rmu_pf_client_max_filters = 20;
-module_param(rmu_pf_client_max_filters, uint, 0444);
-MODULE_PARM_DESC(rmu_pf_client_max_filters,
-		 "Maximum number of MAC filters allocated to a PF client");
+static unsigned int rmu_pf_eth_filters = 20;
+static int param_set_rmu_pf_eth_filters(const char *val,
+					const struct kernel_param *kp)
+{
+	unsigned int tmp;
+	int rc;
+
+	rc = kstrtouint(val, 0, &tmp);
+	if (rc)
+		return rc;
+
+	if (tmp > C_RMU_CFG_PTLTE_SET_LIST_ENTRIES - 2)
+		return -EINVAL;
+
+	*(unsigned int *)kp->arg = tmp;
+
+	return 0;
+}
+
+static const struct kernel_param_ops param_ops_rmu_pf_eth_filters = {
+	.set = param_set_rmu_pf_eth_filters,
+	.get = param_get_uint,
+};
+
+module_param_cb(rmu_pf_eth_filters, &param_ops_rmu_pf_eth_filters,
+		&rmu_pf_eth_filters, 0444);
+MODULE_PARM_DESC(rmu_pf_eth_filters,
+		 "set_list entries reserved for the kernel PF Ethernet driver");
 
 /* Indirection table allocation
- * - PF gets fixed quota: rmu_pf_client_max_rss_indir_size (default 64, module parameter)
- * - VFs split remaining pool equally.
+ * - PF Ethernet gets a fixed reservation: rmu_pf_client_max_rss_indir_size
+ *   (default 64, module parameter).
+ * - All other clients share the remaining pool.
  */
 static unsigned int rmu_pf_client_max_rss_indir_size = 64;
 static int param_set_rmu_pf_client_max_rss_indir_size(const char *val,
@@ -139,6 +161,7 @@ static int check_vf_mac_policy(struct cass_dev *hw, unsigned int vf_num,
 /**
  * cxi_rmu_eth_alloc_vf() - Allocate Ethernet packet matching resources for VF
  * @cdev: CXI device
+ * @opts: Requested filter and RSS indirection entries
  *
  * VF version: Sends allocation request to PF via vsock. The PF will allocate
  * the actual hardware resources and track them. The VF maintains a minimal
@@ -146,13 +169,17 @@ static int check_vf_mac_policy(struct cass_dev *hw, unsigned int vf_num,
  *
  * Return: Pointer to cxi_rmu_eth or ERR_PTR on error
  */
-static struct cxi_rmu_eth *cxi_rmu_eth_alloc_vf(struct cxi_dev *cdev)
+static struct cxi_rmu_eth *
+cxi_rmu_eth_alloc_vf(struct cxi_dev *cdev,
+		     const struct cxi_rmu_eth_alloc_opts *opts)
 {
 	struct cxi_rmu_eth_priv *priv;
 	struct cxi_rmu_eth_alloc_resp resp;
 	const struct cxi_rmu_eth_alloc_cmd cmd = {
 		.op = CXI_OP_RMU_ETH_ALLOC,
 		.resp = &resp,
+		.filter_entries = opts->filter_entries,
+		.rss_indir_entries = opts->rss_indir_entries,
 	};
 	size_t resp_len = sizeof(resp);
 	int rc;
@@ -167,12 +194,79 @@ static struct cxi_rmu_eth *cxi_rmu_eth_alloc_vf(struct cxi_dev *cdev)
 		kfree(priv);
 		return ERR_PTR(rc);
 	}
+	if (resp_len != sizeof(resp)) {
+		kfree(priv);
+		return ERR_PTR(-EPROTO);
+	}
 
 	priv->dev = cdev;
 	priv->rmu_eth.id = resp.rmu_eth;
 	priv->rmu_eth.max_filters = resp.max_filters;
+	priv->rmu_eth.max_indir_entries = resp.max_indir_entries;
 
 	return &priv->rmu_eth;
+}
+
+/**
+ * rmu_set_list_slot_alloc() - Grab any free set_list entry from the pool
+ * @hw: Cassini device
+ * @kernel_eth: Select the reserved PF Ethernet range
+ *
+ * Caller holds rmu_eth_lock. Kernel PF Ethernet uses its reserved range;
+ * all other clients share the range below it.
+ *
+ * Return: hw index on success, -ENOSPC if the pool is exhausted
+ */
+static int rmu_set_list_slot_alloc(struct cass_dev *hw, bool kernel_eth)
+{
+	unsigned int pf_eth_first = C_RMU_CFG_PTLTE_SET_LIST_ENTRIES - 2 -
+				    rmu_pf_eth_filters;
+	unsigned int first = kernel_eth ? pf_eth_first : 0;
+	unsigned int end = kernel_eth ? RMU_ETH_ALL_MCAST_HW_IDX : pf_eth_first;
+	unsigned int hw_idx;
+
+	hw_idx = find_next_zero_bit(hw->rmu_set_list_map, end, first);
+	if (hw_idx >= end)
+		return -ENOSPC;
+
+	set_bit(hw_idx, hw->rmu_set_list_map);
+
+	return hw_idx;
+}
+
+static void rmu_indir_alloc(struct cass_dev *hw, unsigned int want,
+			    unsigned int lo, unsigned int hi,
+			    unsigned int *base_out, unsigned int *size_out)
+{
+	unsigned int size;
+
+	*base_out = 0;
+	*size_out = 0;
+	if (!want)
+		return;
+
+	for (size = rounddown_pow_of_two(want); size; size >>= 1) {
+		unsigned int start;
+
+		if (size > hi - lo)
+			continue;
+
+		start = round_down(hi - size, size);
+		for (;;) {
+			if (start < lo)
+				break;
+			if (find_next_bit(hw->rmu_indir_map, start + size,
+					  start) == start + size) {
+				bitmap_set(hw->rmu_indir_map, start, size);
+				*base_out = start;
+				*size_out = size;
+				return;
+			}
+			if (start < size)
+				break;
+			start -= size;
+		}
+	}
 }
 
 /**
@@ -180,124 +274,251 @@ static struct cxi_rmu_eth *cxi_rmu_eth_alloc_vf(struct cxi_dev *cdev)
  * @cdev: CXI device
  * @vf_en: Whether this is a VF allocation
  * @vf_num: VF number if vf_en is true
+ * @opts: Requested filter and RSS indirection entries
+ * @role: PF client role (generic vs in-kernel Ethernet)
  *
- * PF supports up to CXI_RMU_ETH_PF_MAX_CLIENTS concurrent allocations.
- * VFs support single client per function.
- * Returns -EBUSY if no slots available.
- *
- * Automatically allocates FULL per-function quota based on num_vfs.
+ * Reserves set_list entries and an RSS indirection range:
+ *   - kernel Ethernet: fixed quota of rmu_pf_eth_filters;
+ *   - generic PF client: requested filter count;
+ *   - VF: its equal share of the set_list pool, computed at SR-IOV enable
+ *     time.
+ * set_list entries need not be contiguous, but every granted client-relative
+ * filter index has a reserved hardware entry for the allocation's lifetime.
  *
  * Return: Pointer to cxi_rmu_eth or ERR_PTR on error
  */
-struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en, u8 vf_num)
+struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
+					       u8 vf_num,
+					       const struct cxi_rmu_eth_alloc_opts *opts,
+					       enum cxi_rmu_eth_role role)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
-	struct cxi_rmu_eth *rmu_eth = NULL;
+	unsigned int max_filters;
+	unsigned int indir_base = 0;
+	unsigned int indir_size = 0;
+	struct cxi_rmu_eth *rmu_eth;
 	struct cxi_rmu_eth_priv *priv;
-	unsigned int indir_quota;
-	unsigned int set_list_quota;
 	int id;
 	int i;
+	int hw_idx;
+	int rc;
+
+	if (!opts || opts->rss_indir_entries > CXI_ETH_MAX_INDIR_ENTRIES)
+		return ERR_PTR(-EINVAL);
 
 	if (vf_en && hw->num_vfs == 0)
 		return ERR_PTR(-EINVAL);
 
-	mutex_lock(&hw->rmu_eth_lock);
-
-	/* Allocate private structure */
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		mutex_unlock(&hw->rmu_eth_lock);
+	if (!priv)
 		return ERR_PTR(-ENOMEM);
-	}
 
-	/* Initialize structure */
 	priv->dev = cdev;
 	priv->is_vf = vf_en;
 	priv->vf_num = vf_num;
-
-	/* Store allocation in device structure (needed before ID allocation) */
+	priv->kernel_eth = role == CXI_RMU_ETH_ROLE_KERNEL_ETH;
+	priv->requested_filters = opts->filter_entries;
+	priv->requested_indir = opts->rss_indir_entries;
+	spin_lock_init(&priv->slot_lock);
 	rmu_eth = &priv->rmu_eth;
 
-	/* Get unique ID for this allocation. PF and VFs have separate ID spaces.
-	 * PF clients: IDs 0 to (rmu_pf_max_clients - 1)
-	 * VF clients: IDs starting from rmu_pf_max_clients
-	 */
-	id = idr_alloc(&hw->rmu_eth_idr, rmu_eth,
-		       vf_en ? rmu_pf_max_clients + vf_num : 0,
-		       vf_en ? rmu_pf_max_clients + vf_num + 1 : rmu_pf_max_clients,
-		       GFP_KERNEL);
+	mutex_lock(&hw->rmu_eth_lock);
 
+	/* Grant a filter count quota and reserve the corresponding set_list
+	 * entries for this allocation for its entire lifetime.
+	 */
+	if (vf_en) {
+		unsigned int vf_indir_base;
+
+		if (!opts->filter_entries || !hw->rmu_vf_set_list_quota) {
+			rc = -ENOSPC;
+			goto err_unlock;
+		}
+		if (hw->rmu_vf_set_list_used[vf_num] >=
+		    hw->rmu_vf_set_list_quota) {
+			rc = -ENOSPC;
+			goto err_unlock;
+		}
+		max_filters = min(opts->filter_entries,
+				  hw->rmu_vf_set_list_quota -
+				  hw->rmu_vf_set_list_used[vf_num]);
+
+		vf_indir_base = hw->rmu_vf_indir_base +
+				vf_num * hw->rmu_vf_indir_quota;
+		rmu_indir_alloc(hw, opts->rss_indir_entries,
+				vf_indir_base,
+				vf_indir_base + hw->rmu_vf_indir_quota,
+				&indir_base, &indir_size);
+		if (opts->rss_indir_entries && !indir_size) {
+			rc = -ENOSPC;
+			goto err_unlock;
+		}
+	} else if (role == CXI_RMU_ETH_ROLE_KERNEL_ETH) {
+		if (rmu_pf_eth_filters == 0) {
+			rc = -ENOSPC;
+			goto err_unlock;
+		}
+		max_filters = rmu_pf_eth_filters;
+		indir_base = 0;
+		indir_size = min(opts->rss_indir_entries,
+				 rmu_pf_client_max_rss_indir_size);
+		if (indir_size)
+			indir_size = rounddown_pow_of_two(indir_size);
+		if (find_next_bit(hw->rmu_indir_map, indir_size, 0) != indir_size) {
+			rc = -EBUSY;
+			goto err_unlock;
+		}
+		bitmap_set(hw->rmu_indir_map, 0, indir_size);
+	} else {
+		if (!opts->filter_entries) {
+			rc = -EINVAL;
+			goto err_unlock;
+		}
+		max_filters = min_t(unsigned int, opts->filter_entries,
+				    C_RMU_CFG_PTLTE_SET_LIST_ENTRIES);
+		rmu_indir_alloc(hw, opts->rss_indir_entries,
+				max(hw->rmu_vf_indir_end,
+				    rmu_pf_client_max_rss_indir_size),
+				C_RMU_CFG_PORTAL_INDEX_INDIR_TABLE_ENTRIES,
+				&indir_base, &indir_size);
+		if (opts->rss_indir_entries && !indir_size) {
+			rc = -ENOSPC;
+			goto err_unlock;
+		}
+	}
+
+	id = idr_alloc(&hw->rmu_eth_idr, rmu_eth, 0, 0, GFP_KERNEL);
 	if (id < 0) {
-		kfree(priv);
-		mutex_unlock(&hw->rmu_eth_lock);
-		return ERR_PTR(id);
+		rc = id;
+		goto err_free_indir;
 	}
 
 	rmu_eth->id = id;
+	priv->indir_base = indir_base;
+	priv->indir_size = indir_size;
+	rmu_eth->max_indir_entries = indir_size;
 
-	/* Calculate per-client quotas and base indices
-	 * - indirection table layout remains unchanged (PF first, then VFs).
-	 * - set_list places PF clients at the end to avoid PF catch-all filters
-	 *   taking early slots.
-	 */
-	if (vf_en) {
-		/* VF gets equal share of remaining indirection and set_list pools */
-		indir_quota = (C_RMU_CFG_PORTAL_INDEX_INDIR_TABLE_ENTRIES -
-			      (rmu_pf_client_max_rss_indir_size * rmu_pf_max_clients)) / hw->num_vfs;
-		set_list_quota = (C_RMU_CFG_PTLTE_SET_LIST_ENTRIES -
-				 (rmu_pf_client_max_filters * rmu_pf_max_clients)) / hw->num_vfs;
-
-		priv->indir_base = (rmu_pf_client_max_rss_indir_size * rmu_pf_max_clients) +
-				   (vf_num * indir_quota);
-		priv->set_list_base = vf_num * set_list_quota;
-	} else {
-		/* PF client keeps original indirection layout and gets tail set_list */
-		indir_quota = rmu_pf_client_max_rss_indir_size;
-		set_list_quota = rmu_pf_client_max_filters;
-
-		priv->indir_base = id * indir_quota;
-		priv->set_list_base = C_RMU_CFG_PTLTE_SET_LIST_ENTRIES -
-				     (rmu_pf_max_clients * set_list_quota) +
-				     (id * set_list_quota);
+	priv->slots = kcalloc(max_filters, sizeof(*priv->slots), GFP_KERNEL);
+	if (!priv->slots) {
+		rc = -ENOMEM;
+		goto err_idr;
+	}
+	for (i = 0; i < max_filters; i++) {
+		hw_idx = rmu_set_list_slot_alloc(hw, priv->kernel_eth);
+		if (hw_idx < 0)
+			break;
+		priv->slots[i].hw_idx = hw_idx;
 	}
 
-	priv->indir_size = indir_quota;
-	priv->set_list_quota = set_list_quota;
-	rmu_eth->max_filters = set_list_quota;
-
-	/* Allocate MAC filter slot tracking array */
-	priv->mac_filter_slots = kcalloc(set_list_quota, sizeof(u8), GFP_KERNEL);
-	if (!priv->mac_filter_slots) {
-		idr_remove(&hw->rmu_eth_idr, id);
-		kfree(priv);
-		mutex_unlock(&hw->rmu_eth_lock);
-		return ERR_PTR(-ENOMEM);
+	if (!i) {
+		rc = -ENOSPC;
+		goto err_free_slots;
 	}
-
-	/* Invalidate all set_list entries in our quota to ensure clean state */
-	spin_lock(&hw->rmu_lock);
-	for (i = 0; i < set_list_quota; i++)
-		cass_invalidate_set_list(hw, priv->set_list_base + i);
-	spin_unlock(&hw->rmu_lock);
+	priv->max_filters = i;
+	rmu_eth->max_filters = i;
+	if (vf_en)
+		hw->rmu_vf_set_list_used[vf_num] += i;
 
 	/* Default RSS configuration (disabled initially) */
 	priv->rss_queues = 0;
 	priv->hash_types = 0;
-	priv->indir_entries = 0;  /* Active indirection table size */
+	priv->indir_entries = 0;
 
 	mutex_unlock(&hw->rmu_eth_lock);
 
 	return &priv->rmu_eth;
+
+err_free_slots:
+	while (i--)
+		clear_bit(priv->slots[i].hw_idx, hw->rmu_set_list_map);
+	kfree(priv->slots);
+err_idr:
+	idr_remove(&hw->rmu_eth_idr, id);
+err_free_indir:
+	bitmap_clear(hw->rmu_indir_map, indir_base, indir_size);
+err_unlock:
+	mutex_unlock(&hw->rmu_eth_lock);
+	kfree(priv);
+	return ERR_PTR(rc);
 }
 EXPORT_SYMBOL(cxi_rmu_eth_alloc_internal);
 
-struct cxi_rmu_eth *cxi_rmu_eth_alloc(struct cxi_dev *cdev)
+struct cxi_rmu_eth *
+cxi_rmu_eth_alloc(struct cxi_dev *cdev,
+		  const struct cxi_rmu_eth_alloc_opts *opts)
 {
-	return cdev->is_physfn ? cxi_rmu_eth_alloc_internal(cdev, false, 0) :
-				 cxi_rmu_eth_alloc_vf(cdev);
+	return cdev->is_physfn ?
+		cxi_rmu_eth_alloc_internal(cdev, false, 0, opts,
+					   CXI_RMU_ETH_ROLE_GENERIC) :
+		cxi_rmu_eth_alloc_vf(cdev, opts);
 }
 EXPORT_SYMBOL(cxi_rmu_eth_alloc);
+
+/**
+ * cass_rmu_eth_sriov_enable() - Compute the per-VF filter count quota
+ * @hw: Cassini device (PF)
+ * @num_vfs: Number of VFs being enabled
+ *
+ * Divides the currently-free set_list pool equally among the VFs. This is
+ * only a count quota, not a reserved hw range: each VF allocation reserves
+ * its granted entries from the shared pool for its lifetime. Must run before
+ * the VFs can allocate their own resources.
+ *
+ * Return: 0 on success, -ENOSPC if fewer than one entry per VF is free.
+ */
+int cass_rmu_eth_sriov_enable(struct cass_dev *hw, int num_vfs)
+{
+	unsigned int free_bits;
+	unsigned int per_vf;
+	unsigned int indir_first_used;
+	unsigned int indir_free;
+	int rc = 0;
+
+	mutex_lock(&hw->rmu_eth_lock);
+
+	free_bits = C_RMU_CFG_PTLTE_SET_LIST_ENTRIES -
+		    bitmap_weight(hw->rmu_set_list_map,
+				  C_RMU_CFG_PTLTE_SET_LIST_ENTRIES);
+	per_vf = free_bits / num_vfs;
+	if (per_vf == 0) {
+		cxidev_err(&hw->cdev,
+			   "Cannot enable %d VFs: only %u free RMU set_list entries\n",
+			   num_vfs, free_bits);
+		rc = -ENOSPC;
+		goto out;
+	}
+
+	indir_first_used = find_next_bit(hw->rmu_indir_map,
+					 C_RMU_CFG_PORTAL_INDEX_INDIR_TABLE_ENTRIES,
+					 rmu_pf_client_max_rss_indir_size);
+	indir_free = indir_first_used - rmu_pf_client_max_rss_indir_size;
+
+	hw->rmu_vf_set_list_quota = per_vf;
+	memset(hw->rmu_vf_set_list_used, 0, sizeof(hw->rmu_vf_set_list_used));
+	hw->rmu_vf_indir_base = rmu_pf_client_max_rss_indir_size;
+	hw->rmu_vf_indir_quota = indir_free / num_vfs;
+	hw->rmu_vf_indir_end = hw->rmu_vf_indir_base +
+				hw->rmu_vf_indir_quota * num_vfs;
+
+out:
+	mutex_unlock(&hw->rmu_eth_lock);
+	return rc;
+}
+
+/**
+ * cass_rmu_eth_sriov_disable() - Release the VF set_list/indirection quotas
+ * @hw: Cassini device (PF)
+ */
+void cass_rmu_eth_sriov_disable(struct cass_dev *hw)
+{
+	mutex_lock(&hw->rmu_eth_lock);
+	hw->rmu_vf_set_list_quota = 0;
+	memset(hw->rmu_vf_set_list_used, 0, sizeof(hw->rmu_vf_set_list_used));
+	hw->rmu_vf_indir_base = rmu_pf_client_max_rss_indir_size;
+	hw->rmu_vf_indir_end = rmu_pf_client_max_rss_indir_size;
+	hw->rmu_vf_indir_quota = 0;
+	mutex_unlock(&hw->rmu_eth_lock);
+}
 
 /**
  * cxi_rmu_eth_free_vf() - Free Ethernet resources (VF version)
@@ -347,27 +568,41 @@ void cxi_rmu_eth_free(struct cxi_rmu_eth *rmu_eth)
 
 	mutex_lock(&hw->rmu_eth_lock);
 
-	/* Invalidate all set_list entries in our quota range */
-	spin_lock(&hw->rmu_lock);
+	/* Invalidate active filters and return every reserved hw entry. */
+	for (i = 0; i < priv->max_filters; i++) {
+		struct cxi_rmu_eth_slot *slot = &priv->slots[i];
 
-	for (i = 0; i < priv->set_list_quota; i++) {
-		unsigned int hw_idx = priv->set_list_base + i;
+		if (slot->mode != CXI_RMU_ETH_FILTER_NONE) {
+			cxidev_dbg(priv->dev,
+				   "Removing RMU filter at idx=%d (hw_idx=%u)\n",
+				   i, slot->hw_idx);
 
-		/* Debug log for entries that were actually programmed */
-		if (priv->mac_filter_slots[i]) {
-			cxidev_dbg(priv->dev, "Removing RMU filter at idx=%d (hw_idx=%u)\n",
-				   i, hw_idx);
+			spin_lock(&hw->rmu_lock);
+			cass_invalidate_set_list(hw, slot->hw_idx);
+			spin_unlock(&hw->rmu_lock);
 		}
 
-		cass_invalidate_set_list(hw, hw_idx);
+		clear_bit(slot->hw_idx, hw->rmu_set_list_map);
 	}
 
-	spin_unlock(&hw->rmu_lock);
+	if (priv->all_mcast.active) {
+		spin_lock(&hw->rmu_lock);
+		cass_invalidate_set_list(hw, RMU_ETH_ALL_MCAST_HW_IDX);
+		spin_unlock(&hw->rmu_lock);
+	}
 
-	/* Free slot tracking array */
-	kfree(priv->mac_filter_slots);
+	if (priv->promisc.active) {
+		spin_lock(&hw->rmu_lock);
+		cass_invalidate_set_list(hw, RMU_ETH_PROMISC_HW_IDX);
+		spin_unlock(&hw->rmu_lock);
+	}
 
-	/* Remove from IDR */
+	if (priv->is_vf)
+		hw->rmu_vf_set_list_used[priv->vf_num] -= priv->max_filters;
+
+	kfree(priv->slots);
+	bitmap_clear(hw->rmu_indir_map, priv->indir_base, priv->indir_size);
+
 	idr_remove(&hw->rmu_eth_idr, rmu_eth->id);
 
 	mutex_unlock(&hw->rmu_eth_lock);
@@ -377,80 +612,92 @@ void cxi_rmu_eth_free(struct cxi_rmu_eth *rmu_eth)
 EXPORT_SYMBOL(cxi_rmu_eth_free);
 
 /**
- * add_rmu_set_list_filter() - Common hardware programming logic for filter installation
+ * program_rmu_set_list_filter() - Program one RMU set-list filter
  * @priv: Private resource structure
- * @idx: Relative index within client's quota
+ * @hw_idx: Hardware set_list index
  * @pte: PTE pointer
  * @use_rss: Whether traffic participates in RSS
  * @set_list: Prepared set_list entry with match criteria
  * @set_list_mask: Prepared mask for set_list
  *
- * Handles index validation, translation, and hardware programming for both
- * MAC filters and promiscuous mode filters.
+ * @mode: Storage for the programmed filter mode
+ * @pte_id: Storage for the programmed PTE identifier
  *
  * Return: 0 on success, negative errno on error
  */
-static int add_rmu_set_list_filter(struct cxi_rmu_eth_priv *priv, unsigned int idx,
-				   struct cxi_pte *pte, bool use_rss,
-				   const union c_rmu_cfg_ptlte_set_list *set_list,
-				   const union c_rmu_cfg_ptlte_set_list *set_list_mask)
+static int program_rmu_set_list_filter(struct cxi_rmu_eth_priv *priv,
+				       unsigned int hw_idx,
+				       struct cxi_pte *pte, bool use_rss,
+				       const union c_rmu_cfg_ptlte_set_list *set_list,
+				       const union c_rmu_cfg_ptlte_set_list *set_list_mask,
+				       u8 *mode, u32 *pte_id)
 {
 	struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
-	unsigned int set_list_idx;
 	unsigned int portal_idx;
 	struct c_rmu_cfg_ptlte_set_ctrl_table_entry set_ctrl = {};
 
-	/* Validate index range */
-	if (idx >= priv->set_list_quota) {
-		cxidev_err(priv->dev, "Index %d out of range [0..%u]\n",
-			   idx, priv->set_list_quota - 1);
-		return -EINVAL;
-	}
-
-	/* Extract portal index from PTE */
 	portal_idx = pte->id;
 
-	/* Translate relative index to hardware index */
-	set_list_idx = priv->set_list_base + idx;
+	cxidev_dbg(priv->dev,
+		   "Programming RMU filter hw_idx=%u use_rss=%d pte=%u\n",
+		   hw_idx, use_rss, portal_idx);
 
 	spin_lock(&hw->rmu_lock);
 
 	/* Program set_list */
-	cass_config_set_list(hw, set_list_idx, portal_idx,
+	cass_config_set_list(hw, hw_idx, portal_idx,
 			     set_list, set_list_mask);
 
 	/* Program set_ctrl for RSS or direct portal */
-	if (use_rss && priv->rss_queues > 1) {
+	if (use_rss && priv->rss_queues > 1 && priv->indir_entries > 0) {
 		/* Use RSS */
 		set_ctrl.portal_index_indir_base = priv->indir_base;
 		set_ctrl.hash_bits = ilog2(priv->indir_entries);
 		set_ctrl.hash_types_enabled = priv->hash_types;
 	} else {
 		/* Direct portal (RSS disabled) - point to fallback entry */
-		set_ctrl.portal_index_indir_base = 2048 + set_list_idx;
+		set_ctrl.portal_index_indir_base = 2048 + hw_idx;
 		set_ctrl.hash_bits = 0;
 		set_ctrl.hash_types_enabled = 0;
 	}
 
 	/* Program set_ctrl */
-	cass_config_set_ctrl(hw, set_list_idx, &set_ctrl);
+	cass_config_set_ctrl(hw, hw_idx, &set_ctrl);
 
 	/* Program default portal at indir_table[2048 + set_list_idx] */
-	cass_config_indir_entry(hw, 2048 + set_list_idx, portal_idx);
+	cass_config_indir_entry(hw, 2048 + hw_idx, portal_idx);
 
 	spin_unlock(&hw->rmu_lock);
 
-	/* Mark slot as used */
-	priv->mac_filter_slots[idx] = use_rss ? CXI_RMU_ETH_FILTER_RSS :
-					      CXI_RMU_ETH_FILTER_DIRECT;
+	if (mode)
+		*mode = use_rss ? CXI_RMU_ETH_FILTER_RSS : CXI_RMU_ETH_FILTER_DIRECT;
+	if (pte_id)
+		*pte_id = portal_idx;
 
 	return 0;
+}
+
+static int add_rmu_set_list_filter(struct cxi_rmu_eth_priv *priv,
+				   unsigned int idx, struct cxi_pte *pte,
+				   bool use_rss,
+				   const union c_rmu_cfg_ptlte_set_list *set_list,
+				   const union c_rmu_cfg_ptlte_set_list *set_list_mask)
+{
+	struct cxi_rmu_eth_slot *slot;
+
+	if (idx >= priv->max_filters)
+		return -EINVAL;
+
+	slot = &priv->slots[idx];
+
+	return program_rmu_set_list_filter(priv, slot->hw_idx, pte, use_rss,
+					   set_list, set_list_mask,
+					   &slot->mode, NULL);
 }
 
 /**
  * cxi_rmu_eth_add_mac_filter_vf() - Add MAC address filter (VF version)
  * @rmu_eth: Resource handle
- * @idx: Relative index (0-based) within client's quota
  * @mac_addr: MAC address to match (48-bit)
  * @pte: PTE pointer
  * @use_rss: Whether this MAC participates in RSS distribution
@@ -460,8 +707,8 @@ static int add_rmu_set_list_filter(struct cxi_rmu_eth_priv *priv, unsigned int i
  * Return: 0 on success, negative errno on error
  */
 static int cxi_rmu_eth_add_mac_filter_vf(struct cxi_rmu_eth *rmu_eth,
-					 unsigned int idx, u64 mac_addr,
-					 struct cxi_pte *pte, bool use_rss)
+					 u64 mac_addr, struct cxi_pte *pte,
+					 bool use_rss)
 {
 	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
 						     struct cxi_rmu_eth_priv,
@@ -469,7 +716,6 @@ static int cxi_rmu_eth_add_mac_filter_vf(struct cxi_rmu_eth *rmu_eth,
 	const struct cxi_rmu_eth_add_mac_filter_cmd cmd = {
 		.op = CXI_OP_RMU_ETH_ADD_MAC_FILTER,
 		.rmu_eth = rmu_eth->id,
-		.idx = idx,
 		.mac_addr = mac_addr,
 		.pte = pte->id,
 		.use_rss = use_rss,
@@ -487,7 +733,6 @@ static int cxi_rmu_eth_add_mac_filter_vf(struct cxi_rmu_eth *rmu_eth,
 /**
  * cxi_rmu_eth_add_all_mcast_filter_vf() - Add all-multicast filter (VF version)
  * @rmu_eth: Resource handle
- * @idx: Relative index (0-based) within client's quota
  * @pte: PTE pointer
  * @use_rss: Whether this filter participates in RSS distribution
  *
@@ -495,7 +740,7 @@ static int cxi_rmu_eth_add_mac_filter_vf(struct cxi_rmu_eth *rmu_eth,
  *
  * Return: 0 on success, negative errno on error
  */
-static int cxi_rmu_eth_add_all_mcast_filter_vf(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+static int cxi_rmu_eth_add_all_mcast_filter_vf(struct cxi_rmu_eth *rmu_eth,
 					       struct cxi_pte *pte, bool use_rss)
 {
 	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
@@ -504,7 +749,6 @@ static int cxi_rmu_eth_add_all_mcast_filter_vf(struct cxi_rmu_eth *rmu_eth, unsi
 	const struct cxi_rmu_eth_add_all_mcast_filter_cmd cmd = {
 		.op = CXI_OP_RMU_ETH_ADD_ALL_MCAST_FILTER,
 		.rmu_eth = rmu_eth->id,
-		.idx = idx,
 		.pte = pte->id,
 		.use_rss = use_rss,
 	};
@@ -521,23 +765,23 @@ static int cxi_rmu_eth_add_all_mcast_filter_vf(struct cxi_rmu_eth *rmu_eth, unsi
 /**
  * cxi_rmu_eth_add_mac_filter() - Add MAC address filter with portal and RSS control
  * @rmu_eth: Resource handle
- * @idx: Relative index (0-based) within client's quota
  * @mac_addr: MAC address to match (48-bit)
  * @pte: PTE pointer (provides portal index via pte->portal_index)
  * @use_rss: Whether this MAC participates in RSS distribution
  *
- * Client provides relative index [0..quota-1], kernel translates to hardware index.
- * Reserved indices (0-3) can only be used by PF.
+ * The manager selects the hardware slot for the MAC address.
  *
  * Return: 0 on success, negative errno on error
  */
-int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx, u64 mac_addr,
+int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, u64 mac_addr,
 			       struct cxi_pte *pte, bool use_rss)
 {
 	struct cxi_rmu_eth_priv *priv;
 	union c_rmu_cfg_ptlte_set_list set_list = {};
 	union c_rmu_cfg_ptlte_set_list set_list_mask = {};
 	u8 mac_bytes[ETH_ALEN];
+	bool trusted = true;
+	int idx;
 	int rc;
 
 	if (!rmu_eth || !pte)
@@ -546,27 +790,14 @@ int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx, u6
 	priv = container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
 
 	if (!priv->dev->is_physfn)
-		return cxi_rmu_eth_add_mac_filter_vf(rmu_eth, idx, mac_addr, pte, use_rss);
+		return cxi_rmu_eth_add_mac_filter_vf(rmu_eth, mac_addr, pte, use_rss);
 
-	u64_to_ether_addr(mac_addr, mac_bytes);
-	cxidev_dbg(priv->dev, "Adding MAC RMU filter %pM at idx=%d (hw_idx=%u) use_rss=%d pte id %u\n",
-		   mac_bytes, idx, priv->set_list_base + idx, use_rss, pte->id);
-
-	/* VFs must use valid unicast MACs and comply with PF-admin policy */
 	if (priv->is_vf) {
 		struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
-		bool trusted;
 
 		mutex_lock(&hw->rmu_eth_lock);
 		trusted = hw->vf_eth_cfg[priv->vf_num].trusted;
 		mutex_unlock(&hw->rmu_eth_lock);
-
-		/* Trusted VFs may install multiple MAC filters at any valid index.
-		 * Untrusted VFs are limited to one MAC filter and it must be at
-		 * index 0 (own MAC).
-		 */
-		if (!trusted && idx != 0)
-			return -EPERM;
 
 		rc = check_vf_mac_policy(hw, priv->vf_num, mac_addr);
 		if (rc)
@@ -590,8 +821,44 @@ int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx, u6
 	set_list_mask.vid = 0;
 	set_list_mask.lossless = 0;
 
-	/* Program hardware set_list filter */
-	return add_rmu_set_list_filter(priv, idx, pte, use_rss, &set_list, &set_list_mask);
+	/* Serialise slot search */
+	spin_lock(&priv->slot_lock);
+
+	for (idx = 0; idx < priv->max_filters; idx++) {
+		struct cxi_rmu_eth_slot *slot = &priv->slots[idx];
+
+		if (slot->mode != CXI_RMU_ETH_FILTER_NONE &&
+		    slot->mac_addr == mac_addr)
+			break;
+	}
+	if (idx >= priv->max_filters) {
+		for (idx = 0; idx < priv->max_filters; idx++) {
+			if (priv->slots[idx].mode == CXI_RMU_ETH_FILTER_NONE)
+				break;
+		}
+		if (idx >= priv->max_filters) {
+			rc = -ENOSPC;
+			goto unlock;
+		}
+	}
+
+	if (priv->is_vf && !trusted && idx != 0) {
+		rc = -EPERM;
+		goto unlock;
+	}
+
+	u64_to_ether_addr(mac_addr, mac_bytes);
+	cxidev_dbg(priv->dev, "Adding MAC RMU filter %pM at idx=%d use_rss=%d pte id %u\n",
+		   mac_bytes, idx, use_rss, pte->id);
+
+	priv->slots[idx].mac_addr = mac_addr;
+
+	rc = add_rmu_set_list_filter(priv, idx, pte, use_rss, &set_list,
+				     &set_list_mask);
+
+unlock:
+	spin_unlock(&priv->slot_lock);
+	return rc;
 }
 EXPORT_SYMBOL(cxi_rmu_eth_add_mac_filter);
 
@@ -626,7 +893,6 @@ EXPORT_SYMBOL(cxi_rmu_eth_check_mac_policy);
 /**
  * cxi_rmu_eth_add_all_mcast_filter() - Add all-multicast filter with portal and RSS control
  * @rmu_eth: Resource handle
- * @idx: Relative index (0-based) within client's quota
  * @pte: PTE pointer (provides portal index via pte->portal_index)
  * @use_rss: Whether this filter participates in RSS distribution
  *
@@ -635,7 +901,7 @@ EXPORT_SYMBOL(cxi_rmu_eth_check_mac_policy);
  *
  * Return: 0 on success, negative errno on error
  */
-int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth,
 				     struct cxi_pte *pte, bool use_rss)
 {
 	struct cxi_rmu_eth_priv *priv;
@@ -649,33 +915,42 @@ int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth, unsigned int i
 			[3] = ~set_list.qw[3],
 		}
 	};
-
 	if (!rmu_eth || !pte)
 		return -EINVAL;
 
 	priv = container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
 
 	if (!priv->dev->is_physfn)
-		return cxi_rmu_eth_add_all_mcast_filter_vf(rmu_eth, idx, pte, use_rss);
+		return cxi_rmu_eth_add_all_mcast_filter_vf(rmu_eth, pte, use_rss);
+
+	if (priv->is_vf || !priv->kernel_eth)
+		return -EPERM;
 
 	cxidev_dbg(priv->dev,
-		   "Adding all-multicast RMU filter at idx=%d (hw_idx=%u) use_rss=%d pte id %u\n",
-		   idx, priv->set_list_base + idx, use_rss, pte->id);
+		   "Adding all-multicast RMU filter at hw_idx=%u use_rss=%d pte id %u\n",
+		   RMU_ETH_ALL_MCAST_HW_IDX, use_rss, pte->id);
 
-	return add_rmu_set_list_filter(priv, idx, pte, use_rss, &set_list, &set_list_mask);
+	if (program_rmu_set_list_filter(priv, RMU_ETH_ALL_MCAST_HW_IDX, pte,
+					use_rss, &set_list, &set_list_mask,
+					&priv->all_mcast.mode, NULL))
+		return -EINVAL;
+
+	priv->all_mcast.active = true;
+
+	return 0;
 }
 EXPORT_SYMBOL(cxi_rmu_eth_add_all_mcast_filter);
 
 /**
- * cxi_rmu_eth_remove_filter_vf() - Remove filter (VF version)
+ * cxi_rmu_eth_remove_mac_filter_vf() - Remove MAC filter (VF version)
  * @rmu_eth: Resource handle
- * @idx: Relative index of filter to remove
+ * @mac_addr: MAC address to remove
  *
  * VF version: Sends remove_filter request to PF via vsock.
  *
  * Return: 0 on success, negative errno on error
  */
-static int cxi_rmu_eth_remove_filter_vf(struct cxi_rmu_eth *rmu_eth, unsigned int idx)
+static int cxi_rmu_eth_remove_mac_filter_vf(struct cxi_rmu_eth *rmu_eth, u64 mac_addr)
 {
 	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
 						     struct cxi_rmu_eth_priv,
@@ -683,7 +958,7 @@ static int cxi_rmu_eth_remove_filter_vf(struct cxi_rmu_eth *rmu_eth, unsigned in
 	const struct cxi_rmu_eth_remove_filter_cmd cmd = {
 		.op = CXI_OP_RMU_ETH_REMOVE_FILTER,
 		.rmu_eth = rmu_eth->id,
-		.idx = idx,
+		.mac_addr = mac_addr,
 	};
 	size_t resp_len = 0;
 	int rc;
@@ -695,69 +970,89 @@ static int cxi_rmu_eth_remove_filter_vf(struct cxi_rmu_eth *rmu_eth, unsigned in
 	return 0;
 }
 
-/**
- * cxi_rmu_eth_remove_filter() - Remove filter by index
- * @rmu_eth: Resource handle
- * @idx: Relative index of filter to remove
- *
- * Works for both MAC address filters and promiscuous mode filters.
- * MAC filters use slot tracking and return -ENOENT if slot is empty.
- * Promiscuous filters don't use slot tracking.
- *
- * Return: 0 on success, -ENOENT if MAC slot is empty, -EINVAL for invalid index
- */
-int cxi_rmu_eth_remove_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx)
+int cxi_rmu_eth_remove_mac_filter(struct cxi_rmu_eth *rmu_eth, u64 mac_addr)
 {
 	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
 						     struct cxi_rmu_eth_priv,
 						     rmu_eth);
 	struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
-	unsigned int set_list_idx;
+	unsigned int i;
+	int rc = -ENOENT;
 
 	if (!priv->dev->is_physfn)
-		return cxi_rmu_eth_remove_filter_vf(rmu_eth, idx);
+		return cxi_rmu_eth_remove_mac_filter_vf(rmu_eth, mac_addr);
 
-	/* Validate index range */
-	if (idx >= priv->set_list_quota) {
-		cxidev_err(priv->dev, "Index %d out of range [0..%u]\n",
-			   idx, priv->set_list_quota - 1);
-		return -EINVAL;
+	spin_lock(&priv->slot_lock);
+
+	for (i = 0; i < priv->max_filters; i++) {
+		struct cxi_rmu_eth_slot *slot = &priv->slots[i];
+
+		if (slot->mode != CXI_RMU_ETH_FILTER_NONE &&
+		    slot->mac_addr == mac_addr) {
+			spin_lock(&hw->rmu_lock);
+			cass_invalidate_set_list(hw, slot->hw_idx);
+			spin_unlock(&hw->rmu_lock);
+			slot->mode = CXI_RMU_ETH_FILTER_NONE;
+			slot->mac_addr = 0;
+			rc = 0;
+			break;
+		}
 	}
 
-	/* Check if slot is occupied (both MAC and promiscuous filters use slot tracking) */
-	if (!priv->mac_filter_slots[idx]) {
-		cxidev_dbg(priv->dev, "Remove filter at idx=%d (hw_idx=%u) but slot is empty\n",
-			   idx, priv->set_list_base + idx);
+	spin_unlock(&priv->slot_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(cxi_rmu_eth_remove_mac_filter);
+
+int cxi_rmu_eth_remove_all_mcast_filter(struct cxi_rmu_eth *rmu_eth)
+{
+	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
+						     struct cxi_rmu_eth_priv,
+						     rmu_eth);
+	struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
+
+	if (!priv->all_mcast.active)
 		return -ENOENT;
-	}
 
-	cxidev_dbg(priv->dev, "Remove filter at idx=%d (hw_idx=%u)\n",
-		   idx, priv->set_list_base + idx);
-	/* Translate to hardware index */
-	set_list_idx = priv->set_list_base + idx;
-
-	/* Invalidate hardware entry */
 	spin_lock(&hw->rmu_lock);
-	cass_invalidate_set_list(hw, set_list_idx);
+	cass_invalidate_set_list(hw, RMU_ETH_ALL_MCAST_HW_IDX);
 	spin_unlock(&hw->rmu_lock);
-
-	/* Clear slot (all filters use slot tracking now) */
-	priv->mac_filter_slots[idx] = CXI_RMU_ETH_FILTER_NONE;
+	priv->all_mcast.active = false;
 
 	return 0;
 }
-EXPORT_SYMBOL(cxi_rmu_eth_remove_filter);
+EXPORT_SYMBOL(cxi_rmu_eth_remove_all_mcast_filter);
+
+int cxi_rmu_eth_remove_promiscuous_filter(struct cxi_rmu_eth *rmu_eth)
+{
+	struct cxi_rmu_eth_priv *priv = container_of(rmu_eth,
+						     struct cxi_rmu_eth_priv,
+						     rmu_eth);
+	struct cass_dev *hw = container_of(priv->dev, struct cass_dev, cdev);
+
+	if (!priv->promisc.active)
+		return -ENOENT;
+
+	spin_lock(&hw->rmu_lock);
+	cass_invalidate_set_list(hw, RMU_ETH_PROMISC_HW_IDX);
+	spin_unlock(&hw->rmu_lock);
+
+	priv->promisc.active = false;
+
+	return 0;
+}
+EXPORT_SYMBOL(cxi_rmu_eth_remove_promiscuous_filter);
 
 /**
  * cxi_rmu_eth_add_promiscuous_filter() - Enable promiscuous mode filter
  * @rmu_eth: Resource handle
- * @idx: Relative index within client's quota for this filter
  * @pte: PTE pointer
  * @use_rss: Whether promiscuous traffic participates in RSS
  *
  * Return: 0 on success, negative errno on error
  */
-int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth,
 				       struct cxi_pte *pte, bool use_rss)
 {
 	struct cxi_rmu_eth_priv *priv;
@@ -770,21 +1065,25 @@ int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth, unsigned int
 			[3] = ~set_list.qw[3],
 		}
 	};
-
 	if (!rmu_eth || !pte)
 		return -EINVAL;
 
 	priv = container_of(rmu_eth, struct cxi_rmu_eth_priv, rmu_eth);
 
-	/* VF cannot enable promiscuous mode */
-	if (priv->is_vf)
+	if (priv->is_vf || !priv->kernel_eth)
 		return -EPERM;
 
-	cxidev_dbg(priv->dev, "Add promiscuous RMU filter at idx=%u (hw_idx=%u) use_rss=%d\n",
-		   idx, priv->set_list_base + idx, use_rss);
+	cxidev_dbg(priv->dev,
+		   "Adding promiscuous RMU filter at hw_idx=%u use_rss=%d\n",
+		   RMU_ETH_PROMISC_HW_IDX, use_rss);
+	if (program_rmu_set_list_filter(priv, RMU_ETH_PROMISC_HW_IDX, pte,
+					use_rss, &set_list, &set_list_mask,
+					&priv->promisc.mode, NULL))
+		return -EIO;
 
-	/* Program hardware set_list filter */
-	return add_rmu_set_list_filter(priv, idx, pte, use_rss, &set_list, &set_list_mask);
+	priv->promisc.active = true;
+
+	return 0;
 }
 EXPORT_SYMBOL(cxi_rmu_eth_add_promiscuous_filter);
 
@@ -802,7 +1101,7 @@ static void update_rss_filters(struct cxi_rmu_eth_priv *priv, bool enable)
 	unsigned int i;
 	struct c_rmu_cfg_ptlte_set_ctrl_table_entry set_ctrl = {};
 
-	if (enable && priv->rss_queues > 1) {
+	if (enable && priv->rss_queues > 1 && priv->indir_entries > 0) {
 		/* RSS enabled - configure indirection table */
 		set_ctrl.portal_index_indir_base = priv->indir_base;
 		set_ctrl.hash_bits = ilog2(priv->indir_entries);
@@ -811,10 +1110,10 @@ static void update_rss_filters(struct cxi_rmu_eth_priv *priv, bool enable)
 	/* else: set_ctrl stays zero (direct portal mode); portal_index_indir_base
 	 * is set per-filter below */
 
-	/* Update all filters that use RSS */
-	for (i = 0; i < priv->set_list_quota; i++) {
-		if (priv->mac_filter_slots[i] == CXI_RMU_ETH_FILTER_RSS) {
-			unsigned int hw_idx = priv->set_list_base + i;
+	/* Update MAC filters that use RSS */
+	for (i = 0; i < priv->max_filters; i++) {
+		if (priv->slots[i].mode == CXI_RMU_ETH_FILTER_RSS) {
+			unsigned int hw_idx = priv->slots[i].hw_idx;
 
 			if (!enable || priv->rss_queues <= 1) {
 				/* Use direct portal */
@@ -823,6 +1122,28 @@ static void update_rss_filters(struct cxi_rmu_eth_priv *priv, bool enable)
 
 			cass_config_set_ctrl(hw, hw_idx, &set_ctrl);
 		}
+	}
+
+	/* Update all multicast filter if this uses RSS */
+	if (priv->all_mcast.active &&
+	    priv->all_mcast.mode == CXI_RMU_ETH_FILTER_RSS) {
+		struct c_rmu_cfg_ptlte_set_ctrl_table_entry special_ctrl = set_ctrl;
+		unsigned int hw_idx = RMU_ETH_ALL_MCAST_HW_IDX;
+
+		if (!enable || priv->rss_queues <= 1)
+			special_ctrl.portal_index_indir_base = 2048 + hw_idx;
+		cass_config_set_ctrl(hw, hw_idx, &special_ctrl);
+	}
+
+	/* Update promiscuous filter if this uses RSS */
+	if (priv->promisc.active &&
+	    priv->promisc.mode == CXI_RMU_ETH_FILTER_RSS) {
+		struct c_rmu_cfg_ptlte_set_ctrl_table_entry special_ctrl = set_ctrl;
+		unsigned int hw_idx = RMU_ETH_PROMISC_HW_IDX;
+
+		if (!enable || priv->rss_queues <= 1)
+			special_ctrl.portal_index_indir_base = 2048 + hw_idx;
+		cass_config_set_ctrl(hw, hw_idx, &special_ctrl);
 	}
 }
 
@@ -887,6 +1208,8 @@ int cxi_rmu_eth_set_rss_queues(struct cxi_rmu_eth *rmu_eth,
 	if (!priv->dev->is_physfn)
 		return cxi_rmu_eth_set_rss_queues_vf(rmu_eth, num_queues, ptes,
 						     hash_types);
+	if (num_queues > 1 && num_queues > priv->indir_size)
+		return -ENOSPC;
 
 	/* RSS requires at least 2 queues and non-zero hash types */
 	if (num_queues == 0 || num_queues == 1 || hash_types == 0) {
