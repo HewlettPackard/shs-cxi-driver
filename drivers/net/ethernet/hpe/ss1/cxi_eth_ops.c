@@ -29,27 +29,9 @@ static unsigned int tx_eq_count;
 module_param(tx_eq_count, uint, 0444);
 MODULE_PARM_DESC(tx_eq_count, "Override the number of entries in transmit event queue");
 
-/* RMU Ethernet filter slot indices.
- *
- * Slot 0 serves dual purpose: PTP L2 MAC for physical functions
- * (programmed once, never changes), and own MAC for virtual functions.
- * Slots 1-4 are fixed-purpose entries used only by physical functions.
- * Slot 5 onwards are dynamically assigned unicast/multicast entries.
- */
-enum cxi_rmu_eth_filter_idx {
-	RMU_ETH_FILTER_PTP_MAC   = 0, /* physfn: PTP L2 MAC */
-	RMU_ETH_FILTER_PROMISC   = 1, /* Promiscuous catch-all */
-	RMU_ETH_FILTER_OWN_MAC   = 2, /* physfn: device unicast MAC */
-	RMU_ETH_FILTER_BCAST     = 3, /* Broadcast */
-	RMU_ETH_FILTER_ALL_MCAST = 4, /* All-multicast */
-	RMU_ETH_FILTER_UC_MC     = 5, /* First dynamic UC/MC entry */
-};
-
-/* RMU Ethernet filter slot indices for virtual functions. */
-enum cxi_rmu_eth_vf_filter_idx {
-	RMU_ETH_FILTER_VF_OWN_MAC = 0, /* VF own MAC */
-	RMU_ETH_FILTER_VF_UC_MC   = 1, /* First dynamic UC entry */
-};
+/* Dynamic filters reserved for the primary Ethernet filters. */
+#define CXI_ETH_PF_REQUIRED_FILTERS 3 /* own MAC, PTP MAC, broadcast */
+#define CXI_ETH_VF_REQUIRED_FILTERS 1 /* own MAC */
 
 static int cxi_rx_eth_poll(struct napi_struct *napi, int budget);
 static void rx_eq_cb(void *context);
@@ -457,6 +439,8 @@ int alloc_tx_queue(struct cxi_eth *dev, unsigned int id)
 				    tx->eq_attr.queue_len, CXI_MAP_WRITE, NULL);
 		if (IS_ERR(tx->eq_md)) {
 			rc = PTR_ERR(tx->eq_md);
+			netdev_err(dev->ndev,
+				   "TX queue %u MD allocation failed: %d\n", id, rc);
 			goto err_free_eq_buf;
 		}
 	} else {
@@ -468,6 +452,8 @@ int alloc_tx_queue(struct cxi_eth *dev, unsigned int id)
 			      NULL, NULL);
 	if (IS_ERR(tx->eq)) {
 		rc = PTR_ERR(tx->eq);
+		netdev_err(dev->ndev, "TX queue %u EQ allocation failed: %d\n",
+			   id, rc);
 		goto err_unmap_eq_buf;
 	}
 
@@ -477,6 +463,8 @@ int alloc_tx_queue(struct cxi_eth *dev, unsigned int id)
 				      tx->node);
 	if (IS_ERR(tx->eth1_cq)) {
 		rc = PTR_ERR(tx->eth1_cq);
+		netdev_err(dev->ndev,
+			   "TX queue %u Eth1 CQ allocation failed: %d\n", id, rc);
 		goto err_free_eq;
 	}
 
@@ -485,6 +473,9 @@ int alloc_tx_queue(struct cxi_eth *dev, unsigned int id)
 				     tx->node);
 	if (IS_ERR(tx->shared_cq)) {
 		rc = PTR_ERR(tx->shared_cq);
+		netdev_err(dev->ndev,
+			   "TX queue %u shared CQ allocation failed: %d\n", id,
+			   rc);
 		goto err_free_eth1_cq;
 	}
 
@@ -495,6 +486,9 @@ int alloc_tx_queue(struct cxi_eth *dev, unsigned int id)
 
 		if (IS_ERR(tx->eth2_cq)) {
 			rc = PTR_ERR(tx->eth2_cq);
+			netdev_err(dev->ndev,
+				   "TX queue %u Eth2 CQ allocation failed: %d\n",
+				   id, rc);
 			goto err_free_shared_cq;
 		}
 	}
@@ -1016,10 +1010,10 @@ void disable_rx_queue(struct rx_queue *rx)
 
 #define DEFAULT_RESERVED_LES 1024U
 
-static unsigned int get_reserved_les(void)
+static unsigned int get_reserved_les(unsigned int rx_queues)
 {
 	int reserved_les;
-	int max_rx_queues = max_rss_queues + 1; // +1 for PTP queue
+	int total_rx_queues = rx_queues + 1; /* Include the PTP queue. */
 	int max_les_per_queue;
 
 	reserved_les = cxi_get_lpe_append_credits(lpe_cdt_thresh_id);
@@ -1036,10 +1030,10 @@ static unsigned int get_reserved_les(void)
 	 * needed needs to be divided by 4. cxi_pte_alloc() will then round
 	 * robind across the LPE pools.
 	 */
-	reserved_les = max_les_per_queue * (max_rx_queues / C_PE_COUNT);
+	reserved_les = max_les_per_queue * (total_rx_queues / C_PE_COUNT);
 
 	/* Need to account if the number of queues is not a factor of 4. */
-	if (max_rx_queues % C_PE_COUNT)
+	if (total_rx_queues % C_PE_COUNT)
 		reserved_les += max_les_per_queue;
 
 	return reserved_les;
@@ -1051,13 +1045,42 @@ int hw_setup(struct cxi_eth *dev)
 	int rc;
 	int lac;
 	struct net_device *ndev = dev->ndev;
-	const struct cxi_rsrc_limits limits = {
+	struct cxi_rsrc_limits limits;
+	struct cxi_svc_desc svc_desc;
+	struct cxi_svc_fail_info fail_info = {};
+	struct cxi_cq_alloc_opts cq_alloc_opts = {};
+	const struct cxi_rmu_eth_alloc_opts rmu_opts = {
+		.filter_entries = CXI_ETH_VF_REQUIRED_FILTERS + BITS_PER_TYPE(u64),
+		.rss_indir_entries = rss_indir_size,
+	};
+	unsigned int rx_channels;
+	unsigned int primary_filter_count;
+	u8 shared_cp_pcp;
+
+	/* Negotiate scarce filter and RSS resources before sizing the service. */
+	if (dev->cxi_dev->is_physfn)
+		dev->rmu_eth = cxi_rmu_eth_alloc_internal(dev->cxi_dev, false, 0,
+							  &rmu_opts,
+							  CXI_RMU_ETH_ROLE_KERNEL_ETH);
+	else
+		dev->rmu_eth = cxi_rmu_eth_alloc(dev->cxi_dev, &rmu_opts);
+	if (IS_ERR(dev->rmu_eth)) {
+		rc = PTR_ERR(dev->rmu_eth);
+		netdev_info(ndev, "Can't allocate RMU Ethernet resources: %d\n", rc);
+		goto err;
+	}
+
+	rx_channels = min(max_rss_queues,
+			  max(1U, dev->rmu_eth->max_indir_entries));
+	rx_channels = rounddown_pow_of_two(rx_channels);
+
+	limits = (struct cxi_rsrc_limits) {
 		.acs = {
 			.max = 1,
 			.res = 1,
 		},
 		.eqs = {
-			.max = 1 + max_rss_queues + (max_tx_queues * 2),
+			.max = 1 + rx_channels + (max_tx_queues * 2),
 			.res = 1,
 		},
 		.cts = {
@@ -1065,15 +1088,15 @@ int hw_setup(struct cxi_eth *dev)
 			.res = 0,
 		},
 		.ptes = {
-			.max = 1 + max_rss_queues,
-			.res = CXI_ETH_SVC_PTE_RES,
+			.max = 1 + rx_channels,
+			.res = min(1 + rx_channels, CXI_ETH_SVC_PTE_RES),
 		},
 		.txqs = {
 			.max = max_tx_queues * 2,
 			.res = 1,
 		},
 		.tgqs = {
-			.max = 1 + 1 + max_rss_queues,
+			.max = 1 + 1 + rx_channels,
 			.res = 1,
 		},
 		.tles = {
@@ -1083,10 +1106,10 @@ int hw_setup(struct cxi_eth *dev)
 		/* Will actually have 4 * res value for les */
 		.les = {
 			.max = MAX_LE_LIMIT,
-			.res = get_reserved_les(),
+			.res = get_reserved_les(rx_channels),
 		},
 	};
-	struct cxi_svc_desc svc_desc = {
+	svc_desc = (struct cxi_svc_desc) {
 		.resource_limits = true,
 		.limits = limits,
 		.is_system_svc = true,
@@ -1099,39 +1122,42 @@ int hw_setup(struct cxi_eth *dev)
 			.svc_member.uid = (current_euid()).val,
 		},
 	};
-	struct cxi_cq_alloc_opts cq_alloc_opts = {};
-	unsigned int uc_mc_base;
-	u8 shared_cp_pcp;
+	dev->uc_mc_filters = NULL;
+	dev->num_uc_mc_filters = 0;
+	dev->own_mac = 0;
 
 	/* Allocate a Service */
-	rc = cxi_svc_alloc(dev->cxi_dev, &svc_desc, NULL, "ethernet-svc");
+	rc = cxi_svc_alloc(dev->cxi_dev, &svc_desc, &fail_info,
+			   "ethernet-svc");
 	if (rc < 0) {
+		int i;
+
 		netdev_info(ndev, "Can't reserve resources: %d\n", rc);
-		goto err;
+		for (i = 0; i < CXI_RSRC_TYPE_MAX; i++) {
+			if (limits.type[i].res <= fail_info.rsrc_avail[i])
+				continue;
+			netdev_info(ndev,
+				    "Insufficient %s: requested %u, available %u\n",
+				    cxi_rsrc_type_to_str(i), limits.type[i].res,
+				    fail_info.rsrc_avail[i]);
+		}
+		goto err_free_rmu_eth;
 	}
 	dev->svc_id = rc;
 
-	dev->rmu_eth = cxi_rmu_eth_alloc(dev->cxi_dev);
-	if (IS_ERR(dev->rmu_eth)) {
-		rc = PTR_ERR(dev->rmu_eth);
-		netdev_info(ndev, "Can't allocate RMU Ethernet resources: %d\n", rc);
-		goto err_free_svc;
-	}
+	primary_filter_count = dev->cxi_dev->is_physfn ?
+			       CXI_ETH_PF_REQUIRED_FILTERS :
+			       CXI_ETH_VF_REQUIRED_FILTERS;
 
-	uc_mc_base = dev->cxi_dev->is_physfn ? RMU_ETH_FILTER_UC_MC
-					     : RMU_ETH_FILTER_VF_UC_MC;
-
-	dev->uc_mc_filters = NULL;
-	dev->num_uc_mc_filters = 0;
-	if (dev->rmu_eth->max_filters < uc_mc_base) {
+	if (dev->rmu_eth->max_filters < primary_filter_count) {
 		netdev_err(ndev,
 			   "Too few RMU filter slots (%u); need at least %u\n",
-			   dev->rmu_eth->max_filters, uc_mc_base);
+			   dev->rmu_eth->max_filters, primary_filter_count);
 		rc = -EINVAL;
-		goto err_free_rmu_eth;
+		goto err_free_svc;
 	}
 	dev->num_uc_mc_filters = min_t(unsigned int,
-				       dev->rmu_eth->max_filters - uc_mc_base,
+				       dev->rmu_eth->max_filters - primary_filter_count,
 				       BITS_PER_TYPE(u64));
 
 	if (dev->num_uc_mc_filters) {
@@ -1141,7 +1167,7 @@ int hw_setup(struct cxi_eth *dev)
 		if (!dev->uc_mc_filters) {
 			rc = -ENOMEM;
 			netdev_info(ndev, "Can't allocate MAC filter map\n");
-			goto err_free_rmu_eth;
+			goto err_free_svc;
 		}
 	} else {
 		/* No slots left for dynamic secondary unicast MACs. The
@@ -1157,7 +1183,7 @@ int hw_setup(struct cxi_eth *dev)
 	if (IS_ERR(dev->lni)) {
 		rc = PTR_ERR(dev->lni);
 		netdev_info(ndev, "Can't get an LNI: %d\n", rc);
-		goto err_free_rmu_eth;
+		goto err_free_svc;
 	}
 
 	lac = cxi_phys_lac_alloc(dev->lni);
@@ -1267,17 +1293,22 @@ int hw_setup(struct cxi_eth *dev)
 		goto err_free_rx_queue;
 	}
 
-	/* Configure PTP RX queue */
-	rc = alloc_rx_queue(dev, PTP_RX_Q);
-	if (rc) {
-		netdev_info(ndev, "Can't allocate the PTP receive queue: %d\n",
-			    rc);
-		goto err_free_rx_queue;
-	}
-	rc = post_rx_buffers(&dev->rxqs[PTP_RX_Q], GFP_KERNEL);
-	if (rc < 0) {
-		netdev_info(ndev, "Cannot post RX buffers: %d\n", rc);
-		goto err_free_ptp_queue;
+	/* Configure PTP RX queue. VFs don't get one since no PTP MAC
+	 * filter is installed for them (Cassini ERRATA-3258 workaround
+	 * is PF-only).
+	 */
+	if (dev->cxi_dev->is_physfn) {
+		rc = alloc_rx_queue(dev, PTP_RX_Q);
+		if (rc) {
+			netdev_info(ndev, "Can't allocate the PTP receive queue: %d\n",
+				    rc);
+			goto err_free_rx_queue;
+		}
+		rc = post_rx_buffers(&dev->rxqs[PTP_RX_Q], GFP_KERNEL);
+		if (rc < 0) {
+			netdev_info(ndev, "Cannot post RX buffers: %d\n", rc);
+			goto err_free_ptp_queue;
+		}
 	}
 
 	rc = alloc_tx_queue(dev, 0);
@@ -1290,15 +1321,23 @@ int hw_setup(struct cxi_eth *dev)
 	dev->mac_addr = ether_addr_to_u64(ndev->dev_addr);
 
 	enable_rx_queue(&dev->rxqs[0]);
-	enable_rx_queue(&dev->rxqs[PTP_RX_Q]);
+	if (dev->cxi_dev->is_physfn)
+		enable_rx_queue(&dev->rxqs[PTP_RX_Q]);
 	enable_tx_queue(&dev->txqs[0]);
 
 	dev->rss_queues = 1;
-	rc = cxi_set_rx_channels(dev, dev->ndev->real_num_rx_queues);
+	rx_channels = min(dev->ndev->real_num_rx_queues,
+			  max(1U, dev->rmu_eth->max_indir_entries));
+	rx_channels = rounddown_pow_of_two(rx_channels);
+	if (rx_channels != dev->ndev->real_num_rx_queues)
+		netdev_info(ndev,
+			    "Limiting RX channels to %u for %u RSS indirection entries\n",
+			    rx_channels, dev->rmu_eth->max_indir_entries);
+	rc = cxi_set_rx_channels(dev, rx_channels);
 	if (rc) {
 		netdev_info(ndev,
-			    "Can't set the number of RX channels to %d: %d\n",
-			    dev->ndev->real_num_rx_queues, rc);
+			    "Can't set the number of RX channels to %u: %d\n",
+			    rx_channels, rc);
 		goto err_disable_queues;
 	}
 
@@ -1317,7 +1356,7 @@ int hw_setup(struct cxi_eth *dev)
 	 * PTP MAC at index 0 - programmed once, never changes.
 	 */
 	if (dev->cxi_dev->is_physfn) {
-		rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, RMU_ETH_FILTER_PTP_MAC, PTP_L2_MAC,
+		rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, PTP_L2_MAC,
 						dev->rxqs[PTP_RX_Q].pt, false);
 		if (rc) {
 			netdev_err(ndev, "Cannot program PTP MAC address: %d\n", rc);
@@ -1365,14 +1404,14 @@ err_free_lac:
 	cxi_phys_lac_free(dev->lni, dev->phys_lac);
 err_free_ni:
 	cxi_lni_free(dev->lni);
+err_free_svc:
+	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 err_free_rmu_eth:
 	kfree(dev->uc_mc_filters);
 	dev->uc_mc_filters = NULL;
 	dev->num_uc_mc_filters = 0;
 	cxi_rmu_eth_free(dev->rmu_eth);
 	dev->rmu_eth = NULL;
-err_free_svc:
-	cxi_svc_destroy(dev->cxi_dev, dev->svc_id);
 err:
 	return rc;
 }
@@ -1405,6 +1444,7 @@ void hw_cleanup(struct cxi_eth *dev)
 	kfree(dev->uc_mc_filters);
 	dev->uc_mc_filters = NULL;
 	dev->num_uc_mc_filters = 0;
+	dev->own_mac = 0;
 	dev->bcast_active = false;
 	dev->promisc_active = false;
 	dev->all_mcast_active = false;
@@ -2345,10 +2385,42 @@ netdev_tx_t cxi_eth_start_xmit_vf(struct sk_buff *skb, struct net_device *ndev)
 	return cxi_eth_start_xmit(skb, ndev);
 }
 
+/* Program the own MAC filter and eventually remove the old one. */
+static int cxi_eth_program_own_mac(struct cxi_eth *dev, u64 mac)
+{
+	u64 old;
+	int rc;
+
+	if (!dev->rmu_eth)
+		return -ENODEV;
+
+	spin_lock(&dev->filter_lock);
+	old = dev->own_mac;
+	if (old == mac) {
+		spin_unlock(&dev->filter_lock);
+		return 0;
+	}
+	/* Claim the new value so a concurrent caller does not re-program it. */
+	dev->own_mac = mac;
+	spin_unlock(&dev->filter_lock);
+
+	if (old)
+		cxi_rmu_eth_remove_mac_filter(dev->rmu_eth, old);
+
+	rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, mac, dev->rxqs[0].pt, true);
+	if (rc) {
+		spin_lock(&dev->filter_lock);
+		if (dev->own_mac == mac)
+			dev->own_mac = 0;
+		spin_unlock(&dev->filter_lock);
+	}
+
+	return rc;
+}
+
 int cxi_eth_set_mac_addr_vf(struct net_device *ndev, void *p)
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
-	struct cxi_pte *pte_def;
 	struct sockaddr *addr = p;
 	u64 mac_addr;
 	int rc;
@@ -2364,13 +2436,11 @@ int cxi_eth_set_mac_addr_vf(struct net_device *ndev, void *p)
 		return rc;
 	}
 
+	mac_addr = ether_addr_to_u64(addr->sa_data);
+
 	/* Program the MAC filter if the interface is up. */
 	if (dev->is_active) {
-		pte_def = dev->rxqs[0].pt;
-		mac_addr = ether_addr_to_u64(addr->sa_data);
-
-		/* Request for this MAC address to the PF */
-		rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, RMU_ETH_FILTER_VF_OWN_MAC, mac_addr, pte_def, true);
+		rc = cxi_eth_program_own_mac(dev, mac_addr);
 		if (rc) {
 			netdev_err(ndev, "Cannot program MAC address: %d\n", rc);
 			return rc;
@@ -2380,6 +2450,7 @@ int cxi_eth_set_mac_addr_vf(struct net_device *ndev, void *p)
 	/* Commit this MAC address (hardware will be programmed on interface up if not active) */
 	eth_commit_mac_addr_change(ndev, p);
 	ether_addr_copy(dev->cxi_dev->mac_addr, ndev->dev_addr);
+	dev->mac_addr = mac_addr;
 
 	return 0;
 }
@@ -2438,6 +2509,9 @@ int cxi_eth_add_mc_filter(struct cxi_eth *dev, u64 mac)
 	if (!dev->uc_mc_filters || !dev->rmu_eth)
 		return -ENODEV;
 
+	if (mac == PTP_L2_MAC)
+		return 0;
+
 	/* Reserve a slot under the lock, then program the filter with the lock
 	 * dropped: on a VF cxi_rmu_eth_add_mac_filter() is a blocking vsock RPC
 	 * to the PF and must not run in atomic context.
@@ -2462,8 +2536,7 @@ int cxi_eth_add_mc_filter(struct cxi_eth *dev, u64 mac)
 	dev->uc_mc_filters[slot] = mac;
 	spin_unlock(&dev->filter_lock);
 
-	rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, RMU_ETH_FILTER_UC_MC + slot,
-					mac, dev->rxqs[0].pt, true);
+	rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, mac, dev->rxqs[0].pt, true);
 	if (rc) {
 		spin_lock(&dev->filter_lock);
 		if (dev->uc_mc_filters[slot] == mac)
@@ -2483,6 +2556,9 @@ void cxi_eth_del_mc_filter(struct cxi_eth *dev, u64 mac)
 	if (!dev->uc_mc_filters || !dev->rmu_eth)
 		return;
 
+	if (mac == PTP_L2_MAC)
+		return;
+
 	/* Clear the slot under the lock (claiming the removal), then issue the
 	 * filter RPC unlocked: on a VF it is a blocking vsock call to the PF.
 	 */
@@ -2497,8 +2573,7 @@ void cxi_eth_del_mc_filter(struct cxi_eth *dev, u64 mac)
 	spin_unlock(&dev->filter_lock);
 
 	if (slot >= 0)
-		cxi_rmu_eth_remove_filter(dev->rmu_eth,
-					  RMU_ETH_FILTER_UC_MC + slot);
+		cxi_rmu_eth_remove_mac_filter(dev->rmu_eth, mac);
 }
 
 /* Program the promiscuous/broadcast/all-multicast HW flag filters to match
@@ -2532,10 +2607,9 @@ int cxi_eth_set_flag_filters(struct cxi_eth *dev, u16 flags)
 
 	if (do_promisc) {
 		if (want_promisc)
-			rc = cxi_rmu_eth_add_promiscuous_filter(dev->rmu_eth,
-								RMU_ETH_FILTER_PROMISC, pte, true);
+			rc = cxi_rmu_eth_add_promiscuous_filter(dev->rmu_eth, pte, true);
 		else
-			rc = cxi_rmu_eth_remove_filter(dev->rmu_eth, RMU_ETH_FILTER_PROMISC);
+			rc = cxi_rmu_eth_remove_promiscuous_filter(dev->rmu_eth);
 		if (!rc) {
 			spin_lock(&dev->filter_lock);
 			dev->promisc_active = want_promisc;
@@ -2545,10 +2619,11 @@ int cxi_eth_set_flag_filters(struct cxi_eth *dev, u16 flags)
 
 	if (!rc && do_bcast) {
 		if (want_bcast)
-			rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, RMU_ETH_FILTER_BCAST,
+			rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth,
 							0xffffffffffffULL, pte, true);
 		else
-			rc = cxi_rmu_eth_remove_filter(dev->rmu_eth, RMU_ETH_FILTER_BCAST);
+			rc = cxi_rmu_eth_remove_mac_filter(dev->rmu_eth,
+							   0xffffffffffffULL);
 		if (!rc) {
 			spin_lock(&dev->filter_lock);
 			dev->bcast_active = want_bcast;
@@ -2558,10 +2633,9 @@ int cxi_eth_set_flag_filters(struct cxi_eth *dev, u16 flags)
 
 	if (!rc && do_allmc) {
 		if (want_allmc)
-			rc = cxi_rmu_eth_add_all_mcast_filter(dev->rmu_eth,
-							      RMU_ETH_FILTER_ALL_MCAST, pte, true);
+			rc = cxi_rmu_eth_add_all_mcast_filter(dev->rmu_eth, pte, true);
 		else
-			rc = cxi_rmu_eth_remove_filter(dev->rmu_eth, RMU_ETH_FILTER_ALL_MCAST);
+			rc = cxi_rmu_eth_remove_all_mcast_filter(dev->rmu_eth);
 		if (!rc) {
 			spin_lock(&dev->filter_lock);
 			dev->all_mcast_active = want_allmc;
@@ -2577,8 +2651,6 @@ int cxi_eth_set_flag_filters(struct cxi_eth *dev, u16 flags)
  */
 static void cxi_eth_sync_uc(struct cxi_eth *dev, struct net_device *ndev)
 {
-	unsigned int base = dev->cxi_dev->is_physfn ? RMU_ETH_FILTER_UC_MC
-						    : RMU_ETH_FILTER_VF_UC_MC;
 	struct netdev_hw_addr *ha;
 	unsigned int i;
 	int rc;
@@ -2618,8 +2690,7 @@ static void cxi_eth_sync_uc(struct cxi_eth *dev, struct net_device *ndev)
 		dev->uc_mc_filters[slot] = mac;
 		spin_unlock(&dev->filter_lock);
 
-		rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, base + slot,
-						mac, dev->rxqs[0].pt, true);
+		rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth, mac, dev->rxqs[0].pt, true);
 		if (rc) {
 			netdev_err(ndev, "Cannot program UC MAC %pM: %d\n",
 				   ha->addr, rc);
@@ -2647,7 +2718,7 @@ static void cxi_eth_sync_uc(struct cxi_eth *dev, struct net_device *ndev)
 		dev->uc_mc_filters[i] = 0;
 		spin_unlock(&dev->filter_lock);
 
-		cxi_rmu_eth_remove_filter(dev->rmu_eth, base + i);
+		cxi_rmu_eth_remove_mac_filter(dev->rmu_eth, mac);
 	}
 }
 
@@ -2661,7 +2732,6 @@ static void cxi_eth_sync_rx_mode(struct net_device *ndev, bool is_vf)
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct netdev_hw_addr *ha;
-	struct cxi_pte *pte_def;
 	u64 *mc_addrs = NULL;
 	u16 mc_count = 0;
 	u16 i;
@@ -2670,12 +2740,7 @@ static void cxi_eth_sync_rx_mode(struct net_device *ndev, bool is_vf)
 	if (!dev->is_active)
 		return;
 
-	pte_def = dev->rxqs[0].pt;
-
-	rc = cxi_rmu_eth_add_mac_filter(dev->rmu_eth,
-					is_vf ? RMU_ETH_FILTER_VF_OWN_MAC :
-						RMU_ETH_FILTER_OWN_MAC,
-					dev->mac_addr, pte_def, true);
+	rc = cxi_eth_program_own_mac(dev, dev->mac_addr);
 	if (rc)
 		netdev_err(ndev, "Cannot program MAC address: %d\n", rc);
 

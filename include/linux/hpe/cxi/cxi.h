@@ -81,9 +81,15 @@ struct cxi_domain {
 	unsigned int pid;
 };
 
+struct cxi_rmu_eth_alloc_opts {
+	unsigned int filter_entries;
+	unsigned int rss_indir_entries;
+};
+
 struct cxi_rmu_eth {
 	unsigned int id;
 	unsigned int max_filters;
+	unsigned int max_indir_entries;
 };
 
 struct cxi_ac {
@@ -475,17 +481,20 @@ int cxi_set_max_eth_rxsize(struct cxi_dev *cdev, unsigned int max_std_size);
 int cxi_get_max_eth_rxsize(struct cxi_dev *cdev);
 
 /* RMU Ethernet API */
-struct cxi_rmu_eth *cxi_rmu_eth_alloc(struct cxi_dev *cdev);
+struct cxi_rmu_eth *cxi_rmu_eth_alloc(struct cxi_dev *cdev,
+				      const struct cxi_rmu_eth_alloc_opts *opts);
 
 void cxi_rmu_eth_free(struct cxi_rmu_eth *rmu_eth);
 
-int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
-			       u64 mac_addr, struct cxi_pte *pte, bool use_rss);
-int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+int cxi_rmu_eth_add_mac_filter(struct cxi_rmu_eth *rmu_eth, u64 mac_addr,
+			       struct cxi_pte *pte, bool use_rss);
+int cxi_rmu_eth_add_all_mcast_filter(struct cxi_rmu_eth *rmu_eth,
 				     struct cxi_pte *pte, bool use_rss);
-int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx,
+int cxi_rmu_eth_add_promiscuous_filter(struct cxi_rmu_eth *rmu_eth,
 				       struct cxi_pte *pte, bool use_rss);
-int cxi_rmu_eth_remove_filter(struct cxi_rmu_eth *rmu_eth, unsigned int idx);
+int cxi_rmu_eth_remove_mac_filter(struct cxi_rmu_eth *rmu_eth, u64 mac_addr);
+int cxi_rmu_eth_remove_all_mcast_filter(struct cxi_rmu_eth *rmu_eth);
+int cxi_rmu_eth_remove_promiscuous_filter(struct cxi_rmu_eth *rmu_eth);
 int cxi_rmu_eth_set_rss_queues(struct cxi_rmu_eth *rmu_eth, unsigned int num_queues,
 			       struct cxi_pte **ptes, u32 hash_types);
 int cxi_rmu_eth_set_indir_table(struct cxi_rmu_eth *rmu_eth, const u8 *indir_table,

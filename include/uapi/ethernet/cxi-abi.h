@@ -181,12 +181,15 @@ struct cxi_lni_free_cmd {
 struct cxi_rmu_eth_alloc_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
+	unsigned int filter_entries;
+	unsigned int rss_indir_entries;
 };
 
 struct cxi_rmu_eth_alloc_resp {
 	unsigned int rmu_eth;
 	unsigned int id;
 	unsigned int max_filters;
+	unsigned int max_indir_entries;
 };
 
 struct cxi_rmu_eth_free_cmd {
@@ -226,7 +229,6 @@ struct cxi_rmu_eth_add_mac_filter_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
 	unsigned int rmu_eth;
-	unsigned int idx;
 	unsigned int pte;
 	__u64 mac_addr;
 	bool use_rss;
@@ -236,7 +238,6 @@ struct cxi_rmu_eth_add_promisc_filter_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
 	unsigned int rmu_eth;
-	unsigned int idx;
 	unsigned int pte;
 	bool use_rss;
 };
@@ -245,7 +246,6 @@ struct cxi_rmu_eth_add_all_mcast_filter_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
 	unsigned int rmu_eth;
-	unsigned int idx;
 	unsigned int pte;
 	bool use_rss;
 };
@@ -254,7 +254,9 @@ struct cxi_rmu_eth_remove_filter_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
 	unsigned int rmu_eth;
-	unsigned int idx;
+	__u64 mac_addr;
+	bool all_mcast;
+	bool promisc;
 };
 
 #define CXI_ETH_MAX_RSS_QUEUES 64

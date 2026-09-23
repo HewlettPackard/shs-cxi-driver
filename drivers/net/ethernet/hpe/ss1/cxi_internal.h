@@ -31,8 +31,15 @@ struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evt
 					 int numa_node, dma_addr_t cmds_dma_addr,
 					 size_t cmds_len);
 
+enum cxi_rmu_eth_role {
+	CXI_RMU_ETH_ROLE_GENERIC = 0,	/* userspace/Weka-style PF client */
+	CXI_RMU_ETH_ROLE_KERNEL_ETH,	/* in-kernel PF Ethernet netdev */
+};
+
 struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
-					       u8 vf_num);
+					       u8 vf_num,
+					       const struct cxi_rmu_eth_alloc_opts *opts,
+					       enum cxi_rmu_eth_role role);
 
 int cxi_eth_vf_get_assigned_mac_internal(struct cxi_dev *cdev,
 					 unsigned int vf_num, u64 *mac);

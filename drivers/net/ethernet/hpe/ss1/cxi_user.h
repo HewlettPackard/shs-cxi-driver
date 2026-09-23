@@ -113,6 +113,7 @@ struct user_client {
 };
 
 struct cxi_mmap_info;
+struct rmu_eth_deps;
 
 struct ucxi_obj {
 	/* How many object depend on this object */
@@ -121,6 +122,7 @@ struct ucxi_obj {
 
 	struct cxi_mmap_info *mminfo;
 	struct sg_table *ext_sgt;
+	struct rmu_eth_deps *rmu_eth_deps;
 
 	/* Pointer to the core object */
 	union {

@@ -128,7 +128,7 @@ static int dump_dev(struct seq_file *s, void *unused)
 		dump_rx_queue(s, &dev->rxqs[i]);
 	}
 
-	if (dev->rss_queues) {
+	if (dev->rss_queues && dev->cxi_dev->is_physfn) {
 		seq_printf(s, "PTP RX queue %u\n", PTP_RX_Q);
 		dump_rx_queue(s, &dev->rxqs[PTP_RX_Q]);
 	}

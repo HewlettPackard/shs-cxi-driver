@@ -124,6 +124,13 @@ Script for SR-IOV virtual function configuration and testing.
 ./scripts/cxi_vf.sh cleanup                    # Remove all VFs
 ```
 
+Large VF counts need additional guest CPUs for MSI-X routing and additional
+memory for Ethernet RX buffers. For a 64-VF netsim run, start the VM with:
+
+```bash
+VM_CPUS=4 VM_MEMORY=8G ./scripts/startvm.sh
+```
+
 ---
 
 ## BPFtrace Observability
