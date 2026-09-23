@@ -3,6 +3,8 @@
 
 /* TX Profile Implementation */
 
+#include <linux/capability.h>
+
 #include "cass_core.h"
 #include "cxi_rxtx_profile.h"
 #include "cxi_rxtx_profile_list.h"
@@ -180,7 +182,7 @@ struct cxi_tx_profile *cxi_dev_find_tx_profile(struct cxi_dev *dev,
  * cxi_dev_get_tx_profile - Get a TX profile
  *
  * Check if one is already allocated and return it.
- * For kernel users (i.e. kcxi), allocate one if not found, add
+ * For callers with CAP_SYS_ADMIN, allocate one if not found, add
  * an AC entry, set the TCs and enable the profile.
  *
  * @dev: Cassini Device
@@ -210,8 +212,7 @@ struct cxi_tx_profile *cxi_dev_get_tx_profile(struct cxi_dev *dev,
 	if (tx_profile)
 		goto done;
 
-	/* For a non-root user, just report no entry found.*/
-	if (__kuid_val(current_euid())) {
+	if (!capable(CAP_SYS_ADMIN)) {
 		tx_profile = ERR_PTR(-ENOENT);
 		goto done;
 	}
