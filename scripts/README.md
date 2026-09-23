@@ -114,11 +114,14 @@ device parameters via netlink.
 
 ### `cxi_vf.sh`
 
-Script for SR-IOV virtual function configuration.
+Script for SR-IOV virtual function configuration and testing.
 
 ```bash
-./scripts/cxi_vf.sh create 4   # Create 4 VFs on cxi0
-./scripts/cxi_vf.sh destroy    # Remove all VFs
+./scripts/cxi_vf.sh setup 4                    # Create 4 VFs on cxi0
+./scripts/cxi_vf.sh setup 4 --use-service 7    # Additionally assign an existing parent service
+./scripts/cxi_vf.sh setup 4 --create-service sriov # Additionally create a new parent service with preset 'sriov'
+./scripts/cxi_vf.sh self-test 2 --create-service eth # Additionally create a new parent service with preset 'eth'
+./scripts/cxi_vf.sh cleanup                    # Remove all VFs
 ```
 
 ---

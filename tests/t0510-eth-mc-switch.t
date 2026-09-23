@@ -20,7 +20,6 @@ export SHARNESS_TEST_DIRECTORY SHARNESS_TEST_SRCDIR
 PKT_ROOT="$SHARNESS_TEST_SRCDIR/pkt_test"
 # pkt_tool must be pre-built (e.g. by the top-level make); tests never build it.
 PKT_TOOL="$PKT_ROOT/pkt_tool"
-SVC_TOOL="$SHARNESS_TEST_SRCDIR/svc_tool/svc_tool"
 
 CXI_DIR=$(realpath "$SHARNESS_TEST_SRCDIR/..")
 VF_SCRIPT="$CXI_DIR/scripts/cxi_vf.sh"
@@ -50,38 +49,6 @@ load_cxi_stack() {
 	done
 	echo "ERROR: /sys/class/cxi/$CXI_DEVICE missing after loading driver stack" >&2
 	return 1
-}
-
-# Create a parent CXI service with enough resources for NUM_VFS VF ethernet
-# clients and assign it to each VF slot.  Must be called after the PF driver
-# is loaded (sysfs vf/N/svc_id exists at PF probe time) and before VFs bind.
-setup_vf_parent_svc() {
-	[[ -x "$SVC_TOOL" ]] || {
-		echo "ERROR: svc_tool not found at $SVC_TOOL" >&2
-		return 1
-	}
-
-	if [[ -z "$VF_PARENT_SVC_ID" ]]; then
-		local svc_id
-		svc_id=$("$SVC_TOOL" eth "$CXI_DEVICE") || {
-			echo "ERROR: failed to create parent service via svc_tool" >&2
-			return 1
-		}
-		[[ -n "$svc_id" ]] || {
-			echo "ERROR: svc_tool returned empty svc_id" >&2
-			return 1
-		}
-		VF_PARENT_SVC_ID="$svc_id"
-	fi
-
-	# (Re)assign the parent service to every VF slot before the VFs bind.
-	local i
-	for ((i=0; i<NUM_VFS; i++)); do
-		echo "$VF_PARENT_SVC_ID" > "/sys/class/cxi/$CXI_DEVICE/vf/$i/svc_id" || {
-			echo "ERROR: failed to assign svc_id $VF_PARENT_SVC_ID to VF $i" >&2
-			return 1
-		}
-	done
 }
 
 NS_PF=${NS_PF:-ns_pf}
@@ -450,11 +417,6 @@ ns_create_namespaces() {
 		insmod "$ETH_KO" || true
 	fi
 
-	setup_vf_parent_svc || {
-		echo "ERROR: failed to create/assign VF parent service" >&2
-		return 1
-	}
-
 	echo "Provisioning $NUM_VFS VF(s) with $VF_SCRIPT setup"
 	cd "$SCRIPTS_DIR"
 	"$VF_SCRIPT" setup "$NUM_VFS" || {
@@ -526,7 +488,7 @@ ns_remove_namespaces() {
 }
 
 # ---------------------------------------------------------------------------
-# Setup: wait for PF netdev and verify pkt_tool and svc_tool (shared across all tests)
+# Setup: wait for PF netdev and verify pkt_tool (shared across all tests)
 # ---------------------------------------------------------------------------
 test_expect_success "setup and check tools" "
 echo \"Checking namespace management setup\" &&
@@ -541,10 +503,6 @@ load_cxi_stack &&
 # Tools must be pre-built; the test suite never compiles anything.
 [[ -x \"\$PKT_TOOL\" ]] || {
 	echo \"ERROR: pkt_tool not found at \$PKT_TOOL;\" >&2
-	return 1
-} &&
-[[ -x \"\$SVC_TOOL\" ]] || {
-	echo \"ERROR: svc_tool not found at \$SVC_TOOL;\" >&2
 	return 1
 }
 "
