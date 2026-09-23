@@ -647,7 +647,7 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	loopback_mode = dev->is_c2 ? SL_LOOPBACK_MODE : SBL_LOOPBACK_MODE;
 
 	if ((changes & loopback_mode)) {
-		u32 loopback_mode = flags & loopback_mode;
+		loopback_mode = flags & loopback_mode;
 
 		if (hweight_long(loopback_mode) > 1) {
 			netdev_err(dev->ndev,
