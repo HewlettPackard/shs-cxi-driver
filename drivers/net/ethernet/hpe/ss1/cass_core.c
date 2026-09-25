@@ -886,6 +886,35 @@ unsupported:
 	return -ENOTSUPP;
 }
 
+/**
+ * cass_vf_eth_cfg_reset() - Restore per-VF Ethernet policy to its defaults
+ * @hw: Cassini device (PF)
+ *
+ * Defaults are:
+ *   trusted    = false (the VF may not choose its own MAC)
+ *   own_mac    = 0     (no MAC assigned yet)
+ *   spoof_chk  = true
+ *   link_state = IFLA_VF_LINK_STATE_AUTO
+ *
+ * Called at probe and when enabling SR-IOV, so that VFs never inherit the
+ * policy of a previous generation of VFs. These four fields are only settable
+ * through the Ethernet ndo ops on a live VF, unlike the sysfs-backed vf_cfg[]
+ * settings, which are PF-lifetime and deliberately left untouched here.
+ */
+void cass_vf_eth_cfg_reset(struct cass_dev *hw)
+{
+	int i;
+
+	mutex_lock(&hw->rmu_eth_lock);
+	for (i = 0; i < C_NUM_VFS; i++) {
+		hw->vf_eth_cfg[i].trusted    = false;
+		hw->vf_eth_cfg[i].own_mac    = 0;
+		hw->vf_eth_cfg[i].spoof_chk  = true;
+		hw->vf_eth_cfg[i].link_state = IFLA_VF_LINK_STATE_AUTO;
+	}
+	mutex_unlock(&hw->rmu_eth_lock);
+}
+
 static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int i;
@@ -967,16 +996,7 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (rc)
 		goto hw_free;
 
-	/* Initialize per-VF Ethernet policy to defaults:
-	 *   trusted   = false  (we do not allow VF to choose)
-	 *   own_mac   = 0      (no MAC assigned yet)
-	 */
-	for (i = 0; i < C_NUM_VFS; i++) {
-		hw->vf_eth_cfg[i].trusted    = false;
-		hw->vf_eth_cfg[i].own_mac    = 0;
-		hw->vf_eth_cfg[i].spoof_chk  = true;
-		hw->vf_eth_cfg[i].link_state = IFLA_VF_LINK_STATE_AUTO;
-	}
+	cass_vf_eth_cfg_reset(hw);
 
 	mutex_init(&hw->err_flg_mutex);
 	INIT_LIST_HEAD(&hw->err_flg_list);

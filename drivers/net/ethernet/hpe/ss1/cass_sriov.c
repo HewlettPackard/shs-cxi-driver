@@ -1061,6 +1061,8 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 	}
 	mutex_unlock(&hw->svc_lock);
 
+	cass_vf_eth_cfg_reset(hw);
+
 	rc = request_module("vsock");
 	if (rc) {
 		cxidev_err(&hw->cdev, "could not load vsock module");
