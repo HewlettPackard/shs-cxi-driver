@@ -2759,7 +2759,7 @@ void cxi_eth_set_rx_mode(struct net_device *ndev)
 /**
  * cxi_eth_vf_set_mac() - Assign the allowed MAC address for a VF
  * @ndev:  PF net device
- * @vf:    VF index (0-based, must be < C_NUM_VFS)
+ * @vf:    VF index (0-based, must refer to an enabled VF)
  * @mac:   MAC address to allow; pass a zero address to clear the assignment
  *
  * Sets the MAC address that a non-trusted VF is permitted to program.
@@ -2778,7 +2778,7 @@ int cxi_eth_vf_set_mac(struct net_device *ndev, int vf, u8 *mac)
 		.mac = ether_addr_to_u64(mac),
 	};
 
-	if ((unsigned int)vf >= C_NUM_VFS)
+	if (vf < 0 || vf >= hw->num_vfs)
 		return -EINVAL;
 
 	/* Reject multicast and broadcast addresses; allow zero to clear. */
@@ -2801,7 +2801,7 @@ int cxi_eth_ndo_get_vf_config(struct net_device *ndev, int vf,
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
 
-	if ((unsigned int)vf >= C_NUM_VFS)
+	if (vf < 0 || vf >= hw->num_vfs)
 		return -EINVAL;
 
 	ivi->vf = vf;
@@ -2843,6 +2843,9 @@ int cxi_eth_ndo_set_vf_trust(struct net_device *ndev, int vf, bool setting)
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
 
+	if (vf < 0 || vf >= hw->num_vfs)
+		return -EINVAL;
+
 	return cxi_eth_vf_set_trusted(hw, vf, setting);
 }
 
@@ -2863,7 +2866,7 @@ int cxi_eth_ndo_set_vf_link_state(struct net_device *ndev, int vf, int link_stat
 	struct cass_dev *hw = container_of(dev->cxi_dev, struct cass_dev, cdev);
 	enum cxi_async_event event;
 
-	if ((unsigned int)vf >= C_NUM_VFS)
+	if (vf < 0 || vf >= hw->num_vfs)
 		return -EINVAL;
 
 	switch (link_state) {
@@ -2908,7 +2911,7 @@ int cxi_eth_ndo_set_vf_spoofchk(struct net_device *ndev, int vf, bool setting)
 		.spoof_chk = setting,
 	};
 
-	if ((unsigned int)vf >= C_NUM_VFS)
+	if (vf < 0 || vf >= hw->num_vfs)
 		return -EINVAL;
 
 	mutex_lock(&hw->rmu_eth_lock);
