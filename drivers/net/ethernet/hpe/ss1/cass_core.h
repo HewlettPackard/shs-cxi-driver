@@ -1375,6 +1375,7 @@ static inline bool is_vni_valid(unsigned int vni)
 int register_error_handlers(struct cass_dev *hw);
 void deregister_error_handlers(struct cass_dev *hw);
 int cass_sriov_configure(struct pci_dev *pdev, int num_vfs);
+void cass_vf_eth_cfg_reset(struct cass_dev *hw);
 int cass_vf_init(struct cass_dev *hw);
 void cass_vf_fini(struct cass_dev *hw);
 
