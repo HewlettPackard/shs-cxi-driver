@@ -2050,6 +2050,7 @@ int cass_nta_mirror_kern(struct cxi_md_priv *md_priv,
 	return 0;
 
 mirror_error:
+	md_priv->sgt = NULL;
 	dma_unmap_sgtable(md_priv->device, sgt, DMA_BIDIRECTIONAL, 0);
 
 dma_map_error:
