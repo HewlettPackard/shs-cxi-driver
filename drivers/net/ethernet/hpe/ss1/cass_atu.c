@@ -2568,7 +2568,7 @@ struct cxi_md *cxi_map(struct cxi_lni *lni, uintptr_t va, size_t len,
 mirror_range_error:
 	ida_free(&hw->md_index_table, md->id);
 iova_free:
-	cass_iova_free(md_priv->cac, md_priv->md.iova, md_priv->olen);
+	cass_iova_free(cac, m_opts.iova, m_opts.va_len);
 put_device_pages:
 	if (flags & CXI_MAP_DEVICE)
 		cass_device_put_pages(md_priv);
