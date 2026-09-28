@@ -1733,6 +1733,11 @@ int cxi_update_iov(struct cxi_md *md, const struct iov_iter *iter)
 	if (len > md_priv->olen)
 		return -EINVAL;
 
+	if (md_priv->sgt) {
+		pr_debug("MD must be cleared with cxi_clear_md() before update\n");
+		return -EINVAL;
+	}
+
 	md->len = len;
 
 	ret = cass_nta_mirror_kern(md_priv, iter, md_priv->need_lock);
