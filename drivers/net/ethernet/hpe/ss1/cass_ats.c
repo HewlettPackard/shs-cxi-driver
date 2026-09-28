@@ -313,7 +313,7 @@ int cass_ats_md_init(struct cxi_md_priv *md_priv,
 {
 	int ret;
 	int write = m_opts->flags & CXI_MAP_WRITE;
-	int npages = md_priv->md.len >> md_priv->md.page_shift;
+	int npages = md_priv->md.len >> PAGE_SHIFT;
 	struct page **pages;
 	size_t size = npages * sizeof(*pages);
 	struct cass_dev *hw = container_of(md_priv->lni_priv->dev,
