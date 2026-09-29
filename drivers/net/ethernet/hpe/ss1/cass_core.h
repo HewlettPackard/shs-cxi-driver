@@ -181,12 +181,6 @@ static inline int pci_enable_pcie_error_reporting(void *p) { return 0; }
 static inline void pci_disable_pcie_error_reporting(void *p) {}
 #endif
 
-/* SR-IOV requires VFIO with KVM support enabled and kernel >= 5.19 */
-#if !defined(CONFIG_KVM_VFIO) || LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0) && \
-	!(defined(CONFIG_SUSE_VERSION) && CONFIG_SUSE_VERSION >= 15 && CONFIG_SUSE_PATCHLEVEL >= 5)
-#define CXI_DISABLE_SRIOV
-#endif
-
 #define ATU_FAULT_RETRY_MAX 16
 #define ATU_PTE_PTR (1 << 6)
 #define ATU_PTE_READ (1UL << 57)
@@ -545,8 +539,6 @@ struct cass_vf {
 
 	/* Per VF mutex to maintain notification message/response sequencing */
 	struct mutex notif_lock;
-
-	struct task_struct *kvm_task;
 
 	/* Timestamp for rate-limiting VF->PF requests */
 	ktime_t req_bucket_ts;

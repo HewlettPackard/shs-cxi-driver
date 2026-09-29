@@ -387,54 +387,6 @@ static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
 	return rc;
 }
 
-/* Given a PF's pci_dev struct, find the pci_dev of one of its VFs */
-static struct pci_dev *get_vf_pdev(struct pci_dev *pdev, int vf_idx)
-{
-	int devfn = pci_iov_virtfn_devfn(pdev, vf_idx);
-
-	if (devfn < 0)
-		return ERR_PTR(devfn);
-	return pci_get_slot(pdev->bus, devfn);
-}
-
-/* Identify the KVM task associated with a VF that is bound to a guest VM. */
-static struct task_struct *pf_get_kvm_task(struct cass_vf *vf)
-{
-	struct cass_dev *hw = vf->hw;
-	struct pci_dev *vf_pdev = NULL;
-	struct vfio_device *vfio_dev = NULL;
-	struct task_struct *task = NULL;
-
-	vf_pdev = get_vf_pdev(hw->cdev.pdev, vf->vf_idx);
-	if (IS_ERR(vf_pdev)) {
-		cxidev_err(&hw->cdev, "vf %d: could not get device", vf->vf_idx);
-		return ERR_PTR(PTR_ERR(vf_pdev));
-	}
-
-	cxidev_dbg(&hw->cdev, "vf %d: device at %s", vf->vf_idx, pci_name(vf_pdev));
-
-	if (!vf_pdev->driver) {
-		task = ERR_PTR(-ENODEV);
-	} else if (!strncmp(vf_pdev->driver->name, "vfio-pci", strlen("vfio-pci"))) {
-		/* VF is under control of VFIO driver, look for KVM task. */
-		vfio_dev = pci_get_drvdata(vf_pdev);
-		if (vfio_dev->kvm) {
-			task = get_pid_task(find_get_pid(vfio_dev->kvm->userspace_pid),
-					    PIDTYPE_PID);
-		} else {
-			task = ERR_PTR(-ESRCH);
-		}
-	} else if (!strncmp(vf_pdev->driver->name, KBUILD_MODNAME,
-			    strlen(KBUILD_MODNAME))) {
-		/* VF is under control of our driver, KVM task is not applicable */
-		task = NULL;
-	} else {
-		task = ERR_PTR(-EPERM);
-	}
-	pci_dev_put(vf_pdev);
-	return task;
-}
-
 /* Handler thread for incoming messages from the VF driver to the PF. 1 instance
  * per active VF.
  */
@@ -442,7 +394,6 @@ static int pf_vf_msghandler(void *data)
 {
 	struct cass_vf *vf = (struct cass_vf *)data;
 	struct cass_dev *hw = vf->hw;
-	struct task_struct *kvm_task;
 	int rc, msg_rc;
 	u8 *const request_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
 	u8 *const reply_buf = kmalloc(SMALL_VFMSG_SIZE, GFP_KERNEL);
@@ -462,13 +413,6 @@ static int pf_vf_msghandler(void *data)
 	vf->req_sock->sk->sk_rcvtimeo = CXI_SRIOV_PF_TIMEOUT;
 
 	cxidev_dbg(&hw->cdev, "vf %d: started message handler", vf->vf_idx);
-
-	kvm_task = pf_get_kvm_task(vf);
-	if (IS_ERR(kvm_task)) {
-		rc = PTR_ERR(kvm_task);
-		goto err;
-	}
-	vf->kvm_task = kvm_task;
 
 	while (!kthread_should_stop()) {
 		memset(request_buf, 0, SMALL_VFMSG_SIZE);
@@ -562,10 +506,6 @@ static int pf_vf_msghandler(void *data)
 
 err:
 	cxidev_dbg(&hw->cdev, "vf %d: handler exiting, rc=%d", vf->vf_idx, rc);
-
-	if (vf->kvm_task)
-		put_task_struct(vf->kvm_task);
-	vf->kvm_task = NULL;
 
 	kernel_sock_shutdown(vf->req_sock, SHUT_RDWR);
 	sock_release(vf->req_sock);
