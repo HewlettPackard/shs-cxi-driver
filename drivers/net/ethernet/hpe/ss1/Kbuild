@@ -44,7 +44,7 @@ cxi-ss1-y += cass_amd_gpu.o
 endif
 
 # TODO: use the real install dir path
-NVIDIA_DIR ?= $(shell /bin/ls -d /usr/src/kernel-modules/nvidia-*/{.,kernel-open}/nvidia 2>/dev/null | tail -1)
+NVIDIA_DIR ?= $(shell /bin/ls -d /usr/src/nvidia-*/{.,kernel-open}/nvidia 2>/dev/null | tail -1)
 ifneq ($(NVIDIA_DIR),)
         $(info Have $(NVIDIA_DIR))
         ccflags-y += -DHAVE_NVIDIA_P2P -I$(NVIDIA_DIR)
