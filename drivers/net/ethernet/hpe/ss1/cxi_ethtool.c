@@ -473,6 +473,9 @@ static int cxi_get_module_info(struct net_device *ndev,
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
+
 	cxi_eth_devinfo(dev->cxi_dev, &dev->eth_info);
 
 	if (dev->eth_info.qsfp_eeprom_len == 0)
@@ -504,6 +507,9 @@ static int cxi_get_module_eeprom(struct net_device *ndev,
 	struct cxi_eth *dev = netdev_priv(ndev);
 	int ret;
 
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
+
 	ret = cxi_get_qsfp_data(dev->cxi_dev, eeprom->offset, eeprom->len,
 				0, data);
 
@@ -520,6 +526,9 @@ static int cxi_get_module_eeprom_by_page(struct net_device *ndev,
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
+
 	return cxi_get_qsfp_data(dev->cxi_dev, req->offset, req->length,
 				 req->page, req->data);
 }
@@ -531,6 +540,9 @@ static int cxi_flash_device(struct net_device *ndev,
 	struct cxi_eth *dev = netdev_priv(ndev);
 	const struct firmware *fw;
 	int rc;
+
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -556,6 +568,9 @@ static int cxi_get_link_ksettings(struct net_device *ndev,
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct cxi_link_info link_info;
+
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	memset(s, 0, sizeof(struct ethtool_link_ksettings));
 
@@ -608,6 +623,9 @@ cxi_set_link_ksettings(struct net_device *ndev,
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct cxi_link_info link_info;
 
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
+
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 
 	if (s->base.duplex != DUPLEX_UNKNOWN &&
@@ -641,6 +659,9 @@ static int cxi_set_priv_flags(struct net_device *ndev, u32 flags)
 	u32 old_flags;
 	u32 debug_flags;
 	u32 loopback_mode;
+
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 	cxi_link_flags_get(dev->cxi_dev, &debug_flags);
@@ -774,6 +795,9 @@ static u32 cxi_get_priv_flags(struct net_device *ndev)
 	struct cxi_link_info link_info;
 	u32 debug_flags;
 
+	if (!dev->cxi_dev->is_physfn)
+		return 0;
+
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 	cxi_link_flags_get(dev->cxi_dev, &debug_flags);
 
@@ -850,6 +874,9 @@ static int cxi_get_fecparam(struct net_device *ndev,
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
 	struct cxi_link_info link_info;
+
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	cxi_link_mode_get(dev->cxi_dev, &link_info);
 
@@ -932,6 +959,9 @@ static int cxi_set_phys_id(struct net_device *ndev,
 			  enum ethtool_phys_id_state state)
 {
 	struct cxi_eth *dev = netdev_priv(ndev);
+
+	if (!dev->cxi_dev->is_physfn)
+		return -EOPNOTSUPP;
 
 	switch (state) {
 	case ETHTOOL_ID_ACTIVE:
