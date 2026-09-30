@@ -637,19 +637,12 @@ static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
 static int pf_probe_vf_range(struct cass_dev *hw, struct socket *sock,
 			     int range_min, int range_max)
 {
-	int i, rc, rsp;
-	union c_pi_ipd_cfg_pf_vf_irq irqs = {
-		.irq = 0,
+	int rc, rsp;
+	const union c_pi_ipd_cfg_pf_vf_irq irqs = {
+		.irq = GENMASK_ULL(range_max, range_min),
 	};
 
 	cxidev_dbg(&hw->cdev, "probing for VF in range [%d, %d]", range_min, range_max);
-
-	/* Only probe VFs that are not already connected */
-	for (i = range_min; i <= range_max; i++)
-		if (!hw->vfs[i].req_sock)
-			irqs.irq |= 1ULL << i;
-	if (!irqs.irq)
-		return 0;
 
 	/* 1: Tell VF to reinit completion and wait for READY */
 	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_RESET);
@@ -766,16 +759,15 @@ static void handle_vf_req_conn(struct cass_dev *hw,
 		   peeraddr.svm_cid, vf_idx);
 
 	vf = &hw->vfs[vf_idx];
-	if (vf->req_sock) {
-		cxidev_err(&hw->cdev, "vf %d already in use", vf_idx);
-		goto close_sock;
-	}
 
 	/* The listener loop periodically cleans up stale VF message handler
-	 * threads but we should check here too, in case a new connection comes
-	 * in before the listener loop has a chance to clean up the old one.
+	 * threads but we should check here too, in case an unclean shutdown has
+	 * left an old handler thread running, or a new connection comes in
+	 * before the listener loop has a chance to clean up the previous
+	 * thread.
 	 */
 	if (vf->task) {
+		cxidev_warn(&hw->cdev, "Evicting stale request handler for vf %d", vf_idx);
 		kthread_stop(vf->task);
 		vf->task = NULL;
 	}
