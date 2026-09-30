@@ -75,14 +75,14 @@ static size_t get_eq_queue_size(size_t queue_len)
 void cass_ee_init(struct cass_dev *hw)
 {
 	union c_ee_cfg_timestamp_freq ts_freq;
-	unsigned int clk_freq_khz;
 
 	if (cass_version(hw, CASSINI_1))
-		clk_freq_khz = C1_CLK_FREQ_HZ / 1000;
-	else
-		clk_freq_khz = C2_CLK_FREQ_HZ / 1000;
+		ts_freq.clk_divider = ((u64)ee_timestamp_period_ms * C1_CLK_FREQ_HZ) /
+			1000 / C_NUM_EQS;
 
-	ts_freq.clk_divider = ee_timestamp_period_ms * clk_freq_khz / C_NUM_EQS;
+	else
+		ts_freq.clk_divider = ((u64)ee_timestamp_period_ms * C2_CLK_FREQ_HZ) /
+			1000 / C_NUM_EQS;
 
 	cass_write(hw, C_EE_CFG_TIMESTAMP_FREQ, &ts_freq, sizeof(ts_freq));
 
