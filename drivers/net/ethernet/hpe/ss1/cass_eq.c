@@ -122,14 +122,14 @@ static int eq_status_nb(struct notifier_block *nb, unsigned long action,
 static unsigned int eq_compute_lt(struct cass_dev *hw, unsigned int ns)
 {
 	union c_ee_cfg_latency_monitor lat_mon;
-	unsigned int step_size;
+	u64 step_size;
 	unsigned int lt;
 
 	cass_read(hw, C_EE_CFG_LATENCY_MONITOR, &lat_mon, sizeof(lat_mon));
 	if (cass_version(hw, CASSINI_1))
-		step_size = lat_mon.granularity / (C1_CLK_FREQ_HZ / NSEC_PER_SEC);
+		step_size = (lat_mon.granularity * NSEC_PER_SEC) / C1_CLK_FREQ_HZ;
 	else
-		step_size = lat_mon.granularity / (C2_CLK_FREQ_HZ / NSEC_PER_SEC);
+		step_size = (lat_mon.granularity * NSEC_PER_SEC) / C2_CLK_FREQ_HZ;
 	lt = ns / step_size;
 
 	if (lt > LT_LIMIT_MAX)
