@@ -577,10 +577,32 @@ static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
 static int pf_probe_vf_range(struct cass_dev *hw, struct socket *sock,
 			     int range_min, int range_max)
 {
-	int rc, rsp;
-	const union c_pi_ipd_cfg_pf_vf_irq irqs = {
-		.irq = GENMASK_ULL(range_max, range_min),
+	int devfn;
+	int i;
+	int rc;
+	int rsp;
+	struct pci_dev *vf_pdev;
+	union c_pi_ipd_cfg_pf_vf_irq irqs = {
+		.irq = 0,
 	};
+
+	/* Probing a VF whose interrupts have not yet been enabled will trigger
+	 * a hardware error. Skip these VFs, as they cannot be our candidate
+	 * anyway.
+	 */
+	for (i = range_min; i <= range_max; i++) {
+		devfn = pci_iov_virtfn_devfn(hw->cdev.pdev, i);
+		if (devfn < 0)
+			continue;
+
+		vf_pdev = pci_get_slot(hw->cdev.pdev->bus, devfn);
+		if (!vf_pdev)
+			continue;
+
+		if (vf_pdev->msix_enabled)
+			irqs.irq |= BIT_ULL(i);
+		pci_dev_put(vf_pdev);
+	}
 
 	cxidev_dbg(&hw->cdev, "probing for VF in range [%d, %d]", range_min, range_max);
 
@@ -956,8 +978,16 @@ shutdown_req:
 static void disable_sriov(struct pci_dev *pdev)
 {
 	struct cass_dev *hw = pci_get_drvdata(pdev);
+	union err_flags f = {
+		.pi_ipd_ext.msix_disabled_error = 1,
+	};
 
+	/* Hardware raises a spurious pi_ipd_ext.msix_disabled_error when
+	 * disabling VFs. Temporarily disable this interrupt during teardown
+	 */
+	cxi_disable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
 	pci_disable_sriov(pdev);
+	cxi_enable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
 
 	cass_eth_mc_sw_sriov_configure(hw, 0);
 
