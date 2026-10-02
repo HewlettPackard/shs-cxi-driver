@@ -43,6 +43,11 @@ static int free_rmu_eth_obj(int id, void *obj_, void *data);
  * Ampere Altra, used in the RL300.
  */
 DEFINE_STATIC_KEY_FALSE(avoid_writecombine);
+
+static const struct pci_device_id ampere_altra[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMPERE, 0xe100) },
+	{ },
+};
 #endif
 
 /* /dev entries. Allow for up to 256 devices, which includes SRVIO
@@ -5099,7 +5104,7 @@ static int __init init(void)
 	}
 
 #ifdef CONFIG_ARM64
-	if (pci_get_device(PCI_VENDOR_ID_AMPERE, 0xe100, NULL))
+	if (pci_dev_present(ampere_altra))
 		static_branch_enable(&avoid_writecombine);
 #endif
 

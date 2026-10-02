@@ -20,6 +20,11 @@
  * Ampere Altra, used in the RL300.
  */
 DEFINE_STATIC_KEY_FALSE(avoid_writecombine);
+
+static const struct pci_device_id ampere_altra[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMPERE, 0xe100) },
+	{ },
+};
 #endif
 
 /* Lower bound for number of 64 byte commands. */
@@ -60,7 +65,7 @@ void cass_cq_init(struct cass_dev *hw)
 	cass_clear(hw, C_CQ_CFG_FQ_RESRV(0), C_CQ_CFG_FQ_RESRV_SIZE);
 
 #ifdef CONFIG_ARM64
-	if (pci_get_device(PCI_VENDOR_ID_AMPERE, 0xe100, NULL))
+	if (pci_dev_present(ampere_altra))
 		static_branch_enable(&avoid_writecombine);
 #endif
 }
