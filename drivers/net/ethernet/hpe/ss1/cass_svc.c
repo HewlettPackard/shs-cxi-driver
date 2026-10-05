@@ -340,6 +340,26 @@ static int validate_child_vnis(struct cxi_dev *dev,
 	return 0;
 }
 
+/* Ensure that a child service cannot broaden its parent's TC policy. */
+static int validate_child_tcs(const struct cxi_svc_priv *parent,
+			      const struct cxi_svc_desc *child_desc)
+{
+	int i;
+
+	if (!parent->svc_desc.restricted_tcs)
+		return 0;
+
+	if (!child_desc->restricted_tcs)
+		return -EINVAL;
+
+	for (i = 0; i < CXI_TC_MAX; i++) {
+		if (child_desc->tcs[i] && !parent->svc_desc.tcs[i])
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
 /* Return resource reservations upon destruction of a service
  * Caller must hold hw->svc_lock.
  */
@@ -422,9 +442,17 @@ static int reserve_rsrcs(struct cass_dev *hw,
 	struct cxi_rsrc_limits *limits = &svc_priv->svc_desc.limits;
 	struct cxi_svc_priv *parent = svc_priv->parent;
 
-	/* Default pool for default svc or when there are no LE limits */
-	if (!svc_priv->svc_desc.resource_limits)
+	/* Default pool for default svc or when there are no LE limits. For
+	 * child services, cap limits to parent reservations.
+	 */
+	if (!svc_priv->svc_desc.resource_limits) {
 		default_rsrc_limits(limits);
+		if (parent && parent->svc_desc.resource_limits)
+			for (i = CXI_RSRC_TYPE_PTE; i < CXI_RSRC_TYPE_MAX; i++)
+				limits->type[i].max = min_t(u16,
+							    limits->type[i].max,
+							    parent->svc_desc.limits.type[i].res);
+	}
 
 	for (i = CXI_RSRC_TYPE_PTE; i < CXI_RSRC_TYPE_MAX; i++) {
 		if (!limits->type[i].res && !limits->type[i].max)
@@ -1024,6 +1052,10 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 			if (rc)
 				goto unlock;
 		}
+
+		rc = validate_child_tcs(svc_priv->parent, svc_desc);
+		if (rc)
+			goto unlock;
 	}
 
 	/* If restricted_vnis is set setup profiles now. Otherwise they will
@@ -1971,6 +2003,12 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	if (!svc_priv) {
 		rc = -EINVAL;
 		goto error;
+	}
+
+	if (svc_priv->parent) {
+		rc = validate_child_tcs(svc_priv->parent, svc_desc);
+		if (rc)
+			goto error;
 	}
 
 	/* Service must be unused for it to be updated. */
