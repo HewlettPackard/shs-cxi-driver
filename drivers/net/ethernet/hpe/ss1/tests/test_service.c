@@ -4,6 +4,7 @@
 #include <linux/module.h>
 #include <linux/hpe/cxi/cxi.h>
 #include "cass_core.h"
+#include "cxi_internal.h"
 
 #define VNI 8U
 #define TLE_COUNT 10U
@@ -685,6 +686,165 @@ err:
 	return rc;
 }
 
+static int test_vf_child_policy(struct cxi_dev *dev)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_desc parent_desc = {
+		.enable = 1,
+		.restricted_vnis = 1,
+		.restricted_tcs = 1,
+		.resource_limits = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = VNI,
+		.tcs[CXI_TC_BEST_EFFORT] = true,
+		.limits.type[CXI_RSRC_TYPE_PTE].max = 8,
+		.limits.type[CXI_RSRC_TYPE_PTE].res = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].res = 4,
+	};
+	struct cxi_svc_desc child_desc = {
+		.enable = 1,
+		.restricted_vnis = 1,
+		.restricted_tcs = 1,
+		.resource_limits = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = VNI,
+		.tcs[CXI_TC_BEST_EFFORT] = true,
+		.limits.type[CXI_RSRC_TYPE_PTE].max = 4,
+		.limits.type[CXI_RSRC_TYPE_PTE].res = 2,
+		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].res = 4,
+	};
+	struct cxi_svc_fail_info fail_info = {};
+	int parent_id = -1;
+	int child_id = -1;
+	int vf_num;
+	int rc;
+
+	if (!dev->is_physfn)
+		return 0;
+
+	for (vf_num = 0; vf_num < C_NUM_VFS; vf_num++)
+		if (!hw->vf_cfg[vf_num].svc_id)
+			break;
+	if (vf_num == C_NUM_VFS) {
+		pr_info("Skipping VF child policy test: no unassigned VF slots\n");
+		return 0;
+	}
+
+	parent_id = cxi_svc_alloc_parent(dev, &parent_desc, &fail_info,
+					 "vf-child-policy-parent");
+	if (parent_id < 0) {
+		test_err("cxi_svc_alloc_parent failed: %d\n", parent_id);
+		rc = parent_id;
+		goto out;
+	}
+
+	rc = cxi_vf_set_svc_id(hw, vf_num, parent_id);
+	if (rc) {
+		test_err("cxi_vf_set_svc_id failed: %d\n", rc);
+		goto out;
+	}
+
+	/* Child reservations cannot exceed the parent's remaining reservation. */
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].max = 8;
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].res = 5;
+	rc = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+				    "vf-child-res", true, vf_num, false);
+	if (rc != -ENOSPC) {
+		test_err("child reservation above parent returned %d\n", rc);
+		if (rc >= 0)
+			child_id = rc;
+		rc = -EINVAL;
+		goto out;
+	}
+
+	/* Defaulted child limits must also fit within the parent. */
+	child_desc.resource_limits = 0;
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].max = 0;
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].res = 0;
+	child_desc.limits.type[CXI_RSRC_TYPE_AC].max = 0;
+	child_desc.limits.type[CXI_RSRC_TYPE_AC].res = 0;
+	rc = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+				    "vf-child-defaults", true, vf_num, false);
+	if (rc < 0) {
+		test_err("default child limits above parent returned %d\n", rc);
+		if (rc >= 0)
+			child_id = rc;
+		rc = -EINVAL;
+		goto out;
+	}
+
+	child_desc.resource_limits = 1;
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].max = 4;
+	child_desc.limits.type[CXI_RSRC_TYPE_PTE].res = 2;
+	child_desc.limits.type[CXI_RSRC_TYPE_AC].max = 4;
+	child_desc.limits.type[CXI_RSRC_TYPE_AC].res = 4;
+	child_desc.tcs[CXI_TC_DEDICATED_ACCESS] = true;
+	rc = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+				    "vf-child-tc", true, vf_num, false);
+	if (rc != -EINVAL) {
+		test_err("disallowed child TC returned %d\n", rc);
+		if (rc >= 0)
+			child_id = rc;
+		rc = -EINVAL;
+		goto out;
+	}
+
+	child_desc.tcs[CXI_TC_DEDICATED_ACCESS] = false;
+	child_desc.restricted_tcs = 0;
+	rc = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+				    "vf-child-unrestricted-tc", true, vf_num,
+				    false);
+	if (rc != -EINVAL) {
+		test_err("unrestricted child TCs returned %d\n", rc);
+		if (rc >= 0)
+			child_id = rc;
+		rc = -EINVAL;
+		goto out;
+	}
+
+	child_desc.restricted_tcs = 1;
+	child_id = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+					  "vf-child-valid", true, vf_num,
+					  false);
+	if (child_id < 0) {
+		rc = child_id;
+		test_err("valid child allocation failed: %d\n", rc);
+		child_id = -1;
+		goto out;
+	}
+
+	child_desc.svc_id = child_id;
+	child_desc.restricted_tcs = 0;
+	rc = cxi_svc_update(dev, &child_desc);
+	if (rc != -EINVAL) {
+		test_err("update to unrestricted child TCs returned %d\n", rc);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	child_desc.restricted_tcs = 1;
+	child_desc.tcs[CXI_TC_DEDICATED_ACCESS] = true;
+	rc = cxi_svc_update(dev, &child_desc);
+	if (rc != -EINVAL) {
+		test_err("update to disallowed child TC returned %d\n", rc);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	rc = 0;
+out:
+	if (child_id >= 0) {
+		int destroy_rc = cxi_svc_destroy(dev, child_id);
+
+		if (!rc && destroy_rc)
+			rc = destroy_rc;
+	}
+
+	return rc;
+}
+
 static int test_le_full(struct cxi_dev *dev)
 {
 	int i;
@@ -877,6 +1037,12 @@ static int run_tests(struct cxi_dev *dev)
 	rc = test_shared_exact_vni(dev);
 	if (rc) {
 		test_err("test_shared_exact_vni failed: %d\n", rc);
+		return -EIO;
+	}
+
+	rc = test_vf_child_policy(dev);
+	if (rc) {
+		test_err("test_vf_child_policy failed: %d\n", rc);
 		return -EIO;
 	}
 
