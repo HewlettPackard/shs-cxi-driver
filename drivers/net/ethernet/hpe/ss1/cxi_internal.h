@@ -46,6 +46,8 @@ struct cxi_rmu_eth *cxi_rmu_eth_alloc_internal(struct cxi_dev *cdev, bool vf_en,
 
 int cxi_eth_vf_get_assigned_mac_internal(struct cxi_dev *cdev,
 					 unsigned int vf_num, u64 *mac);
+void cxi_eth_devinfo_internal(struct cxi_dev *cdev,
+			      struct cxi_eth_info *eth_info, bool is_vf);
 int cxi_link_state_get_internal(struct cxi_dev *cdev, bool *up,
 				bool vf_en, u8 vf_num);
 

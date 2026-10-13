@@ -3624,7 +3624,7 @@ static int cxi_user_eth_dev_info_get(struct user_client *client,
 	if (cmd->buf_size < sizeof(struct cxi_eth_info))
 		return -EINVAL;
 
-	cxi_eth_devinfo(client->ucxi->dev, &eth_info);
+	cxi_eth_devinfo_internal(client->ucxi->dev, &eth_info, client->is_vf);
 
 	if (copy_response(client, &eth_info, sizeof(eth_info), resp_out,
 			  resp_buf_size, resp_out_len))

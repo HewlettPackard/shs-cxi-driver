@@ -75,37 +75,42 @@ static void cxi_eth_devinfo_vf(struct cxi_dev *cdev, struct cxi_eth_info *eth_in
 		goto err;
 	}
 
-	/* Do not expose the PF MAC address to VFs */
-	memset(eth_info->default_mac_addr, 0, sizeof(eth_info->default_mac_addr));
-
 	return;
 err:
 	memset(eth_info, 0, sizeof(*eth_info));
 }
 
 /**
- * cxi_eth_devinfo() - Get some current Ethernet related device information
+ * cxi_eth_devinfo_internal() - Get Ethernet device information from the PF
  *
- * @cdev: CXI device
+ * @cdev: PF CXI device
  * @eth_info: structure to return the information
+ * @is_vf: true when building the response on behalf of a VF
  *
- * When called on the PF, default_mac_addr is filled with the PF hardware
- * address. When called on a VF, default_mac_addr is filled with zeroes.
+ * When @is_vf is true, host-private details (PF MAC address, transceiver
+ * EEPROM contents, firmware and expansion-ROM versions) are not filled in, so
+ * they are never exposed to the VF.
  */
-void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
+void cxi_eth_devinfo_internal(struct cxi_dev *cdev,
+			      struct cxi_eth_info *eth_info, bool is_vf)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
 	union c_ixe_cfg_parser cfg_parser;
-
-	if (!cdev->is_physfn) {
-		cxi_eth_devinfo_vf(cdev, eth_info);
-		return;
-	}
 
 	memset(eth_info, 0, sizeof(*eth_info));
 
 	cass_read(hw, C_IXE_CFG_PARSER, &cfg_parser, sizeof(cfg_parser));
 	eth_info->max_segment_size = (cfg_parser.eth_segment + 1) * 128;
+	eth_info->min_free_shift = cdev->prop.min_free_shift;
+
+	/* The remaining fields are host-private and are not exposed to a VF. */
+	if (is_vf) {
+		eth_info->ptp_clock_index = -1;
+		return;
+	}
+
+	eth_info->ptp_clock_index = ptp_clock_index(hw->ptp_clock);
+
 	ether_addr_copy(eth_info->default_mac_addr, hw->default_mac_addr);
 
 	mutex_lock(&hw->qsfp_eeprom_lock);
@@ -120,9 +125,23 @@ void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
 	if (hw->fw_versions[FW_OPROM])
 		strscpy(eth_info->erom_version, hw->fw_versions[FW_OPROM],
 			sizeof(eth_info->erom_version));
+}
+EXPORT_SYMBOL(cxi_eth_devinfo_internal);
 
-	eth_info->ptp_clock_index = ptp_clock_index(hw->ptp_clock);
-	eth_info->min_free_shift = cdev->prop.min_free_shift;
+/**
+ * cxi_eth_devinfo() - Get some current Ethernet related device information
+ *
+ * @cdev: CXI device
+ * @eth_info: structure to return the information
+ */
+void cxi_eth_devinfo(struct cxi_dev *cdev, struct cxi_eth_info *eth_info)
+{
+	if (!cdev->is_physfn) {
+		cxi_eth_devinfo_vf(cdev, eth_info);
+		return;
+	}
+
+	cxi_eth_devinfo_internal(cdev, eth_info, false);
 }
 EXPORT_SYMBOL(cxi_eth_devinfo);
 

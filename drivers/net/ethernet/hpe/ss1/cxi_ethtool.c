@@ -830,9 +830,19 @@ static int cxi_get_ts_info(struct net_device *ndev,
 	struct cxi_eth *dev = netdev_priv(ndev);
 
 	info->so_timestamping =
-		SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_RX_HARDWARE |
-		SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_HARDWARE |
-		SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
+		SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_TX_SOFTWARE |
+		SOF_TIMESTAMPING_SOFTWARE;
+
+	/* A VF cannot reach the PF's PTP clock nor enable hardware
+	 * timestamping, so it only supports software timestamping.
+	 */
+	if (!dev->cxi_dev->is_physfn) {
+		info->phc_index = -1;
+		return 0;
+	}
+
+	info->so_timestamping |= SOF_TIMESTAMPING_RX_HARDWARE |
+		SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_RAW_HARDWARE;
 
 	info->phc_index = dev->eth_info.ptp_clock_index;
 
