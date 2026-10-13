@@ -12,13 +12,13 @@
 #
 #   ethtool option              callback                 PF result            VF result
 #   --------------------------  -----------------------  -------------------  -----------------
-#   -i                          cxi_get_drvinfo          OK (cxi_eth)         OK (cxi_eth)
+#   -i                          cxi_get_drvinfo          OK (cxi_eth)         OK, no fw/erom ver
 #   -S                          cxi_get_ethtool_stats    OK                   OK
 #   -k (netdev core)            n/a                      OK                   OK
 #   -a / --show-pause           cxi_get_pauseparam       OK                   OK
 #   -g / --show-ring            cxi_get_ringparam        OK                   OK
 #   -l / --show-channels        cxi_get_channels         OK                   OK
-#   -T / --show-time-stamping   cxi_get_ts_info          OK                   OK
+#   -T / --show-time-stamping   cxi_get_ts_info          OK (+HW PHC)         OK, SW-only, no PHC
 #   --show-priv-flags           cxi_get_priv_flags       OK, lists roce-opt   OK, all off
 #   -x / --show-rxfh            cxi_get_rxfh             OK                   OK
 #   --set-fec                   cxi_set_fecparam         REJECTED (ENOTSUPP)  REJECTED
@@ -32,6 +32,7 @@
 #   --set-priv-flags 2x lpbk    cxi_set_priv_flags       REJECTED (EINVAL)    EOPNOTSUPP
 #   -p / --identify             cxi_set_phys_id          OK (LED beacon)      EOPNOTSUPP
 #   -m / --module-info          cxi_get_module_info      MEDIA-DEPENDENT      EOPNOTSUPP
+#   -m page/offset/length       cxi_get_module_eeprom*   MEDIA-DEPENDENT      EOPNOTSUPP
 #   --show-fec                  cxi_get_fecparam         FEATURE-DEPENDENT    EOPNOTSUPP
 #
 # * get_link_ksettings returns EOPNOTSUPP on a VF, but `ethtool <if>` still
@@ -131,7 +132,30 @@ et_link_autoneg_neg() { ! ethtool -s "$1" autoneg on; }
 et_privtoggle_neg()   { ! ethtool --set-priv-flags "$1" roce-opt on; }
 et_identify_neg()     { ! ethtool -p "$1" 1; }
 et_module_neg()       { ! ethtool -m "$1" >/dev/null 2>&1; }
+# Force the raw EEPROM data read (page/offset/length) so the request reaches
+# cxi_get_module_eeprom[_by_page] directly, not just the get_module_info gate
+# that a plain `ethtool -m` hits first. The VF must never expose module EEPROM.
+et_module_eeprom_neg() { ! ethtool -m "$1" page 0 offset 0 length 16 >/dev/null 2>&1; }
 et_fec_show_neg()     { ! ethtool --show-fec "$1" >/dev/null 2>&1; }
+
+# A VF cannot reach the PF's PTP hardware clock: get_ts_info must report no PHC
+# and advertise software timestamping only (no hardware timestamp capability).
+et_tsinfo_vf_swonly() {
+	local out
+	out=$(ethtool -T "$1") || return 1
+	grep -q 'PTP Hardware Clock: none' <<<"$out" &&
+	! grep -qi 'hardware-transmit' <<<"$out" &&
+	! grep -qi 'hardware-receive' <<<"$out"
+}
+
+# A VF must not see the PF's firmware or expansion-ROM versions: the VF devinfo
+# path leaves both empty, so ethtool -i reports the labels with a blank value.
+et_drvinfo_vf_no_fw() {
+	local out
+	out=$(ethtool -i "$1") || return 1
+	grep -q '^firmware-version: *$' <<<"$out" &&
+	grep -q '^expansion-rom-version: *$' <<<"$out"
+}
 
 # Emit the full ethtool battery for one interface.
 # $1 interface, $2 tag (PF/VF), $3 sharness prereq ("" for PF, SRIOV for VF),
@@ -179,6 +203,9 @@ emit_suite() {
 		test_expect_success $pre "$tag --set-priv-flags not supported"     "et_privtoggle_neg '$ifc'"
 		test_expect_success $pre "$tag -p identify not supported"          "et_identify_neg '$ifc'"
 		test_expect_success $pre "$tag -m module info not supported"       "et_module_neg '$ifc'"
+		test_expect_success $pre "$tag -m EEPROM data not exposed"         "et_module_eeprom_neg '$ifc'"
+		test_expect_success $pre "$tag -T: software timestamping only, no PHC" "et_tsinfo_vf_swonly '$ifc'"
+		test_expect_success $pre "$tag -i: fw/erom versions not exposed"   "et_drvinfo_vf_no_fw '$ifc'"
 		test_expect_success $pre "$tag --show-fec not supported"           "et_fec_show_neg '$ifc'"
 	fi
 }
