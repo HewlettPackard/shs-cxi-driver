@@ -4776,8 +4776,6 @@ static void free_client(struct user_client *client)
 	idr_remove(&ucxi->client_idr, client->id);
 	spin_unlock(&ucxi->lock);
 
-	kobject_put(&ucxi->kobj);
-
 	if (client->csrs_mminfo) {
 		mminfo_unmap(client, client->csrs_mminfo, 1);
 		kfree(client->csrs_mminfo);
@@ -4787,6 +4785,7 @@ static void free_client(struct user_client *client)
 	WARN_ON_ONCE(!list_empty(&client->pending_mmaps));
 
 	srcu_read_unlock(&ucxi->srcu, idx);
+	kobject_put(&ucxi->kobj);
 
 	kfree(client);
 }
