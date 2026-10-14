@@ -4,6 +4,7 @@ obj-m += test-eq-reserved-fc.o test-telem-api.o
 obj-m += test-eq-alloc.o test-service.o test-ptlte.o
 obj-m += test-rgroup.o test-profiles.o
 obj-m += test-exclusive-cp.o
+obj-m += test-netns-override.o
 
 test-atu-objs := test_atu.o
 test-dmac-objs := test_dmac.o
@@ -18,6 +19,7 @@ test-eq-reserved-fc-objs := test_eq_reserved_fc.o
 test-eq-alloc-objs := test_eq_alloc.o
 test-service-objs := test_service.o
 test-ptlte-objs := test_ptlte.o
+test-netns-override-objs := test_netns_override.o
 
 ccflags-y += -I$(src)/.. -I$(src)/../../../../../../include \
 	     -I$(src)/../../../../../../../cassini-headers/install/include \

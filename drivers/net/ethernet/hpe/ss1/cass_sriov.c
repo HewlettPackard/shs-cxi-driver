@@ -218,6 +218,7 @@ static int write_message_to_vsock(struct socket *sock, const void *msg,
 		.rc = msg_rc,
 		.uid = __kuid_val(current_euid()),
 		.gid = __kgid_val(current_egid()),
+		.netns = CURRENT_NETNS_ID(),
 		.seq = seq,
 		.flags = flags,
 	};
@@ -281,8 +282,8 @@ static int read_vsock_payload(struct socket *sock, struct vf_pf_msg_hdr *hdr,
  */
 static int read_message_from_vsock(struct socket *sock, void *msg,
 				   size_t *msg_len, int *msg_rc,
-				   uid_t *uid, gid_t *gid, int *seq,
-				   unsigned int *flags)
+				   uid_t *uid, gid_t *gid, unsigned int *netns,
+				   int *seq, unsigned int *flags)
 {
 	struct vf_pf_msg_hdr hdr;
 	int rc;
@@ -306,6 +307,8 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
 		*uid = hdr.uid;
 	if (gid)
 		*gid = hdr.gid;
+	if (netns)
+		*netns = hdr.netns;
 	if (seq)
 		*seq = hdr.seq;
 	if (flags)
@@ -330,7 +333,8 @@ static int read_message_from_vsock(struct socket *sock, void *msg,
  */
 static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
 					 size_t *msg_len, int *msg_rc,
-					 uid_t *uid, gid_t *gid, int *seq,
+					 uid_t *uid, gid_t *gid,
+					 unsigned int *netns, int *seq,
 					 unsigned int *flags)
 {
 	struct vf_pf_msg_hdr hdr;
@@ -348,6 +352,8 @@ static int read_message_from_vsock_large(struct socket *sock, void **msg_out,
 		*uid = hdr.uid;
 	if (gid)
 		*gid = hdr.gid;
+	if (netns)
+		*netns = hdr.netns;
 	if (seq)
 		*seq = hdr.seq;
 	if (flags)
@@ -402,6 +408,7 @@ static int pf_vf_msghandler(void *data)
 	size_t request_len, reply_len;
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;
 	int seq;
 	unsigned int msg_flags;
 
@@ -424,7 +431,7 @@ static int pf_vf_msghandler(void *data)
 
 		rc = read_message_from_vsock_large(vf->req_sock, &request,
 						   &request_len, NULL,
-						   &uid, &gid, &seq,
+						   &uid, &gid, &netns, &seq,
 						   &msg_flags);
 		if (rc == -EAGAIN) {
 			continue;
@@ -466,7 +473,8 @@ static int pf_vf_msghandler(void *data)
 		if (hw->msg_relay)
 			msg_rc = hw->msg_relay(hw->msg_relay_data, vf->vf_idx,
 					       request, request_len, uid, gid,
-					       &reply, reply_len, &reply_len);
+					       netns, &reply, reply_len,
+					       &reply_len);
 		else
 			msg_rc = -ENODEV;
 		mutex_unlock(&hw->msg_relay_lock);
@@ -497,8 +505,8 @@ static int pf_vf_msghandler(void *data)
 	/* Send a NULL request message to indicate that this VF disconnected */
 	mutex_lock(&hw->msg_relay_lock);
 	if (hw->msg_relay)
-		hw->msg_relay(hw->msg_relay_data, vf->vf_idx, NULL, 0, 0, 0, NULL,
-			      0, &reply_len);
+		hw->msg_relay(hw->msg_relay_data, vf->vf_idx, NULL, 0, 0, 0, 0,
+			      NULL, 0, &reply_len);
 	mutex_unlock(&hw->msg_relay_lock);
 
 	if (rc > 0)
@@ -549,7 +557,7 @@ static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
 
 	do {
 		rc = read_message_from_vsock(sock, &rsp, &msg_len, NULL,
-					     NULL, NULL, NULL, NULL);
+					     NULL, NULL, NULL, NULL, NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);
@@ -792,7 +800,7 @@ static void handle_vf_notif_conn(struct cass_dev *hw,
 	msg_len = sizeof(token);
 	do {
 		rc = read_message_from_vsock(incoming, &token, &msg_len, NULL, NULL, NULL, NULL,
-					     NULL);
+					     NULL, NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);
@@ -1151,7 +1159,7 @@ static int vf_notif_handler(void *data)
 
 		rc = read_message_from_vsock_large(hw->vf_notif_sock, &msg,
 						   &msg_len, NULL,
-						   NULL, NULL, &seq,
+						   NULL, NULL, NULL, &seq,
 						   &msg_flags);
 		if (rc == -EAGAIN) {
 			continue;
@@ -1227,7 +1235,7 @@ static int vf_handshake(struct cass_dev *hw)
 		do {
 			rc = read_message_from_vsock(hw->vf_req_sock, &cmd,
 						     &msg_len, NULL,
-						     NULL, NULL, NULL, NULL);
+						     NULL, NULL, NULL, NULL, NULL);
 			if (rc == -EINTR)
 				schedule();
 		} while (rc == -EINTR);
@@ -1530,7 +1538,7 @@ static int cxi_vsock_send(struct cxi_dev *cdev, struct socket *sock, const void 
 
 	do {
 		rc = read_message_from_vsock(sock, rsp, rsp_len, &msg_rc,
-					     NULL, NULL, &rsp_seq, NULL);
+					     NULL, NULL, NULL, &rsp_seq, NULL);
 		if (rc == -EINTR)
 			schedule();
 	} while (rc == -EINTR);

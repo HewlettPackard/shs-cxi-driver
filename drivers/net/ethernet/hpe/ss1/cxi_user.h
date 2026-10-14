@@ -75,6 +75,7 @@ struct user_client {
 
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;
 
 	/* sysfs objects */
 	struct kobject *kobj;

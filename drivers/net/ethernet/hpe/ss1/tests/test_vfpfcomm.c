@@ -43,7 +43,8 @@ struct tdev {
 /* Read a message from a VF. This would be in cxi-user. */
 static int msg_relay(void *data, unsigned int vf_num,
 		     const void *req, size_t req_len, uid_t uid, gid_t gid,
-		     void **rsp, size_t rsp_buf_size, size_t *rsp_len)
+		     unsigned int netns, void **rsp, size_t rsp_buf_size,
+		     size_t *rsp_len)
 {
 	pr_debug("Got message from VF %d, len %zu\n", vf_num, req_len);
 

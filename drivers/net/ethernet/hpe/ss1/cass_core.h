@@ -110,14 +110,23 @@ do {						\
 		pr_debug(fmt, ##__VA_ARGS__);	\
 } while (0)
 
-/* Helper to get current task network namespace inode id safely. */
+/* Per-task network namespace override, used while the PF relays a VF command.
+ * Returns 0 when no override is active; 0 is never a valid netns inode id
+ */
+unsigned int cass_get_netns_override(void);
+
+/* Helper to get current task network namespace inode id safely. While the PF
+ * relays a VF command the forwarded VF caller netns overrides the kthread's.
+ */
 #define CURRENT_NETNS_ID() ({					\
-	unsigned int __netns_id = 0;				\
+	unsigned int __netns_id = cass_get_netns_override();	\
 	struct task_struct *__ct = current;			\
-	rcu_read_lock();					\
-	if (__ct->nsproxy && __ct->nsproxy->net_ns)		\
-		__netns_id = __ct->nsproxy->net_ns->ns.inum;	\
-	rcu_read_unlock();					\
+	if (!__netns_id) {					\
+		rcu_read_lock();				\
+		if (__ct->nsproxy && __ct->nsproxy->net_ns)	\
+			__netns_id = __ct->nsproxy->net_ns->ns.inum; \
+		rcu_read_unlock();				\
+	}							\
 	__netns_id;						\
 })
 
@@ -393,6 +402,7 @@ struct vf_pf_msg_hdr {
 	int rc;			/* return code */
 	uid_t uid;
 	gid_t gid;
+	unsigned int netns;	/* caller netns inode id (VF->PF requests) */
 	int seq;
 	unsigned int flags;
 };

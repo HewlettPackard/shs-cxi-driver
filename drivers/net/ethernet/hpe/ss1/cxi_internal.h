@@ -6,6 +6,9 @@
 
 #include <linux/hpe/cxi/cxi.h>
 
+void cass_set_netns_override(unsigned int netns_id);
+void cass_clear_netns_override(void);
+
 struct cxi_ct *cxi_ct_alloc_internal(struct cxi_lni *lni,
 				     struct c_ct_writeback *wb, bool is_user,
 				     dma_addr_t wb_dma_addr);
