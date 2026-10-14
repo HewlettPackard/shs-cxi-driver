@@ -81,7 +81,7 @@ test_done
 | `t0202-eq_reserved_fc.t` | Event queue reserved flow control |
 | `t0203-eq-alloc.t` | Event queue allocation limits and error handling |
 | `t0204-service.t` | Communication service (endpoint) management |
-| `t0205-rgroup.t` | Resource group allocation and bandwidth partitioning |
+| `t0205-rgroup.t` | Resource group allocation and bandwidth partitioning; per-task netns override used for VF permission checks |
 | `t0206-exclusive-cp.t` | Exclusive communication profile operations |
 | `t0210-configfs-rgroup.t` | Resource group management via configfs |
 | `t0211-configfs-rx-tx-profile.t` | RX/TX profile configuration via configfs |

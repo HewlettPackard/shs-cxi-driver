@@ -4806,7 +4806,8 @@ static int ucxi_release(struct inode *inode, struct file *filp)
 /* Read a message from a VF. */
 static int msg_relay(void *data, unsigned int vf_num,
 		     const void *req, size_t req_len, uid_t uid, gid_t gid,
-		     void **rsp, size_t resp_buf_size, size_t *rsp_len)
+		     unsigned int netns, void **rsp, size_t resp_buf_size,
+		     size_t *rsp_len)
 {
 	struct ucxi *ucxi = data;
 	struct user_client *client;
@@ -4840,12 +4841,13 @@ static int msg_relay(void *data, unsigned int vf_num,
 	}
 	client->uid = uid;
 	client->gid = gid;
+	client->netns = netns;
 
 	/* Impersonate the VF user for the duration of this dispatch so that
 	 * all kernel helpers that use current_euid()/current_egid() for access
 	 * control (e.g. cxi_rgroup_valid_user, cxi_dev_find_rx_profile, …)
 	 * see the actual VF userspace credentials rather than the PF kthread's
-	 * root credentials.
+	 * root credentials. Also impersonate the netns of the VF caller.
 	 */
 	{
 		const struct cred *old_cred;
@@ -4884,8 +4886,10 @@ static int msg_relay(void *data, unsigned int vf_num,
 		}
 
 		old_cred = override_creds(new_cred);
+		cass_set_netns_override(netns);
 		*rsp_len = 0;
 		rc = dispatch(client, req, req_len, rsp, resp_buf_size, rsp_len);
+		cass_clear_netns_override();
 		revert_creds(old_cred);
 		put_cred(new_cred);
 	}

@@ -11,12 +11,46 @@
 #include <linux/phy/phy.h>
 #include <linux/if_vlan.h>
 #include <linux/aer.h>
+#include <linux/xarray.h>
 
 #include "cass_core.h"
 #include "cxi_internal.h"
 #include "cass_sbl.h"
 #include <linux/hpe/sbl/sbl.h>
 #include "cass_ss1_debugfs.h"
+
+/* Per-task network namespace override.
+ *
+ * When the PF relays a command on behalf of a VF, the relay runs in a PF
+ * kernel thread whose own network namespace (init_net) is unrelated to the VF
+ * caller's. The VF forwards its caller's netns inode id over vsock; the relay
+ * records it here, keyed by the relay task, so that permission checks using
+ * CURRENT_NETNS_ID() evaluate the VF caller's namespace rather than the
+ * kthread's. The override is scoped to a single synchronous dispatch and is
+ * cleared immediately afterwards.
+ */
+static DEFINE_XARRAY(netns_override_xa);
+
+void cass_set_netns_override(unsigned int netns_id)
+{
+	xa_store(&netns_override_xa, (unsigned long)current,
+		 xa_mk_value(netns_id), GFP_KERNEL);
+}
+EXPORT_SYMBOL(cass_set_netns_override);
+
+void cass_clear_netns_override(void)
+{
+	xa_erase(&netns_override_xa, (unsigned long)current);
+}
+EXPORT_SYMBOL(cass_clear_netns_override);
+
+unsigned int cass_get_netns_override(void)
+{
+	void *entry = xa_load(&netns_override_xa, (unsigned long)current);
+
+	return entry ? xa_to_value(entry) : 0;
+}
+EXPORT_SYMBOL(cass_get_netns_override);
 
 /* Range of available number of IRQs, depending on the number of VFs
  * configured in Cassini.

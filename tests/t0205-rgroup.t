@@ -35,6 +35,16 @@ test_expect_success "Removing profile API test driver" "
 	rmmod test-profiles
 "
 
+test_expect_success "Inserting netns override test driver" "
+	dmesg --clear &&
+	insmod ../../../drivers/net/ethernet/hpe/ss1/tests/test-netns-override.ko &&
+	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
+"
+
+test_expect_success "Removing netns override test driver" "
+	rmmod test-netns-override
+"
+
 test_expect_success "Remove core driver" "
 	dmesg --clear &&
 	rmmod cxi-ss1 &&

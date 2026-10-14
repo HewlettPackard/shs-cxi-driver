@@ -459,7 +459,8 @@ void cxi_set_nid_from_mac(struct cxi_dev *cdev, const u8 *addr);
 
 typedef int (*cxi_msg_relay_t)(void *data, unsigned int vf_num,
 			       const void *req, size_t req_len, uid_t uid, gid_t gid,
-			       void **rsp, size_t rsp_buf_sz, size_t *rsp_len);
+			       unsigned int netns, void **rsp, size_t rsp_buf_sz,
+			       size_t *rsp_len);
 int cxi_register_msg_relay(struct cxi_dev *cdev, cxi_msg_relay_t msg_relay,
 			   void *msg_relay_data);
 int cxi_unregister_msg_relay(struct cxi_dev *cdev);
