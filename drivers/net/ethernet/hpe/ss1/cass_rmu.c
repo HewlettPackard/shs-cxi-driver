@@ -222,13 +222,15 @@ struct cxi_domain *cxi_domain_alloc(struct cxi_lni *lni, unsigned int vni,
 
 	/* A VF's domain allocation is serviced here on the PF with
 	 * CAP_SYS_ADMIN, which would let cxi_dev_get_rx_profile() auto-create
-	 * an RX profile for any VNI and thus escape the VF's service VNI
-	 * range. Restrict a VF to VNIs it already has an accessible RX profile
-	 * for. The PF's own clients (e.g. kfabric/Lustre) legitimately create
-	 * profiles on demand and are not subject to this check.
+	 * an RX profile for any VNI and thus escape the VF's parent service
+	 * VNI range. Restrict a VF to VNIs within its parent service range;
+	 * in-range VNIs are still auto-created on demand for the VF's
+	 * policy-less system service. The PF's own clients (e.g. kfabric/
+	 * Lustre) are not VFs and are not subject to this check.
 	 */
-	if (lni_priv->is_vf && !cxi_valid_vni(cdev, CXI_PROF_RX, vni))
-		return ERR_PTR(-EINVAL);
+	if (lni_priv->is_vf &&
+	    !cxi_vf_valid_vni(cdev, lni_priv->vf_num, vni))
+		return ERR_PTR(-EPERM);
 
 	rx_profile = cxi_dev_get_rx_profile(cdev, vni);
 	if (IS_ERR(rx_profile)) {

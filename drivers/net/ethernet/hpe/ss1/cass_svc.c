@@ -2453,6 +2453,55 @@ unlock_return:
 }
 EXPORT_SYMBOL(cxi_svc_set_vni_range);
 
+/**
+ * cxi_vf_valid_vni() - Check a VNI against a VF's parent service VNI policy
+ *
+ * @dev: Cassini Device
+ * @vf_num: VF number whose parent service bounds the allowed VNIs
+ * @vni: VNI to validate
+ *
+ * A VF's domain allocations are serviced on the PF with CAP_SYS_ADMIN, which
+ * would otherwise let cxi_dev_get_rx_profile() auto-create an RX profile for
+ * any VNI. Constrain a VF to the VNIs permitted by the parent service it is
+ * bound to (a range, or an explicit list). This rejects VNIs outside the
+ * parent range while still allowing any in-range VNI through the VF's
+ * policy-less system service, without requiring a separate VF-local service.
+ *
+ * Return: true if the VNI is within the VF's parent service policy.
+ */
+bool cxi_vf_valid_vni(struct cxi_dev *dev, unsigned int vf_num,
+		      unsigned int vni)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *parent;
+	bool valid = false;
+	int i;
+
+	mutex_lock(&hw->svc_lock);
+
+	parent = find_parent_for_vf(hw, vf_num);
+	if (!parent)
+		goto unlock;
+
+	if (!parent->svc_desc.restricted_vnis) {
+		if (parent->has_vni_range)
+			valid = vni >= parent->vni_range_min &&
+				vni <= parent->vni_range_max;
+		goto unlock;
+	}
+
+	for (i = 0; i < parent->svc_desc.num_vld_vnis; i++) {
+		if (parent->svc_desc.vnis[i] == vni) {
+			valid = true;
+			break;
+		}
+	}
+
+unlock:
+	mutex_unlock(&hw->svc_lock);
+	return valid;
+}
+
 static int cxi_svc_get_vni_range_vf(struct cxi_dev *dev, unsigned int svc_id,
 				    unsigned int *vni_min, unsigned int *vni_max)
 {
