@@ -316,8 +316,18 @@ static ssize_t pct_eq_show(struct kobject *kobj, struct kobj_attribute *kattr,
 {
 	struct cass_dev *hw =
 		container_of(kobj, struct cass_dev, properties_kobj);
+	unsigned int pct_eq;
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", hw->pct_eq_n);
+	/* A VF reports a sentinel reflecting the PF's retry handler state; its
+	 * own pct_eq_n is never set.
+	 */
+	if (hw->cdev.is_physfn)
+		pct_eq = hw->pct_eq_n;
+	else
+		pct_eq = cxi_retry_handler_running(&hw->cdev) ?
+			CXI_VF_PCT_EQ_RUNNING : C_EQ_NONE;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", pct_eq);
 }
 PROP_ATTR_RO(pct_eq);
 

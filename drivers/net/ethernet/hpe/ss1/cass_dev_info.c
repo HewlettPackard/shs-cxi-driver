@@ -21,7 +21,15 @@ int cxi_dev_info_get(struct cxi_dev *dev,
 	devinfo->device_platform = hw->cdev.prop.device_platform;
 	devinfo->vendor_id = hw->rev.vendor_id;
 	devinfo->device_id = hw->rev.device_id;
-	devinfo->pct_eq = hw->pct_eq_n;
+	/* A VF has no PCT EQ of its own; report a sentinel reflecting whether
+	 * the PF's retry handler is running rather than the VF's unset local
+	 * pct_eq_n. The real EQ number is never exposed to VFs.
+	 */
+	if (dev->is_physfn)
+		devinfo->pct_eq = hw->pct_eq_n;
+	else
+		devinfo->pct_eq = cxi_retry_handler_running(dev) ?
+			CXI_VF_PCT_EQ_RUNNING : C_EQ_NONE;
 	devinfo->uc_nic = hw->uc_nic;
 	devinfo->link_mtu = C_MAX_HPC_MTU;
 	devinfo->num_ptes = hw->cdev.prop.rsrcs.ptes.max;

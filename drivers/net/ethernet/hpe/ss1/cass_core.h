@@ -251,6 +251,12 @@ static inline void pci_disable_pcie_error_reporting(void *p) {}
 #define CTS_AVAIL (C_NUM_CTS - 1) /* CT 0 invalid */
 #define EQS_AVAIL (C_NUM_EQS - 1) /* EQ 0 invalid */
 
+/* pct_eq value reported to a VF when its PF's retry handler is running. The
+ * real PCT EQ number lives on the PF and is never exposed to VFs; consumers
+ * only test pct_eq != C_EQ_NONE.
+ */
+#define CXI_VF_PCT_EQ_RUNNING (~0U)
+
 #define CASS_MAX_IRQ_NAME 24
 
 /* Current devices have up to 31 sensors */
