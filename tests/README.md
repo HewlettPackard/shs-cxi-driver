@@ -71,6 +71,7 @@ test_done
 |------|-------------|
 | `t0100-sriov.t` | SR-IOV VF creation, deletion, and basic VF operations |
 | `t0101-tmpldrv.t` | Template driver for VF testing |
+| `t0102-vf-rh-devinfo.t` | VF dev-info pct_eq reflects the PF's retry-handler state |
 
 ### Domain, DMAC, and Resource Management (t02xx)
 
