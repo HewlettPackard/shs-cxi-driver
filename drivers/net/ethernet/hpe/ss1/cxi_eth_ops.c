@@ -1338,7 +1338,7 @@ int hw_setup(struct cxi_eth *dev)
 		netdev_info(ndev,
 			    "Can't set the number of RX channels to %u: %d\n",
 			    rx_channels, rc);
-		goto err_disable_queues;
+		goto err_set_rx_queues;
 	}
 
 	dev->cur_txqs = 1;
@@ -1377,7 +1377,6 @@ err_set_tx_queues:
 	cxi_set_tx_channels(dev, 1);
 err_set_rx_queues:
 	cxi_set_rx_channels(dev, 1);
-err_disable_queues:
 	disable_tx_queue(&dev->txqs[0]);
 	disable_rx_queue(&dev->rxqs[PTP_RX_Q]);
 	disable_rx_queue(&dev->rxqs[0]);
