@@ -1021,6 +1021,9 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	ida_init(&hw->tle_pool_ids);
 	mutex_init(&hw->msg_relay_lock);
+	INIT_LIST_HEAD(&hw->sriov_pf_node);
+	for (i = 0; i < C_NUM_VFS; i++)
+		mutex_init(&hw->vfs[i].notif_lock);
 
 	/* Initialize RMU Ethernet resource management */
 	idr_init(&hw->rmu_eth_idr);
@@ -1488,6 +1491,9 @@ static void cass_remove(struct pci_dev *pdev)
 	struct cass_dev *hw = pci_get_drvdata(pdev);
 
 	if (hw->cdev.is_physfn) {
+		/* Unregister from the listener before releasing PF resources. */
+		if (hw->num_vfs)
+			cass_sriov_configure(pdev, 0);
 		stop_pcie_monitoring(hw);
 		cass_phy_stop(hw, true);
 		hw->link_ops->link_fini(hw);
@@ -1511,8 +1517,6 @@ static void cass_remove(struct pci_dev *pdev)
 	debugfs_remove_recursive(hw->debug_dir);
 
 	if (hw->cdev.is_physfn) {
-		if (hw->num_vfs)
-			cass_sriov_configure(hw->cdev.pdev, 0);
 		destroy_vf_sysfs(hw);
 		dma_free_coherent(&pdev->dev, C_MST_DBG_MST_TABLE_SIZE,
 				  hw->mst_entries, hw->mst_entries_dma_addr);

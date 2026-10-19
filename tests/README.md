@@ -72,6 +72,7 @@ test_done
 | `t0100-sriov.t` | SR-IOV VF creation, deletion, and basic VF operations |
 | `t0101-tmpldrv.t` | Template driver for VF testing |
 | `t0102-vf-rh-devinfo.t` | VF dev-info pct_eq reflects the PF's retry-handler state |
+| `t0103-multi-pf.t` | Two-PF handshake, VF reconnect, independent teardown, and shared listener restart |
 
 ### Domain, DMAC, and Resource Management (t02xx)
 
@@ -147,7 +148,7 @@ When adding a new test, use the next available number in the appropriate range:
 | Range | Subsystem | Next Available |
 |-------|-----------|----------------|
 | t0010–t0099 | Basic device and module lifecycle | t0014 |
-| t0100–t0199 | SR-IOV and VF management | t0102 |
+| t0100–t0199 | SR-IOV and VF management | t0104 |
 | t0200–t0299 | Domain, DMAC, EQ, service, rgroup | t0214 |
 | t0300–t0399 | ucxi user-space API | t0301 |
 | t0400–t0499 | ATU memory mapping | t0401 |

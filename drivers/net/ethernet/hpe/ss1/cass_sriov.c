@@ -8,14 +8,20 @@
  * vsock transport), and when the VF is attached to the host (using the
  * vsock_loopback module).
  *
- * The VF index of an incoming vsock connection is identified by probing the
- * PF-to-VF interrupt of each unaccounted-for VF and waiting for a response.
+ * One shared listener serves all PFs with SR-IOV enabled. The PF and local
+ * VF index of an incoming connection are identified by hardware: each
+ * PF opens a scratch EQ SW state page to each VF through the SRIOV table, and
+ * the VF writes a nonce to all of them through its own BAR. Only the write to
+ * the page bound to the VF's PCIe requester ID is accepted, which both
+ * identifies and authenticates the VF.
  * After this initial handshake, communication is always initiated by the VF,
  * and an acknowledgment from the PF is always expected. Messages are prefixed
  * with an integer result code (only used by the response from the PF) and
  * message length.
  */
 
+#include <linux/bitfield.h>
+#include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/types.h>
 #include <linux/jiffies.h>
@@ -48,6 +54,9 @@ MODULE_SOFTDEP("pre: vsock vsock_loopback");
 #define VF_MSG_RATE_LIMIT_DFLT 0
 #define VF_MSG_RATE_BURST_DFLT 50
 
+/* Default port for SR-IOV communication over vsock */
+#define CXI_SRIOV_VSOCK_PORT_DFLT 0x17db
+
 unsigned int vf_msg_rate_limit = VF_MSG_RATE_LIMIT_DFLT;
 module_param(vf_msg_rate_limit, uint, 0644);
 MODULE_PARM_DESC(vf_msg_rate_limit,
@@ -57,6 +66,11 @@ unsigned int vf_msg_rate_burst = VF_MSG_RATE_BURST_DFLT;
 module_param(vf_msg_rate_burst, uint, 0644);
 MODULE_PARM_DESC(vf_msg_rate_burst,
 		 "Max burst (messages) allowed above the sustained VF message rate");
+
+static unsigned int sriov_vsock_port = CXI_SRIOV_VSOCK_PORT_DFLT;
+module_param(sriov_vsock_port, uint, 0644);
+MODULE_PARM_DESC(sriov_vsock_port,
+		 "Port number used for SR-IOV vsock communication between PF and VF");
 
 #if defined(CXI_DISABLE_SRIOV)
 #warning "SR-IOV support is disabled."
@@ -142,30 +156,50 @@ EXPORT_SYMBOL(cxi_notify_vfs_async_event);
  */
 #define SMALL_VFMSG_SIZE 256
 
-/* TODO: make port configurable? (0x17db is arbitrary, taken from C1 PCI vendor ID) */
-#define CXI_SRIOV_VSOCK_PORT 0x17db
-#define CXI_SRIOV_VSOCK_NOTIF_PORT (CXI_SRIOV_VSOCK_PORT + 1)
-
 /* Handshake commands sent from PF to VF */
-#define CXI_SRIOV_CMD_RESET 0x17db0001  /* Prepare for IRQ probe. Respond with READY */
-#define CXI_SRIOV_CMD_CHECK 0x17db0002  /* Report HIT or MISS whether IRQ was received */
 #define CXI_SRIOV_CMD_DONE  0x17db0003  /* Handshake complete */
+#define CXI_SRIOV_CMD_PROVE 0x17db0004  /* Write value to listed EQ SW state pages */
 
 /* Handshake responses sent from VF to PF */
-#define CXI_SRIOV_RSP_READY 0x17db8001  /* Ready for IRQ probe */
-#define CXI_SRIOV_RSP_HIT   0x17db8002  /* IRQ was received */
-#define CXI_SRIOV_RSP_MISS  0x17db8003  /* IRQ was not received */
+#define CXI_SRIOV_RSP_PROVED 0x17db8004 /* PROVE writes were issued and flushed */
 
-/* PF-side timeout for vsock. Kept short so that listener-thread loop still runs. */
-#define CXI_SRIOV_PF_TIMEOUT (HZ / 4)
+/* EQ SW state bits ignored by the NIC on a disabled EQ: RD_PTR and SPARE */
+#define PROVE_VAL_LO GENMASK_ULL(25, 0)
+#define PROVE_VAL_HI GENMASK_ULL(47, 44)
+#define PROVE_NONCE_BITS 30
 
-/* VF-side timeout - longer than PF timeout, to allow time for PF to respond to requests */
-#define CXI_SRIOV_VF_TIMEOUT (HZ * 10)
+struct cxi_sriov_prove_cmd {
+	u32 cmd;
+	u32 num_eqs;
+	u64 val;
+	u32 eqn[C_NUM_VFS];
+};
 
-/* VF-side timeout for waiting for an IRQ during handshake. Must be shorter than
- * CXI_SRIOV_PF_TIMEOUT to ensure VF responds before PF's read times out.
+/* Timeout for the PF's listener sockets. Should be kept relatively short to
+ * allow thread to progress through its periodic cleanup.
  */
-#define CXI_SRIOV_IRQ_TIMEOUT (CXI_SRIOV_PF_TIMEOUT / 4)
+#define CXI_SRIOV_LISTENER_TIMEOUT (HZ / 16)
+
+/* VF- and PF-side vsock timeouts */
+#define CXI_SRIOV_VSOCK_TIMEOUT (HZ * 10)
+#define CXI_SRIOV_PF_TIMEOUT (CXI_SRIOV_VSOCK_TIMEOUT)
+#define CXI_SRIOV_VF_TIMEOUT (CXI_SRIOV_VSOCK_TIMEOUT)
+
+#define CXI_SRIOV_THREADPARK_TIME (HZ / 16)
+
+/* PF-side wait for the VF's PROVE write to land after PROVED is received */
+#define CXI_SRIOV_PROVE_TIMEOUT msecs_to_jiffies(10)
+
+/* sriov_listener_lock controls startup and shutdown of listener thread */
+static DEFINE_MUTEX(sriov_listener_lock);
+static unsigned int sriov_pf_count;
+static struct task_struct *sriov_listener;
+static struct socket *sriov_listen_req_sock;
+static struct socket *sriov_listen_notif_sock;
+
+/* List of cass_dev instances that have SR-IOV enabled, locked by sriov_pf_lock */
+static LIST_HEAD(sriov_pfs);
+static DEFINE_MUTEX(sriov_pf_lock);
 
 /* Rate-limiting for VF requests and notifications, using the GCRA leaky-bucket
  * algorithm. bucket_ts is the time at which the bucket is next empty, given no
@@ -443,8 +477,8 @@ static int pf_vf_msghandler(void *data)
 				   vf->vf_idx, rc);
 			break;
 		} else if (rc == 0) {
-			cxidev_err(&hw->cdev, "vf %d: connection closed by VF",
-				   vf->vf_idx);
+			cxidev_info(&hw->cdev, "vf %d: connection closed by VF",
+				    vf->vf_idx);
 			break;
 		}
 
@@ -517,13 +551,15 @@ err:
 
 	kernel_sock_shutdown(vf->req_sock, SHUT_RDWR);
 	sock_release(vf->req_sock);
-	vf->req_sock = NULL;
 
+	mutex_lock(&vf->notif_lock);
 	if (vf->notif_sock) {
 		kernel_sock_shutdown(vf->notif_sock, SHUT_RDWR);
 		sock_release(vf->notif_sock);
 		vf->notif_sock = NULL;
 	}
+	WRITE_ONCE(vf->req_sock, NULL);
+	mutex_unlock(&vf->notif_lock);
 
 	cass_ac_phys_free(hw, vf->phys_ac);
 	vf->phys_ac = 0;
@@ -532,7 +568,7 @@ err:
 	kfree(reply_buf);
 
 	while (!kthread_should_stop())
-		schedule_timeout_interruptible(CXI_SRIOV_PF_TIMEOUT);
+		schedule_timeout_interruptible(CXI_SRIOV_THREADPARK_TIME);
 
 	return rc;
 }
@@ -543,6 +579,8 @@ static int handshake_send_cmd(struct cass_dev *hw, struct socket *sock,
 	int rc;
 
 	rc = write_message_to_vsock(sock, &cmd, sizeof(cmd), 0, 0, 0);
+	if (rc >= 0 && rc != sizeof(struct vf_pf_msg_hdr) + sizeof(cmd))
+		rc = -EIO;
 	if (rc < 0)
 		cxidev_err(&hw->cdev, "VF handshake: could not send cmd %x: %d",
 			   cmd, rc);
@@ -578,284 +616,359 @@ static int handshake_read_rsp(struct cass_dev *hw, struct socket *sock)
 	return rsp;
 }
 
-/* Probe a range of VFs by firing IRQs for VFs in [range_min, range_max], and
- * asking the VF whether it got an IRQ. Returns 1 if hit, 0 if miss, negative on
- * error.
+/* VF probing induces a number of hardware errors, mask them temporarily:
+ *  - eq_dsabld_sw_state_wr: Write to software state of disabled EQ
+ *  - pri_rarb_xlat_rtrgt_vf_en_error, pri_rarb_xlat_rtrgt_vf_en_num_error: VF
+ *    attempted write to EQ not enabled for it
  */
-static int pf_probe_vf_range(struct cass_dev *hw, struct socket *sock,
-			     int range_min, int range_max)
+static void pf_handshake_mask_err(struct cass_dev *hw)
 {
-	int devfn;
-	int i;
-	int rc;
-	int rsp;
-	struct pci_dev *vf_pdev;
-	union c_pi_ipd_cfg_pf_vf_irq irqs = {
-		.irq = 0,
-	};
+	union err_flags f = {};
 
-	/* Probing a VF whose interrupts have not yet been enabled will trigger
-	 * a hardware error. Skip these VFs, as they cannot be our candidate
-	 * anyway.
-	 */
-	for (i = range_min; i <= range_max; i++) {
-		devfn = pci_iov_virtfn_devfn(hw->cdev.pdev, i);
-		if (devfn < 0)
-			continue;
+	f.ee.eq_dsabld_sw_state_wr = 1;
+	cxi_disable_hw_errors(hw, C_EE_IRQA_MSIX_INT, false, f.mask);
 
-		vf_pdev = pci_get_slot(hw->cdev.pdev->bus, devfn);
-		if (!vf_pdev)
-			continue;
-
-		if (vf_pdev->msix_enabled)
-			irqs.irq |= BIT_ULL(i);
-		pci_dev_put(vf_pdev);
-	}
-
-	cxidev_dbg(&hw->cdev, "probing for VF in range [%d, %d]", range_min, range_max);
-
-	/* 1: Tell VF to reinit completion and wait for READY */
-	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_RESET);
-	if (rc < 0)
-		return rc;
-
-	rsp = handshake_read_rsp(hw, sock);
-	if (rsp < 0)
-		return rsp;
-	if (rsp != CXI_SRIOV_RSP_READY) {
-		cxidev_err(&hw->cdev, "VF handshake: expected READY, got %x", rsp);
-		return -EPROTO;
-	}
-
-	/* 2: Fire IRQs for the range */
-	cass_write(hw, C_PI_IPD_CFG_PF_VF_IRQ, &irqs,
-		   sizeof(union c_pi_ipd_cfg_pf_vf_irq));
-
-	/* 3: Ask VF to check for IRQ */
-	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_CHECK);
-	if (rc < 0)
-		return rc;
-
-	rsp = handshake_read_rsp(hw, sock);
-	if (rsp < 0)
-		return rsp;
-
-	if (rsp == CXI_SRIOV_RSP_HIT)
-		return 1;
-	else if (rsp == CXI_SRIOV_RSP_MISS)
-		return 0;
-
-	cxidev_err(&hw->cdev, "VF handshake: expected HIT/MISS, got %x", rsp);
-	return -EPROTO;
+	memset(&f, 0, sizeof(f));
+	f.pi_ext.pri_rarb_xlat_rtrgt_vf_en_error = 1;
+	f.pi_ext.pri_rarb_xlat_rtrgt_vf_en_num_error = 1;
+	cxi_disable_hw_errors(hw, C_PI_IRQA_MSIX_INT, true, f.mask);
 }
 
-/* PF side of PF-VF handshake: Identify which VF an incoming connection belongs
- * to, by binary-searching with PF-to-VF interrupts. The PF drives the protocol;
- * the VF only responds.
- */
-static int pf_vf_handshake(struct cass_dev *hw, struct socket *sock)
+static void pf_handshake_unmask_err(struct cass_dev *hw, bool expect_err)
 {
-	int lo = 0;
-	int hi = hw->num_vfs - 1;
-	int mid;
+	unsigned long deadline = jiffies + CXI_SRIOV_PROVE_TIMEOUT;
+	union c_ee_err_flg flg_ee;
+	union c_pi_ext_err_flg flg_pi_ext;
+	union err_flags f = {};
+
+	/* The flag is raised asynchronously by the EE after the write lands */
+	while (expect_err) {
+		cass_read(hw, C_EE_ERR_FLG, &flg_ee, sizeof(flg_ee));
+		cass_read(hw, C_PI_EXT_ERR_FLG, &flg_pi_ext, sizeof(flg_pi_ext));
+		if (flg_ee.eq_dsabld_sw_state_wr ||
+		    flg_pi_ext.pri_rarb_xlat_rtrgt_vf_en_error ||
+		    flg_pi_ext.pri_rarb_xlat_rtrgt_vf_en_num_error ||
+		    !time_before(jiffies, deadline))
+			break;
+		usleep_range(50, 100);
+	}
+
+	/* Clear the latched flag so unmasking does not raise it */
+	f.ee.eq_dsabld_sw_state_wr = 1;
+	cass_write(hw, C_EE_ERR_CLR, &f.ee, sizeof(f.ee));
+	cxi_enable_hw_errors(hw, C_EE_IRQA_MSIX_INT, false, f.mask);
+
+	memset(&f, 0, sizeof(f));
+	f.pi_ext.pri_rarb_xlat_rtrgt_vf_en_error = 1;
+	f.pi_ext.pri_rarb_xlat_rtrgt_vf_en_num_error = 1;
+	cass_write(hw, C_PI_EXT_ERR_CLR, &f.pi_ext, sizeof(f.pi_ext));
+	cxi_enable_hw_errors(hw, C_PI_IRQA_MSIX_INT, true, f.mask);
+}
+
+/* PF side of PF-VF handshake: identify which VF an incoming connection belongs
+ * to. Scratch EQ i is opened to VF i only, and the peer writes a nonce to all
+ * of them through its own BAR. Hardware drops writes whose PCIe requester ID
+ * does not match the SRIOVT entry, so exactly one EQ receives the nonce and the
+ * peer cannot claim another VF's identity.
+ */
+static int pf_vf_prove(struct cass_dev *hw, struct socket *sock)
+__must_hold(sriov_pf_lock)
+{
+	struct cass_dev *hw_tmp;
+	struct cxi_sriov_prove_cmd *prove;
+	union c_ee_cfg_eq_sw_state sw_state = {};
+	unsigned int num = hw->num_vfs;
+	unsigned int allocated;
+	unsigned int i;
+	int vf_idx = -1;
+	bool seen = false;
+	u32 nonce;
+	int rsp;
 	int rc;
 
-	while (lo < hi) {
-		mid = lo + (hi - lo) / 2;
+	prove = kzalloc(sizeof(*prove), GFP_KERNEL);
+	if (!prove)
+		return -ENOMEM;
 
-		rc = pf_probe_vf_range(hw, sock, lo, mid);
-		if (rc < 0)
-			return rc;
-		if (rc == 1) {
-			hi = mid;
-			continue;
-		}
-
-		rc = pf_probe_vf_range(hw, sock, mid + 1, hi);
-		if (rc < 0)
-			return rc;
-		if (rc == 1) {
-			lo = mid + 1;
-			continue;
-		}
-
-		cxidev_err(&hw->cdev, "VF handshake: VF not found");
-		return -ENOENT;
-	}
-
-	/* If only one VF is present, the binary search above is a no-op, but
-	 * we still want to verify the presence of the VF.
-	 */
-	if (hw->num_vfs == 1) {
-		rc = pf_probe_vf_range(hw, sock, lo, lo);
+	for (allocated = 0; allocated < num; allocated++) {
+		rc = ida_alloc_range(&hw->eq_index_table, 1, C_NUM_EQS - 1,
+				     GFP_KERNEL);
 		if (rc < 0) {
-			return rc;
-		} else if (rc == 0) {
-			cxidev_err(&hw->cdev, "VF handshake: VF not found");
-			return -ENOENT;
+			cxidev_err(&hw->cdev, "VF handshake: no free EQ: %d", rc);
+			goto free_eqs;
+		}
+		prove->eqn[allocated] = rc;
+	}
+
+	do {
+		nonce = get_random_u32() & GENMASK(PROVE_NONCE_BITS - 1, 0);
+	} while (!nonce);
+
+	prove->cmd = CXI_SRIOV_CMD_PROVE;
+	prove->num_eqs = num;
+	prove->val = FIELD_PREP(PROVE_VAL_LO, nonce) |
+		     FIELD_PREP(PROVE_VAL_HI, nonce >> 26);
+
+	list_for_each_entry(hw_tmp, &sriov_pfs, sriov_pf_node)
+		pf_handshake_mask_err(hw_tmp);
+
+	for (i = 0; i < num; i++) {
+		cass_write(hw, C_EE_CFG_EQ_SW_STATE(prove->eqn[i]), &sw_state,
+			   sizeof(sw_state));
+		cass_config_sriovt(hw, true, i, 4096 + prove->eqn[i]);
+	}
+	cass_flush_pci(hw);
+
+	rc = write_message_to_vsock(sock, prove, sizeof(*prove), 0, 0, 0);
+	if (rc >= 0 && rc != sizeof(struct vf_pf_msg_hdr) + sizeof(*prove))
+		rc = -EIO;
+	if (rc < 0) {
+		cxidev_err(&hw->cdev, "VF handshake: could not send PROVE: %d",
+			   rc);
+	} else {
+		rsp = handshake_read_rsp(hw, sock);
+		if (rsp < 0) {
+			rc = rsp;
+		} else if (rsp != CXI_SRIOV_RSP_PROVED) {
+			cxidev_err(&hw->cdev, "VF handshake: expected PROVED, got %x",
+				   rsp);
+			rc = -EPROTO;
+		} else {
+			rc = 0;
 		}
 	}
 
-	/* Tell VF the handshake is complete */
-	rc = handshake_send_cmd(hw, sock, CXI_SRIOV_CMD_DONE);
-	if (rc < 0)
-		return rc;
+	/* The VF's posted writes may still be in flight; wait before revoking */
+	if (rc == 0) {
+		unsigned long deadline = jiffies + CXI_SRIOV_PROVE_TIMEOUT;
 
-	return lo;
+		do {
+			for (i = 0; i < num && !seen; i++) {
+				cass_read(hw, C_EE_CFG_EQ_SW_STATE(prove->eqn[i]),
+					  &sw_state, sizeof(sw_state));
+				seen = (sw_state.qw & (PROVE_VAL_LO | PROVE_VAL_HI)) ==
+				       prove->val;
+			}
+			if (!seen)
+				usleep_range(50, 100);
+		} while (!seen && time_before(jiffies, deadline));
+	}
+
+	/* Revoke VF access before the EQ numbers can be reused */
+	for (i = 0; i < num; i++)
+		cass_config_sriovt(hw, false, 0, 4096 + prove->eqn[i]);
+	cass_flush_pci(hw);
+
+	list_for_each_entry(hw_tmp, &sriov_pfs, sriov_pf_node)
+		pf_handshake_unmask_err(hw_tmp, hw == hw_tmp && seen);
+
+
+	if (rc)
+		goto free_eqs;
+
+	for (i = 0; i < num; i++) {
+		cass_read(hw, C_EE_CFG_EQ_SW_STATE(prove->eqn[i]), &sw_state,
+			  sizeof(sw_state));
+		if ((sw_state.qw & (PROVE_VAL_LO | PROVE_VAL_HI)) != prove->val)
+			continue;
+		if (vf_idx >= 0) {
+			cxidev_err(&hw->cdev, "VF handshake: nonce seen on vf %d and %u",
+				   vf_idx, i);
+			rc = -EACCES;
+			goto free_eqs;
+		}
+		vf_idx = i;
+	}
+
+	/* No match is normal when the peer belongs to another registered PF. */
+	rc = vf_idx < 0 ? -ENOENT : vf_idx;
+
+free_eqs:
+	memset(&sw_state, 0, sizeof(sw_state));
+	for (i = 0; i < allocated; i++)
+		cass_write(hw, C_EE_CFG_EQ_SW_STATE(prove->eqn[i]), &sw_state,
+			   sizeof(sw_state));
+	cass_flush_pci(hw);
+	while (allocated--)
+		ida_free(&hw->eq_index_table, prove->eqn[allocated]);
+	kfree(prove);
+
+	return rc;
+}
+
+/* Challenge each PF in turn using temporary EQ mappings. Each round revokes
+ * its mappings and releases its EQs before the next PF is challenged.
+ */
+static int pf_vf_handshake(struct socket *sock, struct cass_dev **matched_hw,
+			   int *vf_idx)
+__must_hold(sriov_pf_lock)
+{
+	struct cass_dev *hw;
+	int rc;
+
+	list_for_each_entry(hw, &sriov_pfs, sriov_pf_node) {
+		rc = pf_vf_prove(hw, sock);
+		if (rc == -ENOENT)
+			continue;
+		if (rc < 0)
+			return rc;
+		*matched_hw = hw;
+		*vf_idx = rc;
+		return 0;
+	}
+
+	return -EACCES;
+}
+
+static bool vf_token_in_use(unsigned int token)
+__must_hold(sriov_pf_lock)
+{
+	struct cass_dev *hw;
+	int i;
+
+	list_for_each_entry(hw, &sriov_pfs, sriov_pf_node)
+		for (i = 0; i < hw->num_vfs; i++)
+			if (hw->vfs[i].token == token)
+				return true;
+	return false;
 }
 
 /* Handle an incoming request connection from a VF */
-static void handle_vf_req_conn(struct cass_dev *hw,
-			       struct socket *incoming)
+static void handle_vf_req_conn(struct socket *incoming)
 {
 	struct sockaddr_vm peeraddr;
+	struct cass_dev *hw;
 	struct cass_vf *vf;
+	unsigned int token;
 	int rc, vf_idx;
 
+	incoming->sk->sk_rcvtimeo = CXI_SRIOV_PF_TIMEOUT;
+	incoming->sk->sk_sndtimeo = CXI_SRIOV_PF_TIMEOUT;
 	rc = kernel_getpeername(incoming, (struct sockaddr *)&peeraddr);
+	if (rc < 0)
+		goto close_sock;
+
+	mutex_lock(&sriov_pf_lock);
+	rc = pf_vf_handshake(incoming, &hw, &vf_idx);
 	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not get peer addr for vf: %d", rc);
-		goto close_sock;
+		pr_err("vf handshake from cid %u failed: %d\n",
+		       peeraddr.svm_cid, rc);
+		goto unlock;
 	}
-
-	vf_idx = pf_vf_handshake(hw, incoming);
-	if (vf_idx < 0) {
-		cxidev_err(&hw->cdev, "vf handshake from cid %d failed: %d",
-			   peeraddr.svm_cid, vf_idx);
-		goto close_sock;
-	}
-
-	cxidev_dbg(&hw->cdev, "pf got request connection from cid %d, vf %d",
-		   peeraddr.svm_cid, vf_idx);
 
 	vf = &hw->vfs[vf_idx];
-
-	/* The listener loop periodically cleans up stale VF message handler
-	 * threads but we should check here too, in case an unclean shutdown has
-	 * left an old handler thread running, or a new connection comes in
-	 * before the listener loop has a chance to clean up the previous
-	 * thread.
+	/* A reconnect replaces only the authenticated VF. Wait for its relay
+	 * disconnect callback and resource cleanup before admitting requests.
+	 * Do not reinitialize notif_lock: notification users may still hold it.
 	 */
 	if (vf->task) {
-		cxidev_warn(&hw->cdev, "Evicting stale request handler for vf %d", vf_idx);
 		kthread_stop(vf->task);
 		vf->task = NULL;
 	}
 
-	mutex_init(&vf->notif_lock);
+	do {
+		token = get_random_u32();
+	} while (vf_token_in_use(token));
 
 	vf->vf_idx = vf_idx;
 	vf->hw = hw;
 	vf->req_sock = incoming;
 	vf->req_bucket_ts = ktime_get();
-	get_random_bytes(&vf->token, sizeof(vf->token));
+	vf->token = token;
 
 	rc = cass_ac_phys_alloc(hw, true, vf_idx);
 	if (rc <= 0) {
-		cxidev_err(&hw->cdev, "could not allocate ac for vf %d: %d",
-			   vf_idx, rc);
 		vf->req_sock = NULL;
-		goto close_sock;
+		goto unlock;
 	}
 	vf->phys_ac = rc;
-	cxidev_dbg(&hw->cdev, "allocated acid %d for vf %d", vf->phys_ac, vf_idx);
+
+	/* DONE is only sent after an overall successful hardware proof and
+	 * after the previous session's resources have been released.
+	 */
+	rc = handshake_send_cmd(hw, incoming, CXI_SRIOV_CMD_DONE);
+	if (rc < 0)
+		goto free_ac;
 
 	vf->task = kthread_run(pf_vf_msghandler, vf, "cxi_vf_%d", vf_idx);
 	if (IS_ERR(vf->task)) {
-		cxidev_err(&hw->cdev, "failed to start handler for vf %d", vf_idx);
-		cass_ac_phys_free(hw, vf->phys_ac);
-		vf->phys_ac = 0;
-		vf->req_sock = NULL;
 		vf->task = NULL;
-		goto close_sock;
+		goto free_ac;
 	}
+	mutex_unlock(&sriov_pf_lock);
 	return;
 
+free_ac:
+	cass_ac_phys_free(hw, vf->phys_ac);
+	vf->phys_ac = 0;
+	vf->req_sock = NULL;
+unlock:
+	mutex_unlock(&sriov_pf_lock);
 close_sock:
 	kernel_sock_shutdown(incoming, SHUT_RDWR);
 	sock_release(incoming);
 }
 
 /* Handle an incoming notification connection from a VF */
-static void handle_vf_notif_conn(struct cass_dev *hw,
-				 struct socket *incoming)
+static void handle_vf_notif_conn(struct socket *incoming)
 {
-	struct sockaddr_vm peeraddr;
-	struct cass_vf *vf;
-	int rc, vf_idx, i;
-	unsigned int token;
+	struct cass_dev *hw;
+	struct cass_vf *vf = NULL;
 	struct cass_vf_notif_ping ping = {
 		.op = CASS_VF_NOTIF_OP_PING,
 	};
-	size_t msg_len;
+	unsigned int token;
+	size_t msg_len = sizeof(token);
+	int rc, i;
 
-	rc = kernel_getpeername(incoming, (struct sockaddr *)&peeraddr);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev,
-			   "could not get peer addr for notification connection: %d", rc);
+	incoming->sk->sk_rcvtimeo = CXI_SRIOV_PF_TIMEOUT;
+	incoming->sk->sk_sndtimeo = CXI_SRIOV_PF_TIMEOUT;
+	rc = read_message_from_vsock(incoming, &token, &msg_len, NULL,
+				     NULL, NULL, NULL, NULL, NULL);
+	if (rc <= 0 || msg_len != sizeof(token))
 		goto close_sock;
-	}
 
-	/* Read token to identify which VF this is */
-	msg_len = sizeof(token);
-	do {
-		rc = read_message_from_vsock(incoming, &token, &msg_len, NULL, NULL, NULL, NULL,
-					     NULL, NULL);
-		if (rc == -EINTR)
-			schedule();
-	} while (rc == -EINTR);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev,
-			   "could not read token from notification connection: %d", rc);
-		goto close_sock;
-	}
-
-	if (msg_len != sizeof(token)) {
-		cxidev_err(&hw->cdev, "invalid token size: %zu", msg_len);
-		goto close_sock;
-	}
-
-	/* Find VF by matching token */
-	vf_idx = -1;
-	for (i = 0; i < hw->num_vfs; i++) {
-		if (hw->vfs[i].req_sock && hw->vfs[i].token == token) {
-			vf_idx = i;
-			break;
+	mutex_lock(&sriov_pf_lock);
+	list_for_each_entry(hw, &sriov_pfs, sriov_pf_node) {
+		for (i = 0; i < hw->num_vfs; i++) {
+			if (!hw->vfs[i].task || hw->vfs[i].token != token)
+				continue;
+			/* Reject tokens matching more than one session. */
+			if (vf)
+				goto unlock;
+			vf = &hw->vfs[i];
 		}
 	}
+	if (!vf)
+		goto unlock;
 
-	if (vf_idx < 0) {
-		cxidev_err(&hw->cdev, "notification connection with unknown token %u",
-			   token);
-		goto close_sock;
+	mutex_lock(&vf->notif_lock);
+	if (!vf->req_sock || vf->notif_sock) {
+		mutex_unlock(&vf->notif_lock);
+		goto unlock;
 	}
-
-	cxidev_dbg(&hw->cdev, "pf got notification connection from cid %d, vf %d",
-		   peeraddr.svm_cid, vf_idx);
-
-	vf = &hw->vfs[vf_idx];
-	if (vf->notif_sock) {
-		cxidev_err(&hw->cdev, "vf %d notification socket already in use", vf_idx);
-		goto close_sock;
-	}
-
 	vf->notif_seq = 0;
 	vf->notif_sock = incoming;
-	cxidev_dbg(&hw->cdev, "vf %d: notification socket connected", vf_idx);
+	mutex_unlock(&vf->notif_lock);
 
-	/* Send test notification */
-	msg_len = sizeof(ping);
-	rc = cxi_send_msg_to_vf(&hw->cdev, vf_idx, &ping, msg_len,
-				NULL, NULL);
+	/* Send test notification; the handler may concurrently disconnect. */
+	rc = cxi_send_msg_to_vf(&vf->hw->cdev, vf->vf_idx, &ping,
+				sizeof(ping), NULL, NULL);
 	if (rc < 0) {
-		cxidev_err(&hw->cdev, "vf %d: could not send test notification: %d",
-			   vf_idx, rc);
-		vf->notif_sock = NULL;
-		goto close_sock;
+		mutex_lock(&vf->notif_lock);
+		if (vf->notif_sock == incoming) {
+			vf->notif_sock = NULL;
+			mutex_unlock(&vf->notif_lock);
+			goto unlock;
+		}
+		mutex_unlock(&vf->notif_lock);
 	}
-
+	/* If the handler took the socket down, it already released it. */
+	mutex_unlock(&sriov_pf_lock);
 	return;
 
+unlock:
+	mutex_unlock(&sriov_pf_lock);
 close_sock:
 	kernel_sock_shutdown(incoming, SHUT_RDWR);
 	sock_release(incoming);
@@ -891,64 +1004,70 @@ release_sock:
 	return rc;
 }
 
-/* Combined listener thread for incoming connections from VFs to the PF.
- * Handles both request and notification sockets. 1 instance only.
+/* Listener thread for incoming connections from VFs of all registered PFs.
+ * Handles both request and notification sockets. 1 instance only, used by all
+ * PFs.
  */
 static int pf_vf_listener(void *data)
 {
-	int rc, vf_idx;
-	struct cass_dev *hw = (struct cass_dev *)data;
+	struct cass_dev *hw;
+	int rc = 0;
+	int vf_idx;
 
-	cxidev_dbg(&hw->cdev, "started vf listener");
-
-	rc = vsock_create_listen(&hw->vf_req_sock, CXI_SRIOV_VSOCK_PORT,
-				 CXI_SRIOV_PF_TIMEOUT, hw->num_vfs);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not create vf request listener socket: %d", rc);
-		return rc;
-	}
-
-	rc = vsock_create_listen(&hw->vf_notif_sock, CXI_SRIOV_VSOCK_NOTIF_PORT,
-				 CXI_SRIOV_PF_TIMEOUT, hw->num_vfs);
-	if (rc < 0) {
-		cxidev_err(&hw->cdev, "could not create vf notification listener socket: %d", rc);
-		goto shutdown_req;
-	}
+	pr_debug("started vf listener\n");
 
 	while (!kthread_should_stop()) {
 		struct socket *incoming;
 
-		rc = kernel_accept(hw->vf_req_sock, &incoming, 0);
+		rc = kernel_accept(sriov_listen_req_sock, &incoming, 0);
 		if (rc == 0) {
-			handle_vf_req_conn(hw, incoming);
+			handle_vf_req_conn(incoming);
 			continue;
 		} else if (rc != -EAGAIN && rc != -EINTR) {
-			cxidev_err(&hw->cdev, "vf request listener socket accept error: %d", rc);
+			pr_err("vf request listener socket accept error: %d\n", rc);
 			break;
 		}
 
-		rc = kernel_accept(hw->vf_notif_sock, &incoming, 0);
+		rc = kernel_accept(sriov_listen_notif_sock, &incoming, 0);
 		if (rc == 0) {
-			handle_vf_notif_conn(hw, incoming);
+			handle_vf_notif_conn(incoming);
 			continue;
 		} else if (rc != -EAGAIN && rc != -EINTR) {
-			cxidev_err(&hw->cdev, "vf notification listener socket accept error: %d",
-				   rc);
+			pr_err("vf notification listener socket accept error: %d\n",
+			       rc);
 			break;
 		}
 
 		/* Periodically clean up old handler threads that have
 		 * relinquished their request sockets
 		 */
-		for (vf_idx = 0; vf_idx < hw->num_vfs; vf_idx++) {
-			if (!hw->vfs[vf_idx].req_sock && hw->vfs[vf_idx].task) {
-				kthread_stop(hw->vfs[vf_idx].task);
-				hw->vfs[vf_idx].task = NULL;
+		mutex_lock(&sriov_pf_lock);
+		list_for_each_entry(hw, &sriov_pfs, sriov_pf_node) {
+			for (vf_idx = 0; vf_idx < hw->num_vfs; vf_idx++) {
+				if (!READ_ONCE(hw->vfs[vf_idx].req_sock) &&
+				    hw->vfs[vf_idx].task) {
+					kthread_stop(hw->vfs[vf_idx].task);
+					hw->vfs[vf_idx].task = NULL;
+				}
 			}
 		}
+		mutex_unlock(&sriov_pf_lock);
 	}
 
-	cxidev_dbg(&hw->cdev, "vf listener exiting");
+	pr_debug("vf listener exiting\n");
+
+	while (!kthread_should_stop())
+		schedule_timeout_interruptible(CXI_SRIOV_PF_TIMEOUT);
+
+	return rc;
+}
+
+/* Stop all VF handler threads of a PF and release their resources. The PF
+ * must already be removed from sriov_pfs.
+ */
+static void pf_vf_teardown(struct cass_dev *hw)
+{
+	int vf_idx;
 
 	for (vf_idx = 0; vf_idx < hw->num_vfs; vf_idx++) {
 		if (hw->vfs[vf_idx].task) {
@@ -970,17 +1089,109 @@ static int pf_vf_listener(void *data)
 			hw->vfs[vf_idx].phys_ac = 0;
 		}
 	}
+}
 
-	kernel_sock_shutdown(hw->vf_notif_sock, SHUT_RDWR);
-	sock_release(hw->vf_notif_sock);
-	hw->vf_notif_sock = NULL;
+static void sriov_listener_stop(void)
+__must_hold(sriov_listener_lock)
+{
+	if (sriov_listener) {
+		kthread_stop(sriov_listener);
+		sriov_listener = NULL;
+	}
 
-shutdown_req:
-	kernel_sock_shutdown(hw->vf_req_sock, SHUT_RDWR);
-	sock_release(hw->vf_req_sock);
-	hw->vf_req_sock = NULL;
+	if (sriov_listen_notif_sock) {
+		kernel_sock_shutdown(sriov_listen_notif_sock, SHUT_RDWR);
+		sock_release(sriov_listen_notif_sock);
+		sriov_listen_notif_sock = NULL;
+	}
 
+	if (sriov_listen_req_sock) {
+		kernel_sock_shutdown(sriov_listen_req_sock, SHUT_RDWR);
+		sock_release(sriov_listen_req_sock);
+		sriov_listen_req_sock = NULL;
+	}
+}
+
+static int sriov_listener_start(void)
+__must_hold(sriov_listener_lock)
+{
+	int rc;
+
+	rc = vsock_create_listen(&sriov_listen_req_sock, sriov_vsock_port,
+				 CXI_SRIOV_LISTENER_TIMEOUT, C_NUM_VFS);
+	if (rc < 0) {
+		pr_err("could not create vf request listener socket: %d\n", rc);
+		return rc;
+	}
+
+	rc = vsock_create_listen(&sriov_listen_notif_sock,
+				 sriov_vsock_port + 1,
+				 CXI_SRIOV_LISTENER_TIMEOUT, C_NUM_VFS);
+	if (rc < 0) {
+		pr_err("could not create vf notification listener socket: %d\n",
+		       rc);
+		goto err_stop;
+	}
+
+	sriov_listener = kthread_run(pf_vf_listener, NULL, "cxi_vf_listener");
+	if (IS_ERR(sriov_listener)) {
+		pr_err("could not start vf listener thread\n");
+		rc = PTR_ERR(sriov_listener);
+		sriov_listener = NULL;
+		goto err_stop;
+	}
+
+	return 0;
+
+err_stop:
+	sriov_listener_stop();
 	return rc;
+}
+
+/* Add a PF to the set served by the shared listener, starting it if needed */
+static int sriov_pf_register(struct cass_dev *hw)
+{
+	int rc = 0;
+
+	cxidev_dbg(&hw->cdev, "registering for SR-IOV\n");
+	mutex_lock(&sriov_listener_lock);
+
+	if (!sriov_pf_count) {
+		rc = sriov_listener_start();
+		if (rc)
+			goto unlock;
+	}
+	sriov_pf_count++;
+
+	mutex_lock(&sriov_pf_lock);
+	list_add_tail(&hw->sriov_pf_node, &sriov_pfs);
+	mutex_unlock(&sriov_pf_lock);
+
+unlock:
+	mutex_unlock(&sriov_listener_lock);
+	return rc;
+}
+
+/* Remove a PF from the shared listener, stopping it if this was the last PF */
+static void sriov_pf_unregister(struct cass_dev *hw)
+{
+	cxidev_dbg(&hw->cdev, "unregistering from SR-IOV\n");
+	mutex_lock(&sriov_listener_lock);
+
+	if (list_empty(&hw->sriov_pf_node))
+		goto unlock;
+
+	mutex_lock(&sriov_pf_lock);
+	list_del_init(&hw->sriov_pf_node);
+	mutex_unlock(&sriov_pf_lock);
+
+	pf_vf_teardown(hw);
+
+	if (!--sriov_pf_count)
+		sriov_listener_stop();
+
+unlock:
+	mutex_unlock(&sriov_listener_lock);
 }
 
 static void disable_sriov(struct pci_dev *pdev)
@@ -989,6 +1200,9 @@ static void disable_sriov(struct pci_dev *pdev)
 	union err_flags f = {
 		.pi_ipd_ext.msix_disabled_error = 1,
 	};
+
+	/* Wait out proofs and stop this PF's sessions before touching PCI. */
+	sriov_pf_unregister(hw);
 
 	/* Hardware raises a spurious pi_ipd_ext.msix_disabled_error when
 	 * disabling VFs. Temporarily disable this interrupt during teardown
@@ -1000,11 +1214,6 @@ static void disable_sriov(struct pci_dev *pdev)
 	cass_eth_mc_sw_sriov_configure(hw, 0);
 
 	cass_rmu_eth_sriov_disable(hw);
-
-	if (hw->vf_listener) {
-		kthread_stop(hw->vf_listener);
-		hw->vf_listener = NULL;
-	}
 
 	hw->num_vfs = 0;
 }
@@ -1049,21 +1258,12 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 
 	hw->num_vfs = num_vfs;
 
-	if (!hw->vf_listener)
-		hw->vf_listener = kthread_run(pf_vf_listener, hw, "cxi_vf_listener");
-	if (IS_ERR(hw->vf_listener)) {
-		cxidev_err(&hw->cdev, "could not start vf listener thread");
-		rc = PTR_ERR(hw->vf_listener);
-		hw->vf_listener = NULL;
-		goto err_novf;
-	}
-
 	/* The VF Offset and Stride need to match the SR-IOV configuration. */
 	sriov = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_SRIOV);
 	if (!sriov) {
 		cxidev_err(&hw->cdev, "No extended capabilities found\n");
 		rc = -ENODEV;
-		goto err_kill_listener;
+		goto err_novf;
 	}
 
 	pci_read_config_word(pdev, sriov + PCI_SRIOV_VF_OFFSET, &offset);
@@ -1078,12 +1278,17 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 	/* Carve the VF share of the RMU set_list before the VFs can appear. */
 	rc = cass_rmu_eth_sriov_enable(hw, num_vfs);
 	if (rc)
-		goto err_kill_listener;
+		goto err_novf;
+
+	/* Publish only after PF setup, but before PCI can probe any VFs. */
+	rc = sriov_pf_register(hw);
+	if (rc)
+		goto err_rmu_disable;
 
 	rc = pci_enable_sriov(pdev, num_vfs);
 	if (rc) {
 		cxidev_err(&hw->cdev, "SRIOV enable failed %d\n", rc);
-		goto err_rmu_disable;
+		goto err_unregister_pf;
 	}
 
 	rc = cass_eth_mc_sw_sriov_configure(hw, num_vfs);
@@ -1096,12 +1301,13 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 	return num_vfs;
 
 err_disable_sriov:
+	sriov_pf_unregister(hw);
 	pci_disable_sriov(pdev);
+	goto err_rmu_disable;
+err_unregister_pf:
+	sriov_pf_unregister(hw);
 err_rmu_disable:
 	cass_rmu_eth_sriov_disable(hw);
-err_kill_listener:
-	kthread_stop(hw->vf_listener);
-	hw->vf_listener = NULL;
 err_novf:
 	hw->num_vfs = 0;
 	return rc;
@@ -1118,14 +1324,6 @@ int cass_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	}
 
 	return enable_sriov(pdev, num_vfs);
-}
-
-static irqreturn_t pf_to_vf_int_cb(int irq, void *context)
-{
-	struct cass_dev *hw = context;
-
-	complete(&hw->pf_to_vf_comp);
-	return IRQ_HANDLED;
 }
 
 /* VF-side handler thread for receiving notifications from PF */
@@ -1216,84 +1414,101 @@ err:
 	 * thread exits before cass_vf_fini() calls kthread_stop().
 	 */
 	while (!kthread_should_stop())
-		schedule_timeout_interruptible(CXI_SRIOV_VF_TIMEOUT);
+		schedule_timeout_interruptible(CXI_SRIOV_THREADPARK_TIME);
 	return rc;
 }
 
-/* VF side of VF-PF handshake: respond to commands from PF.
- * Returns 0 on success, negative on error.
+/* VF side of PROVE: write the PF's value to every listed EQ SW state page in
+ * our BAR. SRIOVT drops all writes except the one to the page bound to us.
  */
-static int vf_handshake(struct cass_dev *hw)
+static int vf_prove(struct cass_dev *hw, const struct cxi_sriov_prove_cmd *prove)
+{
+	void __iomem *page;
+	unsigned int i;
+
+	if (prove->num_eqs == 0 || prove->num_eqs > C_NUM_VFS ||
+	    prove->val & ~(PROVE_VAL_LO | PROVE_VAL_HI))
+		return -EINVAL;
+
+	for (i = 0; i < prove->num_eqs; i++) {
+		if (prove->eqn[i] == 0 || prove->eqn[i] >= C_NUM_EQS)
+			return -EINVAL;
+
+		page = ioremap(hw->regs_base + C_MEMORG_EE +
+			       prove->eqn[i] * C_EE_SW_STATE_PAGE_SIZE,
+			       PAGE_SIZE);
+		if (!page)
+			return -ENOMEM;
+
+		writeq(prove->val, page);
+		iounmap(page);
+	}
+
+	return 0;
+}
+
+static int vf_read_cmd(struct cass_dev *hw, void *msg, size_t *msg_len)
 {
 	int rc;
-	unsigned int cmd;
-	unsigned int rsp;
-	size_t msg_len;
 
-	while (true) {
-		msg_len = sizeof(cmd);
-		do {
-			rc = read_message_from_vsock(hw->vf_req_sock, &cmd,
-						     &msg_len, NULL,
-						     NULL, NULL, NULL, NULL, NULL);
-			if (rc == -EINTR)
-				schedule();
-		} while (rc == -EINTR);
-		if (rc < 0) {
-			cxidev_err(&hw->cdev, "VF handshake: error reading cmd: %d",
-				   rc);
-			return rc;
-		} else if (rc == 0) {
-			cxidev_err(&hw->cdev, "handshake: PF closed connection");
-			return -ENOTCONN;
-		} else if (msg_len != sizeof(cmd)) {
-			cxidev_err(&hw->cdev, "VF handshake: expected cmd of size %zu, got %zu",
-				   sizeof(cmd), msg_len);
-			return -EPROTO;
-		}
+	do {
+		rc = read_message_from_vsock(hw->vf_req_sock, msg, msg_len,
+					     NULL, NULL, NULL, NULL, NULL, NULL);
+		if (rc == -EINTR)
+			schedule();
+	} while (rc == -EINTR);
 
-		switch (cmd) {
-		case CXI_SRIOV_CMD_RESET:
-			cxidev_dbg(&hw->cdev, "handshake: got RESET command from PF");
-			reinit_completion(&hw->pf_to_vf_comp);
-			rsp = CXI_SRIOV_RSP_READY;
-			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
-						    sizeof(rsp), 0, 0, 0);
-			if (rc < 0) {
-				cxidev_err(&hw->cdev,
-					   "VF handshake: error sending READY: %d",
-					   rc);
-				return rc;
-			}
-			break;
-
-		case CXI_SRIOV_CMD_CHECK:
-			cxidev_dbg(&hw->cdev, "handshake: got CHECK command from PF");
-
-			rc = wait_for_completion_timeout(&hw->pf_to_vf_comp,
-							 CXI_SRIOV_IRQ_TIMEOUT);
-			rsp = rc ? CXI_SRIOV_RSP_HIT : CXI_SRIOV_RSP_MISS;
-			rc = write_message_to_vsock(hw->vf_req_sock, &rsp,
-						    sizeof(rsp), 0, 0, 0);
-			if (rc < 0) {
-				cxidev_err(&hw->cdev,
-					   "VF handshake: error sending HIT/MISS: %d",
-					   rc);
-				return rc;
-			}
-			break;
-
-		case CXI_SRIOV_CMD_DONE:
-			cxidev_dbg(&hw->cdev, "handshake: got DONE command from PF, handshake complete");
-			return 0;
-
-		default:
-			cxidev_err(&hw->cdev,
-				   "VF handshake: unexpected cmd from PF: %x",
-				   cmd);
-			return -EPROTO;
-		}
+	if (rc == 0) {
+		cxidev_err(&hw->cdev, "VF handshake: PF closed connection");
+		return -ENOTCONN;
+	} else if (rc < 0) {
+		cxidev_err(&hw->cdev, "VF handshake: error reading cmd: %d", rc);
 	}
+
+	return rc;
+}
+
+/* VF side of VF-PF handshake: answer each PF's PROVE until DONE. */
+static int vf_handshake(struct cass_dev *hw)
+{
+	struct cxi_sriov_prove_cmd *prove;
+	unsigned int rsp = CXI_SRIOV_RSP_PROVED;
+	bool proved = false;
+	size_t msg_len;
+	int rc;
+
+	prove = kzalloc(sizeof(*prove), GFP_KERNEL);
+	if (!prove)
+		return -ENOMEM;
+
+	for (;;) {
+		msg_len = sizeof(*prove);
+		rc = vf_read_cmd(hw, prove, &msg_len);
+		if (rc < 0)
+			break;
+		if (msg_len == sizeof(prove->cmd) &&
+		    prove->cmd == CXI_SRIOV_CMD_DONE && proved) {
+			rc = 0;
+			break;
+		}
+		if (msg_len != sizeof(*prove) ||
+		    prove->cmd != CXI_SRIOV_CMD_PROVE) {
+			rc = -EPROTO;
+			break;
+		}
+		rc = vf_prove(hw, prove);
+		if (rc < 0)
+			break;
+		proved = true;
+		rc = write_message_to_vsock(hw->vf_req_sock, &rsp, sizeof(rsp),
+					    0, 0, 0);
+		if (rc >= 0 && rc != sizeof(struct vf_pf_msg_hdr) + sizeof(rsp))
+			rc = -EIO;
+		if (rc < 0)
+			break;
+	}
+	kfree(prove);
+	return rc;
 }
 
 int cass_vf_init(struct cass_dev *hw)
@@ -1311,37 +1526,29 @@ int cass_vf_init(struct cass_dev *hw)
 	size_t resp_len = sizeof(token_resp);
 	struct sockaddr_vm addr = {
 		.svm_family = AF_VSOCK,
-		.svm_port = CXI_SRIOV_VSOCK_PORT,
+		.svm_port = sriov_vsock_port,
 		.svm_cid = VMADDR_CID_HOST,
 	};
 
 	if (!hw->with_vf_support)
 		return 0;
 
-	init_completion(&hw->pf_to_vf_comp);
-
 	mutex_init(&hw->vf_cmd_lock);
-
-	scnprintf(hw->pf_vf_int_name, sizeof(hw->pf_vf_int_name),
-		  "%s_from_pf", hw->cdev.name);
-	hw->pf_vf_vec = pci_irq_vector(hw->cdev.pdev, 0);
-	rc = request_irq(hw->pf_vf_vec, pf_to_vf_int_cb, 0, hw->pf_vf_int_name, hw);
-	if (rc)
-		return rc;
 
 	rc = request_module("vsock");
 	if (rc) {
 		cxidev_err(&hw->cdev, "could not load vsock module");
-		goto free_irq;
+		return rc;
 	}
 
 	rc = sock_create_kern(&init_net, PF_VSOCK, SOCK_STREAM, 0, &hw->vf_req_sock);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "vf socket create failed: %d", rc);
-		goto free_irq;
+		return rc;
 	}
 
 	hw->vf_req_sock->sk->sk_rcvtimeo = CXI_SRIOV_VF_TIMEOUT;
+	hw->vf_req_sock->sk->sk_sndtimeo = CXI_SRIOV_VF_TIMEOUT;
 	hw->vf_cmd_seq = 0;
 
 	rc = kernel_connect(hw->vf_req_sock, CXI_SOCKADDR(&addr),
@@ -1390,8 +1597,9 @@ int cass_vf_init(struct cass_dev *hw)
 	}
 
 	hw->vf_notif_sock->sk->sk_rcvtimeo = CXI_SRIOV_VF_TIMEOUT;
+	hw->vf_notif_sock->sk->sk_sndtimeo = CXI_SRIOV_VF_TIMEOUT;
 
-	addr.svm_port = CXI_SRIOV_VSOCK_NOTIF_PORT;
+	addr.svm_port = sriov_vsock_port + 1;
 	rc = kernel_connect(hw->vf_notif_sock, CXI_SOCKADDR(&addr),
 			    sizeof(addr), 0);
 	if (rc < 0) {
@@ -1445,8 +1653,6 @@ shutdown_vf_sock:
 release_vf_sock:
 	sock_release(hw->vf_req_sock);
 	hw->vf_req_sock = NULL;
-free_irq:
-	free_irq(hw->pf_vf_vec, hw);
 	return rc;
 }
 
@@ -1454,8 +1660,6 @@ void cass_vf_fini(struct cass_dev *hw)
 {
 	if (!hw->with_vf_support)
 		return;
-
-	free_irq(hw->pf_vf_vec, hw);
 
 	/* Shut down the notification socket before stopping the handler thread
 	 * so that any blocked recv in vf_notif_handler returns immediately rather

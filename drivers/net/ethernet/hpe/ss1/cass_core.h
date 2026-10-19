@@ -691,18 +691,13 @@ struct cass_dev {
 	/* Number of VFs currently configured in the PF. */
 	unsigned int num_vfs;
 
-	/* Interrupt vector used for the PF/ VF communication */
-	unsigned int pf_vf_vec;
-	char pf_vf_int_name[CASS_MAX_IRQ_NAME];
-	struct completion pf_to_vf_comp;
-
-	/* Virtual function communication socket for SR-IOV. Used by PF to
-	 * listen for incoming VF connections, used by VF to initiate connection
-	 */
+	/* VF-side sockets for communicating with the PF */
 	struct socket *vf_req_sock;
 	struct socket *vf_notif_sock;
-	struct task_struct *vf_listener;
 	struct task_struct *vf_notif_handler;
+
+	/* PF-side entry in the shared listener's registry */
+	struct list_head sriov_pf_node;
 	struct completion vf_notif_ready;
 
 	/* Timestamp for rate-limiting PF->VF notifications */
