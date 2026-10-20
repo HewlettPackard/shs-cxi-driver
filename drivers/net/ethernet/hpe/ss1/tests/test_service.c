@@ -686,6 +686,28 @@ err:
 	return rc;
 }
 
+static bool child_tcs_match_parent(struct cass_dev *hw, int child_id,
+				   const struct cxi_svc_desc *parent_desc)
+{
+	struct cxi_svc_priv *svc_priv;
+	bool matches = false;
+	int i;
+
+	mutex_lock(&hw->svc_lock);
+	svc_priv = idr_find(&hw->svc_ids, child_id);
+	if (svc_priv && svc_priv->svc_desc.restricted_tcs) {
+		matches = true;
+		for (i = 0; i < CXI_TC_MAX; i++)
+			if (svc_priv->svc_desc.tcs[i] != parent_desc->tcs[i]) {
+				matches = false;
+				break;
+			}
+	}
+	mutex_unlock(&hw->svc_lock);
+
+	return matches;
+}
+
 static int test_vf_child_policy(struct cxi_dev *dev)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
@@ -793,33 +815,29 @@ static int test_vf_child_policy(struct cxi_dev *dev)
 
 	child_desc.tcs[CXI_TC_DEDICATED_ACCESS] = false;
 	child_desc.restricted_tcs = 0;
-	rc = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
-				    "vf-child-unrestricted-tc", true, vf_num,
-				    false);
-	if (rc != -EINVAL) {
-		test_err("unrestricted child TCs returned %d\n", rc);
-		if (rc >= 0)
-			child_id = rc;
+	child_id = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+					  "vf-child-unrestricted-tc", true,
+					  vf_num, false);
+	if (child_id < 0) {
+		rc = child_id;
+		test_err("unrestricted child TCs allocation failed: %d\n", rc);
+		child_id = -1;
+		goto out;
+	}
+	if (!child_tcs_match_parent(hw, child_id, &parent_desc)) {
+		test_err("unrestricted child TCs did not inherit parent policy\n");
 		rc = -EINVAL;
 		goto out;
 	}
 
-	child_desc.restricted_tcs = 1;
-	child_id = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
-					  "vf-child-valid", true, vf_num,
-					  false);
-	if (child_id < 0) {
-		rc = child_id;
-		test_err("valid child allocation failed: %d\n", rc);
-		child_id = -1;
+	child_desc.svc_id = child_id;
+	rc = cxi_svc_update(dev, &child_desc);
+	if (rc) {
+		test_err("update to unrestricted child TCs failed: %d\n", rc);
 		goto out;
 	}
-
-	child_desc.svc_id = child_id;
-	child_desc.restricted_tcs = 0;
-	rc = cxi_svc_update(dev, &child_desc);
-	if (rc != -EINVAL) {
-		test_err("update to unrestricted child TCs returned %d\n", rc);
+	if (!child_tcs_match_parent(hw, child_id, &parent_desc)) {
+		test_err("unrestricted child TC update did not inherit parent policy\n");
 		rc = -EINVAL;
 		goto out;
 	}

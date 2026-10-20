@@ -342,15 +342,18 @@ static int validate_child_vnis(struct cxi_dev *dev,
 
 /* Ensure that a child service cannot broaden its parent's TC policy. */
 static int validate_child_tcs(const struct cxi_svc_priv *parent,
-			      const struct cxi_svc_desc *child_desc)
+			      struct cxi_svc_desc *child_desc)
 {
 	int i;
 
 	if (!parent->svc_desc.restricted_tcs)
 		return 0;
 
-	if (!child_desc->restricted_tcs)
-		return -EINVAL;
+	if (!child_desc->restricted_tcs) {
+		child_desc->restricted_tcs = true;
+		for (i = 0; i < CXI_TC_MAX; i++)
+			child_desc->tcs[i] = parent->svc_desc.tcs[i];
+	}
 
 	for (i = 0; i < CXI_TC_MAX; i++) {
 		if (child_desc->tcs[i] && !parent->svc_desc.tcs[i])
@@ -1053,7 +1056,7 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 				goto unlock;
 		}
 
-		rc = validate_child_tcs(svc_priv->parent, svc_desc);
+		rc = validate_child_tcs(svc_priv->parent, &svc_priv->svc_desc);
 		if (rc)
 			goto unlock;
 	}
@@ -1986,6 +1989,7 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
+	struct cxi_svc_desc new_desc = *svc_desc;
 	int rc;
 	int i;
 
@@ -2006,7 +2010,7 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	}
 
 	if (svc_priv->parent) {
-		rc = validate_child_tcs(svc_priv->parent, svc_desc);
+		rc = validate_child_tcs(svc_priv->parent, &new_desc);
 		if (rc)
 			goto error;
 	}
@@ -2037,11 +2041,11 @@ int cxi_svc_update(struct cxi_dev *dev, const struct cxi_svc_desc *svc_desc)
 	svc_priv->svc_desc.restricted_members = svc_desc->restricted_members;
 	svc_priv->svc_desc.restricted_vnis = svc_desc->restricted_vnis;
 	svc_priv->svc_desc.num_vld_vnis = svc_desc->num_vld_vnis;
-	svc_priv->svc_desc.restricted_tcs = svc_desc->restricted_tcs;
+	svc_priv->svc_desc.restricted_tcs = new_desc.restricted_tcs;
 	svc_priv->svc_desc.cntr_pool_id = svc_desc->cntr_pool_id;
 	svc_priv->svc_desc.enable = svc_desc->enable;
 
-	memcpy(svc_priv->svc_desc.tcs, svc_desc->tcs, sizeof(svc_desc->tcs));
+	memcpy(svc_priv->svc_desc.tcs, new_desc.tcs, sizeof(svc_desc->tcs));
 	memcpy(svc_priv->svc_desc.vnis, svc_desc->vnis, sizeof(svc_desc->vnis));
 	memcpy(svc_priv->svc_desc.members, svc_desc->members, sizeof(svc_desc->members));
 	// TODO: update TX profile?
