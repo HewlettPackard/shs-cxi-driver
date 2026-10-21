@@ -196,6 +196,12 @@ static int dump_services(struct seq_file *s, void *unused)
 	struct cass_dev *hw = s->private;
 	struct cxi_resource_use *rsrc_use = hw->resource_use;
 
+	/* svc_lock serialises the idr_find() on svc_ids and the svc_priv
+	 * dereferences in dump_rgroups() against svc_destroy(), which frees
+	 * svc_priv under svc_lock without taking rgrp_lock.  Lock order
+	 * (svc_lock, then rgrp_lock) matches cxi_svc_list_get_internal().
+	 */
+	mutex_lock(&hw->svc_lock);
 	spin_lock(&hw->rgrp_lock);
 
 	seq_puts(s, "Resources\n");
@@ -227,6 +233,7 @@ static int dump_services(struct seq_file *s, void *unused)
 	dump_rgroups(hw, s);
 
 	spin_unlock(&hw->rgrp_lock);
+	mutex_unlock(&hw->svc_lock);
 
 	return 0;
 }
