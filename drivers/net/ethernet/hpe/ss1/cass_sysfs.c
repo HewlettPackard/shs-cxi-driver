@@ -301,6 +301,16 @@ static ssize_t cassini_version_show(struct kobject *kobj,
 }
 PROP_ATTR_RO(cassini_version);
 
+static ssize_t is_physfn_show(struct kobject *kobj,
+			      struct kobj_attribute *kattr, char *buf)
+{
+	struct cass_dev *hw =
+		container_of(kobj, struct cass_dev, properties_kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", hw->cdev.is_physfn);
+}
+PROP_ATTR_RO(is_physfn);
+
 static ssize_t uc_nic_show(struct kobject *kobj, struct kobj_attribute *kattr,
 			   char *buf)
 {
@@ -499,6 +509,7 @@ static struct attribute *properties_attrs[] = {
 	&dev_attr_platform.attr,
 	&dev_attr_system_type_identifier.attr,
 	&dev_attr_cassini_version.attr,
+	&dev_attr_is_physfn.attr,
 	&dev_attr_uc_nic.attr,
 	&dev_attr_num_ptes.attr,
 	&dev_attr_num_txqs.attr,
