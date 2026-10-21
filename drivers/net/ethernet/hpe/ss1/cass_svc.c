@@ -281,6 +281,8 @@ static bool rsrc_available_child(const struct cxi_svc_priv *parent,
  */
 static struct cxi_svc_priv *find_parent_for_vf(struct cass_dev *hw, u8 vf_num)
 {
+	lockdep_assert_held(&hw->svc_lock);
+
 	return idr_find(&hw->svc_ids, hw->vf_cfg[vf_num].svc_id);
 }
 
@@ -990,6 +992,7 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
 	int rc;
+	int svc_id;
 	struct cxi_rgroup *rgroup;
 	struct cxi_rgroup_attr attr = {
 		.cntr_pool_id = svc_desc->cntr_pool_id,
@@ -1022,13 +1025,22 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	svc_priv->rgroup = rgroup;
 	svc_priv->svc_desc.svc_id = cxi_rgroup_id(rgroup);
 
+	/* The IDR has no internal locking for writers; svc_lock must be held
+	 * from idr_alloc() through list_add_tail() so that a concurrent
+	 * svc_destroy() (idr_remove() under svc_lock) or another allocation
+	 * cannot corrupt svc_ids, and so that idr_find() callers never see a
+	 * partially initialised svc_priv.  svc_lock is a mutex, so sleeping
+	 * allocations are fine here.
+	 */
+	mutex_lock(&hw->svc_lock);
+
 	rc = idr_alloc(&hw->svc_ids, svc_priv, cxi_rgroup_id(rgroup),
 		       cxi_rgroup_id(rgroup) + 1,
-		       GFP_NOWAIT);
+		       GFP_KERNEL);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "%s Service idr could not be obtained for rgroup ID %d rc:%d\n",
 			   hw->cdev.name, cxi_rgroup_id(rgroup), rc);
-		goto release_rgroup;
+		goto unlock;
 	}
 
 	cxi_rgroup_set_name(rgroup, name);
@@ -1040,25 +1052,23 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	if (rc)
 		goto remove_idr;
 
-	mutex_lock(&hw->svc_lock);
-
 	if (is_vf) {
 		svc_priv->parent = find_parent_for_vf(hw, vf_num);
 		if (!svc_priv->parent) {
 			rc = -EPERM;
-			goto unlock;
+			goto remove_ac_entries;
 		}
 
 		/* VNIs requested by VF must be a subset of parent's VNIs */
 		if (svc_desc->restricted_vnis) {
 			rc = validate_child_vnis(dev, svc_priv->parent, svc_desc);
 			if (rc)
-				goto unlock;
+				goto remove_ac_entries;
 		}
 
 		rc = validate_child_tcs(svc_priv->parent, &svc_priv->svc_desc);
 		if (rc)
-			goto unlock;
+			goto remove_ac_entries;
 	}
 
 	/* If restricted_vnis is set setup profiles now. Otherwise they will
@@ -1068,7 +1078,7 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 	if (svc_desc->restricted_vnis && !is_parent) {
 		rc = alloc_rxtx_profiles(dev, svc_priv, NULL);
 		if (rc)
-			goto unlock;
+			goto remove_ac_entries;
 	}
 
 	rc = reserve_rsrcs(hw, svc_priv, fail_info);
@@ -1113,15 +1123,20 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev,
 
 	list_add_tail(&svc_priv->list, &hw->svc_list);
 	hw->svc_count++;
-	mutex_unlock(&hw->svc_lock);
 	refcount_inc(&hw->refcount);
 
+	/* The service is visible to cxi_svc_destroy() once svc_lock is
+	 * dropped, so finish every access to svc_priv and rgroup first.
+	 */
+	svc_id = cxi_rgroup_id(rgroup);
 	if (is_vf)
 		cxidev_info(&hw->cdev, "VF %u created service %u (parent svc %u)\n",
-			    vf_num, cxi_rgroup_id(rgroup),
+			    vf_num, svc_id,
 			    svc_priv->parent ? svc_priv->parent->svc_desc.svc_id : 0);
 
-	return cxi_rgroup_id(rgroup);
+	mutex_unlock(&hw->svc_lock);
+
+	return svc_id;
 
 free_resources:
 	if (svc_priv->parent) {
@@ -1132,18 +1147,18 @@ free_resources:
 	free_rsrcs(svc_priv);
 release_profiles:
 	/* Only alloc_rxtx_profiles() success reaches here; its own failure
-	 * already released profiles internally and jumps straight to unlock.
+	 * already released profiles internally and jumps straight to
+	 * remove_ac_entries.
 	 */
 	if (svc_desc->restricted_vnis && !is_parent)
 		release_rxtx_profiles(dev, svc_priv);
-unlock:
-	mutex_unlock(&hw->svc_lock);
+remove_ac_entries:
 	cxi_ac_entry_list_destroy(&svc_priv->rgroup->ac_entry_list);
 remove_idr:
 	idr_remove(&hw->svc_ids, cxi_rgroup_id(rgroup));
-release_rgroup:
+unlock:
+	mutex_unlock(&hw->svc_lock);
 	cxi_rgroup_dec_refcount(rgroup);
-	return rc;
 free_svc:
 	kfree(svc_priv);
 
@@ -1265,6 +1280,9 @@ static void svc_destroy(struct cass_dev *hw, struct cxi_svc_priv *svc_priv)
 	int i;
 	int rc;
 	int svc_id = cxi_rgroup_id(svc_priv->rgroup);
+
+	/* svc_ids, svc_list and svc_count are all modified below. */
+	lockdep_assert_held(&hw->svc_lock);
 
 	/* Restore parent's child_reserved[] before tearing down resources.
 	 * The rgroup's parent_entry[] restoration happens automatically inside
@@ -2747,8 +2765,10 @@ void cass_svc_fini(struct cass_dev *hw)
 	}
 
 	debugfs_remove(hw->svc_debug);
+	mutex_lock(&hw->svc_lock);
 	list_for_each_entry_safe(svc_priv, tmp, &hw->svc_list, list)
 		svc_destroy(hw, svc_priv);
+	mutex_unlock(&hw->svc_lock);
 
 	idr_destroy(&hw->svc_ids);
 }
