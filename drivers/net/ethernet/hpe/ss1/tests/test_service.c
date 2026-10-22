@@ -863,6 +863,217 @@ out:
 	return rc;
 }
 
+#define VF_CP_ALLOWED_VNI 41U
+#define VF_CP_OTHER_VNI 42U
+
+/* A CP request outside the VF's parent service policy must be rejected with
+ * -EPERM, regardless of whether some other service has registered a TX
+ * profile that would accept it.
+ */
+static int expect_vf_cp_rejected(struct cxi_lni *lni, unsigned int vni,
+				 unsigned int tc)
+{
+	struct cxi_cp *cp;
+
+	cp = cxi_cp_alloc(lni, vni, tc, CXI_TC_TYPE_DEFAULT);
+	if (!IS_ERR(cp)) {
+		test_err("VF allocated CP outside parent policy: vni=%u tc=%u\n",
+			 vni, tc);
+		cxi_cp_free(cp);
+		return -EINVAL;
+	}
+
+	if (PTR_ERR(cp) != -EPERM) {
+		test_err("VF CP vni=%u tc=%u: expected -EPERM, got %ld\n",
+			 vni, tc, PTR_ERR(cp));
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Regression test: a VF whose parent service only allows
+ * VF_CP_ALLOWED_VNI and LOW_LATENCY must not be able to allocate a transmit
+ * CP on another tenant's registered VNI, or on a TC the parent does not
+ * allow, even though enabled TX profiles exist that would accept the request.
+ */
+static int test_vf_cp_policy(struct cxi_dev *dev)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_desc parent_desc = {
+		.enable = 1,
+		.restricted_vnis = 1,
+		.restricted_tcs = 1,
+		.resource_limits = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = VF_CP_ALLOWED_VNI,
+		.tcs[CXI_TC_LOW_LATENCY] = true,
+		.limits.type[CXI_RSRC_TYPE_PTE].max = 8,
+		.limits.type[CXI_RSRC_TYPE_PTE].res = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].res = 4,
+	};
+	struct cxi_svc_desc child_desc = {
+		.enable = 1,
+		.restricted_vnis = 1,
+		.restricted_tcs = 1,
+		.resource_limits = 1,
+		.num_vld_vnis = 1,
+		.vnis[0] = VF_CP_ALLOWED_VNI,
+		.tcs[CXI_TC_LOW_LATENCY] = true,
+		.limits.type[CXI_RSRC_TYPE_PTE].max = 4,
+		.limits.type[CXI_RSRC_TYPE_PTE].res = 2,
+		.limits.type[CXI_RSRC_TYPE_AC].max = 4,
+		.limits.type[CXI_RSRC_TYPE_AC].res = 4,
+	};
+	/* Unrestricted members and TCs: open AC on every TC. */
+	struct cxi_svc_desc tenant_desc = {
+		.enable = 1,
+		.is_system_svc = 1,
+		.restricted_vnis = 1,
+		.num_vld_vnis = 1,
+	};
+	struct cxi_svc_fail_info fail_info = {};
+	struct cxi_lni *lni = NULL;
+	struct cxi_cp *cp;
+	int victim_id = -1;
+	int cotenant_id = -1;
+	int parent_id = -1;
+	int child_id = -1;
+	bool vf_assigned = false;
+	int vf_num;
+	int rc;
+	int tmp;
+
+	if (!dev->is_physfn)
+		return 0;
+
+	for (vf_num = 0; vf_num < C_NUM_VFS; vf_num++)
+		if (!hw->vf_cfg[vf_num].svc_id)
+			break;
+	if (vf_num == C_NUM_VFS) {
+		pr_info("Skipping VF CP policy test: no unassigned VF slots\n");
+		return 0;
+	}
+
+	/* Another tenant's enabled service on a VNI outside the VF's policy. */
+	tenant_desc.vnis[0] = VF_CP_OTHER_VNI;
+	victim_id = cxi_svc_alloc(dev, &tenant_desc, &fail_info,
+				  "vf-cp-victim");
+	if (victim_id < 0) {
+		rc = victim_id;
+		test_err("victim cxi_svc_alloc failed: %d\n", rc);
+		goto out;
+	}
+
+	/* A PF service sharing the VF's VNI but allowing every TC. Allocated
+	 * before the VF child so its TX profile is the one found for the VNI.
+	 */
+	tenant_desc.vnis[0] = VF_CP_ALLOWED_VNI;
+	cotenant_id = cxi_svc_alloc(dev, &tenant_desc, &fail_info,
+				    "vf-cp-cotenant");
+	if (cotenant_id < 0) {
+		rc = cotenant_id;
+		test_err("co-tenant cxi_svc_alloc failed: %d\n", rc);
+		goto out;
+	}
+
+	parent_id = cxi_svc_alloc_parent(dev, &parent_desc, &fail_info,
+					 "vf-cp-parent");
+	if (parent_id < 0) {
+		rc = parent_id;
+		test_err("cxi_svc_alloc_parent failed: %d\n", rc);
+		goto out;
+	}
+
+	rc = cxi_vf_set_svc_id(hw, vf_num, parent_id);
+	if (rc) {
+		test_err("cxi_vf_set_svc_id failed: %d\n", rc);
+		goto out;
+	}
+	vf_assigned = true;
+
+	child_id = cxi_svc_alloc_internal(dev, &child_desc, &fail_info,
+					  "vf-cp-child", true, vf_num, false);
+	if (child_id < 0) {
+		rc = child_id;
+		test_err("VF child cxi_svc_alloc_internal failed: %d\n", rc);
+		goto out;
+	}
+
+	/* LNI as the PF allocates it when servicing a VF request. */
+	lni = cxi_lni_alloc_internal(dev, child_id, true, vf_num);
+	if (IS_ERR(lni)) {
+		rc = PTR_ERR(lni);
+		test_err("VF cxi_lni_alloc_internal failed: %d\n", rc);
+		lni = NULL;
+		goto out;
+	}
+
+	/* Positive control: VNI and TC allowed by the parent. */
+	cp = cxi_cp_alloc(lni, VF_CP_ALLOWED_VNI, CXI_TC_LOW_LATENCY,
+			  CXI_TC_TYPE_DEFAULT);
+	if (IS_ERR(cp)) {
+		rc = PTR_ERR(cp);
+		test_err("VF CP on allowed vni=%u LOW_LATENCY failed: %d\n",
+			 VF_CP_ALLOWED_VNI, rc);
+		goto out;
+	}
+	cxi_cp_free(cp);
+
+	rc = 0;
+
+	/* Cross-tenant VNI, on both an allowed and a disallowed TC. */
+	tmp = expect_vf_cp_rejected(lni, VF_CP_OTHER_VNI, CXI_TC_LOW_LATENCY);
+	if (tmp)
+		rc = tmp;
+
+	tmp = expect_vf_cp_rejected(lni, VF_CP_OTHER_VNI, CXI_TC_BEST_EFFORT);
+	if (tmp)
+		rc = tmp;
+
+	/* Allowed VNI, but a TC outside the parent's restricted TC set. */
+	tmp = expect_vf_cp_rejected(lni, VF_CP_ALLOWED_VNI, CXI_TC_BEST_EFFORT);
+	if (tmp)
+		rc = tmp;
+
+out:
+	if (lni)
+		cxi_lni_free(lni);
+
+	if (child_id >= 0) {
+		tmp = cxi_svc_destroy(dev, child_id);
+		if (!rc && tmp)
+			rc = tmp;
+	}
+
+	if (vf_assigned) {
+		tmp = cxi_vf_set_svc_id(hw, vf_num, 0);
+		if (!rc && tmp)
+			rc = tmp;
+	}
+
+	if (parent_id >= 0) {
+		tmp = cxi_svc_destroy(dev, parent_id);
+		if (!rc && tmp)
+			rc = tmp;
+	}
+
+	if (cotenant_id >= 0) {
+		tmp = cxi_svc_destroy(dev, cotenant_id);
+		if (!rc && tmp)
+			rc = tmp;
+	}
+
+	if (victim_id >= 0) {
+		tmp = cxi_svc_destroy(dev, victim_id);
+		if (!rc && tmp)
+			rc = tmp;
+	}
+
+	return rc;
+}
+
 static int test_le_full(struct cxi_dev *dev)
 {
 	int i;
@@ -1061,6 +1272,12 @@ static int run_tests(struct cxi_dev *dev)
 	rc = test_vf_child_policy(dev);
 	if (rc) {
 		test_err("test_vf_child_policy failed: %d\n", rc);
+		return -EIO;
+	}
+
+	rc = test_vf_cp_policy(dev);
+	if (rc) {
+		test_err("test_vf_cp_policy failed: %d\n", rc);
 		return -EIO;
 	}
 

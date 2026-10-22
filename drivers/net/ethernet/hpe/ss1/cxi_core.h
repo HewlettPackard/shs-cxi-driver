@@ -371,6 +371,8 @@ struct cxi_cp_priv {
 	refcount_t refcount;
 	unsigned int rgid;
 	unsigned int lni_id;
+	bool is_vf;
+	u8 vf_num;
 };
 
 /* EQ buffer description */
