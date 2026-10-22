@@ -1424,6 +1424,8 @@ static inline bool is_vni_valid(unsigned int vni)
 
 bool cxi_vf_valid_vni(struct cxi_dev *dev, unsigned int vf_num,
 		      unsigned int vni);
+bool cxi_vf_valid_tc(struct cxi_dev *dev, unsigned int vf_num,
+		     unsigned int tc);
 
 int register_error_handlers(struct cass_dev *hw);
 void deregister_error_handlers(struct cass_dev *hw);

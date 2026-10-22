@@ -2524,6 +2524,41 @@ unlock:
 	return valid;
 }
 
+/**
+ * cxi_vf_valid_tc() - Check a traffic class against a VF's parent service
+ *                     TC policy
+ *
+ * @dev: Cassini Device
+ * @vf_num: VF number whose parent service bounds the allowed TCs
+ * @tc: Traffic class to validate
+ *
+ * TX profiles are shared by VNI, so a profile found for a VNI may permit TCs
+ * that the VF's parent service does not. Constrain a VF to the TCs permitted
+ * by its parent service.
+ *
+ * Return: true if the TC is within the VF's parent service policy.
+ */
+bool cxi_vf_valid_tc(struct cxi_dev *dev, unsigned int vf_num,
+		     unsigned int tc)
+{
+	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
+	struct cxi_svc_priv *parent;
+	bool valid = false;
+
+	if (tc >= CXI_TC_MAX)
+		return false;
+
+	mutex_lock(&hw->svc_lock);
+
+	parent = find_parent_for_vf(hw, vf_num);
+	if (parent)
+		valid = !parent->svc_desc.restricted_tcs ||
+			parent->svc_desc.tcs[tc];
+
+	mutex_unlock(&hw->svc_lock);
+	return valid;
+}
+
 static int cxi_svc_get_vni_range_vf(struct cxi_dev *dev, unsigned int svc_id,
 				    unsigned int *vni_min, unsigned int *vni_max)
 {

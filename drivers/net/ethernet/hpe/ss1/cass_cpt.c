@@ -350,6 +350,14 @@ struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 			return ERR_PTR(-EINVAL);
 		}
 
+		if (lni_priv->is_vf &&
+		    (!cxi_vf_valid_vni(dev, lni_priv->vf_num, vni_pcp) ||
+		     !cxi_vf_valid_tc(dev, lni_priv->vf_num, tc))) {
+			pr_debug("VF %u not permitted to use vni:%u tc:%u\n",
+				 lni_priv->vf_num, vni_pcp, tc);
+			return ERR_PTR(-EPERM);
+		}
+
 		tx_profile = cxi_dev_get_tx_profile(&hw->cdev, vni_pcp);
 		if (IS_ERR(tx_profile)) {
 			rc = PTR_ERR(tx_profile);
@@ -386,6 +394,8 @@ struct cxi_cp *cxi_trig_cp_alloc(struct cxi_lni *lni, unsigned int vni_pcp,
 	cp_priv->dev = dev;
 	cp_priv->rgid = lni_priv->lni.rgid;
 	cp_priv->lni_id = lni_priv->lni.id;
+	cp_priv->is_vf = lni_priv->is_vf;
+	cp_priv->vf_num = lni_priv->vf_num;
 	cp_priv->cp.vni_pcp = vni_pcp;
 	cp_priv->cp.tc = tc;
 	cp_priv->cp.tc_type = tc_type;
@@ -581,6 +591,13 @@ int cxi_cp_modify(struct cxi_cp *cp, unsigned int vni_pcp)
 		pr_debug("cp modify received invalid vni: %d for cp:%u\n",
 			 vni_pcp, cass_cp->id);
 		return -EINVAL;
+	}
+
+	if (cp_priv->is_vf &&
+	    !cxi_vf_valid_vni(&hw->cdev, cp_priv->vf_num, vni_pcp)) {
+		pr_debug("VF %u not permitted vni:%u for cp:%u\n",
+			 cp_priv->vf_num, vni_pcp, cass_cp->id);
+		return -EPERM;
 	}
 
 	rc = cass_tc_find(hw, cp->tc, cp->tc_type, vni_pcp, &tc_cfg);
