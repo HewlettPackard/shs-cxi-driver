@@ -1172,25 +1172,39 @@ unlock:
 	return rc;
 }
 
-/* Remove a PF from the shared listener, stopping it if this was the last PF */
-static void sriov_pf_unregister(struct cass_dev *hw)
+/* Remove a PF from the shared listener's registry, waiting out any proof in
+ * progress. Existing VF sessions stay up. Returns whether the PF was
+ * registered.
+ */
+static bool sriov_pf_quiesce(struct cass_dev *hw)
 {
-	cxidev_dbg(&hw->cdev, "unregistering from SR-IOV\n");
+	bool registered;
+
+	cxidev_dbg(&hw->cdev, "quiescing SR-IOV\n");
 	mutex_lock(&sriov_listener_lock);
 
-	if (list_empty(&hw->sriov_pf_node))
-		goto unlock;
+	registered = !list_empty(&hw->sriov_pf_node);
+	if (registered) {
+		mutex_lock(&sriov_pf_lock);
+		list_del_init(&hw->sriov_pf_node);
+		mutex_unlock(&sriov_pf_lock);
+	}
 
-	mutex_lock(&sriov_pf_lock);
-	list_del_init(&hw->sriov_pf_node);
-	mutex_unlock(&sriov_pf_lock);
+	mutex_unlock(&sriov_listener_lock);
+	return registered;
+}
+
+/* Stop a quiesced PF's VF sessions, and the listener if this was the last PF */
+static void sriov_pf_teardown(struct cass_dev *hw)
+{
+	cxidev_dbg(&hw->cdev, "tearing down SR-IOV sessions\n");
+	mutex_lock(&sriov_listener_lock);
 
 	pf_vf_teardown(hw);
 
 	if (!--sriov_pf_count)
 		sriov_listener_stop();
 
-unlock:
 	mutex_unlock(&sriov_listener_lock);
 }
 
@@ -1200,9 +1214,10 @@ static void disable_sriov(struct pci_dev *pdev)
 	union err_flags f = {
 		.pi_ipd_ext.msix_disabled_error = 1,
 	};
+	bool registered;
 
-	/* Wait out proofs and stop this PF's sessions before touching PCI. */
-	sriov_pf_unregister(hw);
+	/* Wait out proofs, but keep sessions up: VF removal needs them. */
+	registered = sriov_pf_quiesce(hw);
 
 	/* Hardware raises a spurious pi_ipd_ext.msix_disabled_error when
 	 * disabling VFs. Temporarily disable this interrupt during teardown
@@ -1210,6 +1225,9 @@ static void disable_sriov(struct pci_dev *pdev)
 	cxi_disable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
 	pci_disable_sriov(pdev);
 	cxi_enable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
+
+	if (registered)
+		sriov_pf_teardown(hw);
 
 	cass_eth_mc_sw_sriov_configure(hw, 0);
 
@@ -1301,11 +1319,13 @@ static int enable_sriov(struct pci_dev *pdev, int num_vfs)
 	return num_vfs;
 
 err_disable_sriov:
-	sriov_pf_unregister(hw);
+	sriov_pf_quiesce(hw);
 	pci_disable_sriov(pdev);
+	sriov_pf_teardown(hw);
 	goto err_rmu_disable;
 err_unregister_pf:
-	sriov_pf_unregister(hw);
+	sriov_pf_quiesce(hw);
+	sriov_pf_teardown(hw);
 err_rmu_disable:
 	cass_rmu_eth_sriov_disable(hw);
 err_novf:
