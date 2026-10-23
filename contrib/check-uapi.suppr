@@ -1,0 +1,26 @@
+# libabigail suppression specification for contrib/check-uapi.sh
+#
+# Everything not listed here is an ABI break: existing UAPI types must keep
+# their size, member offsets and enumerator values. Prefer adding a new
+# command/struct (e.g. *_v2) over editing an existing one.
+#
+# Syntax: https://sourceware.org/libabigail/manual/libabigail-concepts.html#suppression-specifications
+
+# Sentinel enumerators that legitimately move when values are appended.
+# Listed by exact name because changed_enumerators_regexp requires
+# libabigail >= 2.4 and SLE 15 PackageHub ships 2.3. A sentinel used as an
+# array bound (e.g. CXI_RSRC_TYPE_MAX in cxi_svc_desc) still triggers a
+# struct-size change, which this rule does not hide.
+[suppress_type]
+  type_kind = enum
+  changed_enumerators = CXI_OP_MAX, CXI_TC_MAX, CXI_TC_TYPE_MAX, CXI_RSRC_TYPE_MAX, CXI_SVC_MEMBER_MAX, CXIERR_GENL_ATTR_MAX
+
+# NOTE: the kernel also allows filling explicitly reserved/padding members
+# (has_data_member_inserted_at = offset_of_first_data_member_regexp(...)).
+# cxi-abi.h has no such members today, and libabigail 2.3 crashes when more
+# than one such rule is present, so no padding rules are defined here.
+
+# Types declared outside cxi-abi.h (cassini_user_defs.h, libc) are owned by
+# other repositories and both sides are compiled against the same copy.
+[suppress_type]
+  source_location_not_regexp = cxi-abi\.h

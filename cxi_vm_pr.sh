@@ -2,7 +2,7 @@
 git checkout -b rebase-test-branch
 
 # Build only first as it's fast
-_build='set -e; git log -1 && make check-ai-context && make clean && make -j8'
+_build='set -e; git log -1 && make check-ai-context && make check-abi && make clean && make -j8'
 git rebase `git merge-base origin/main HEAD` --exec "$_build"
 
 # Then build and test

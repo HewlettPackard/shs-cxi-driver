@@ -8,6 +8,8 @@ SUBDIRS = drivers/net/ethernet/hpe/ss1 ucxi
 CHECKPATCH ?= ./contrib/checkpatch.pl
 CHECKPATCH_BASE ?= HEAD
 CHECKPATCH_FLAGS ?= --no-tree --no-signoff --summary-file --ignore FILE_PATH_CHANGES,LINUX_VERSION_CODE
+# Git ref the UAPI header is compared against; empty = merge-base with origin/main
+UAPI_REF ?=
 
 all clean: $(SUBDIRS)
 	rm -rf WORKSPACE
@@ -42,6 +44,13 @@ check-style:
 	fi
 	@echo "Running checkpatch against diff from $(CHECKPATCH_BASE)"
 	@git diff --no-ext-diff "$(CHECKPATCH_BASE)" | perl "$(CHECKPATCH)" $(CHECKPATCH_FLAGS)
+
+# Check include/uapi/ethernet/cxi-abi.h for ABI breaks (requires abidiff).
+# Compares the working tree against the PR base (merge-base with
+# origin/main, or $UPSTREAM_BRANCH) by default; pass
+# UAPI_REF=<remote>/release/shs-14.0 to check against a shipped release.
+check-abi:
+	@./contrib/check-uapi.sh $(if $(UAPI_REF),-p "$(UAPI_REF)")
 
 # Validate AI context artifacts are present and well-formed
 check-ai-context:

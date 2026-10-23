@@ -328,6 +328,7 @@ echo "2. Checking VM and test tools..."
 check_tool "prove" "perl-modules (for prove)"
 check_tool_or_repo "virtme-run" "virtme" "virtme"
 check_optional_tool "qemu-system-x86_64" "qemu"
+check_optional_tool "abidiff" "libabigail-tools (for make check-abi)"
 echo
 
 echo "3. Checking required sibling repositories..."
