@@ -219,8 +219,8 @@ static int cxi_eq_adjust_reserved_fc_vf(struct cxi_eq *eq, int value)
 	struct cxi_dev *cdev = container_of(eq, struct cxi_eq_priv, eq)->lni_priv->dev;
 	struct cxi_eq_adjust_reserved_fc_resp resp;
 	size_t resp_len = sizeof(resp);
-	const struct cxi_eq_adjust_reserved_fc_cmd cmd = {
-		.op = CXI_OP_EQ_ADJUST_RESERVED_FC,
+	const struct cxi_eq_adjust_reserved_fc_v2_cmd cmd = {
+		.op = CXI_OP_EQ_ADJUST_RESERVED_FC_V2,
 		.eq_hndl = eq->eqn,
 		.value = value,
 		.resp = &resp,

@@ -241,7 +241,7 @@ static int cxi_user_lni_alloc(struct user_client *client,
 			      size_t *resp_out_len)
 {
 	struct cxi_lni *lni;
-	const struct cxi_lni_alloc_cmd *cmd = cmd_in;
+	const struct cxi_lni_alloc_v2_cmd *cmd = cmd_in;
 	struct cxi_lni_alloc_resp_vf resp = {};
 	size_t resp_size = client->is_vf ? sizeof(resp) : sizeof(resp.base);
 	int rc;
@@ -3554,7 +3554,7 @@ static int cxi_user_eq_adjust_reserved_fc(struct user_client *client,
 					  void **resp_out, size_t resp_buf_size,
 					  size_t *resp_out_len)
 {
-	const struct cxi_eq_adjust_reserved_fc_cmd *cmd = cmd_in;
+	const struct cxi_eq_adjust_reserved_fc_v2_cmd *cmd = cmd_in;
 	struct cxi_eq_adjust_reserved_fc_resp resp = {};
 	struct ucxi_obj *eq_obj;
 	int rc;
@@ -3912,10 +3912,10 @@ static int cxi_user_query_version(struct user_client *client,
 }
 
 static const struct cmd_info cmds_info[CXI_OP_MAX] = {
-	[CXI_OP_LNI_ALLOC] = {
-		.req_size   = sizeof(struct cxi_lni_alloc_cmd),
-		.name       = "LNI_ALLOC",
-		.handler    = cxi_user_lni_alloc, },
+	/* CXI_OP_LNI_ALLOC uses a command structure inconsistent with
+	 * cxi_common_cmd, and is normalized to CXI_OP_LNI_ALLOC_V2 in the
+	 * dispatcher, so has been removed from this table.
+	 */
 	[CXI_OP_LNI_FREE] = {
 		.req_size   = sizeof(struct cxi_lni_free_cmd),
 		.name       = "LNI_FREE",
@@ -4106,10 +4106,11 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_get_dev_properties_cmd),
 		.name       = "GET_DEV_PROPERTIES",
 		.handler    = cxi_user_get_dev_properties, },
-	[CXI_OP_EQ_ADJUST_RESERVED_FC] = {
-		.req_size   = sizeof(struct cxi_eq_adjust_reserved_fc_cmd),
-		.name       = "EQ_ADJUST_RESERVED_FC",
-		.handler    = cxi_user_eq_adjust_reserved_fc, },
+	/* CXI_OP_EQ_ADJUST_RESERVED_FC uses a command structure inconsistent
+	 * with cxi_common_cmd, and is normalized to
+	 * CXI_OP_EQ_ADJUST_RESERVED_FC_V2 in the dispatcher, so has been
+	 * removed from this table.
+	 */
 	[CXI_OP_INBOUND_WAIT] = {
 		.req_size   = sizeof(struct cxi_inbound_wait_cmd),
 		.name       = "INBOUND_WAIT",
@@ -4277,7 +4278,74 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_query_version_cmd),
 		.name       = "QUERY_VERSION",
 		.handler    = cxi_user_query_version, },
+	[CXI_OP_LNI_ALLOC_V2] = {
+		.req_size   = sizeof(struct cxi_lni_alloc_v2_cmd),
+		.name       = "LNI_ALLOC_V2",
+		.handler    = cxi_user_lni_alloc, },
+	[CXI_OP_EQ_ADJUST_RESERVED_FC_V2] = {
+		.req_size   = sizeof(struct cxi_eq_adjust_reserved_fc_v2_cmd),
+		.name       = "EQ_ADJUST_RESERVED_FC_V2",
+		.handler    = cxi_user_eq_adjust_reserved_fc, },
 };
+
+union cxi_compat_cmd {
+	struct cxi_lni_alloc_v2_cmd lni;
+	struct cxi_eq_adjust_reserved_fc_v2_cmd eq;
+};
+
+/* The original forms of cxi_lni_alloc_cmd and cxi_eq_adjust_reserved_fc_cmd do
+ * not match the layout of cxi_common_cmd. Normalize these legacy commands to
+ * the v2 form to allow casting to cxi_common_cmd.
+ */
+static int normalize_cmd(const void **cmd_in, size_t *cmd_in_len,
+			 union cxi_compat_cmd *normalized)
+{
+	enum cxi_command_opcode op;
+
+	if (*cmd_in_len < sizeof(op))
+		return -EINVAL;
+
+	memcpy(&op, *cmd_in, sizeof(op));
+	switch (op) {
+	case CXI_OP_LNI_ALLOC: {
+		struct cxi_lni_alloc_cmd old;
+
+		if (*cmd_in_len != sizeof(old))
+			return -EINVAL;
+
+		memcpy(&old, *cmd_in, sizeof(old));
+		normalized->lni = (struct cxi_lni_alloc_v2_cmd) {
+			.op = CXI_OP_LNI_ALLOC_V2,
+			.resp = old.resp,
+			.svc_id = old.svc_id,
+		};
+		*cmd_in = &normalized->lni;
+		*cmd_in_len = sizeof(normalized->lni);
+		break;
+	}
+	case CXI_OP_EQ_ADJUST_RESERVED_FC: {
+		struct cxi_eq_adjust_reserved_fc_cmd old;
+
+		if (*cmd_in_len != sizeof(old))
+			return -EINVAL;
+
+		memcpy(&old, *cmd_in, sizeof(old));
+		normalized->eq = (struct cxi_eq_adjust_reserved_fc_v2_cmd) {
+			.op = CXI_OP_EQ_ADJUST_RESERVED_FC_V2,
+			.resp = old.resp,
+			.eq_hndl = old.eq_hndl,
+			.value = old.value,
+		};
+		*cmd_in = &normalized->eq;
+		*cmd_in_len = sizeof(normalized->eq);
+		break;
+	}
+	default:
+		break;
+	}
+
+	return 0;
+}
 
 /* Read and process a command from userspace or from a Virtual
  * Function.
@@ -4289,25 +4357,45 @@ static int dispatch(struct user_client *client,
 {
 	struct ucxi *ucxi = client->ucxi;
 	struct cxi_dev *cdev;
-	struct cxi_common_cmd req_hdr;
+	union cxi_compat_cmd normalized;
 	int rc;
 	int idx;
-	u8 tmp_req_stack[256];
+	u8 tmp_req_stack[256] __aligned(__alignof__(struct cxi_common_cmd));
 	u8 *tmp_req_heap = NULL;
 	u8 *tmp_req = tmp_req_stack;
 	const struct cxi_common_cmd *req;
 	const struct cmd_info *info;
 
-	if (client->is_vf) {
-		req = cmd_in;
-	} else {
-		if (copy_from_user(&req_hdr, cmd_in, sizeof(req_hdr)))
-			return -EFAULT;
-		req = &req_hdr;
+	if (cmd_in_len < sizeof(enum cxi_command_opcode))
+		return -EINVAL;
+
+	if (!client->is_vf) {
+		if (cmd_in_len > MAX_REQ_SIZE)
+			return -EINVAL;
+
+		if (unlikely(cmd_in_len > sizeof(tmp_req_stack))) {
+			tmp_req_heap = kmalloc(cmd_in_len, GFP_KERNEL);
+			if (!tmp_req_heap)
+				return -ENOMEM;
+			tmp_req = tmp_req_heap;
+		}
+
+		if (copy_from_user(tmp_req, cmd_in, cmd_in_len)) {
+			rc = -EFAULT;
+			goto out_free;
+		}
+		cmd_in = tmp_req;
 	}
 
-	if (req->op <= CXI_OP_INVALID || req->op >= CXI_OP_MAX)
-		return -EINVAL;
+	rc = normalize_cmd(&cmd_in, &cmd_in_len, &normalized);
+	if (rc)
+		goto out_free;
+
+	req = cmd_in;
+	if (req->op <= CXI_OP_INVALID || req->op >= CXI_OP_MAX) {
+		rc = -EINVAL;
+		goto out_free;
+	}
 
 	info = &cmds_info[req->op];
 
@@ -4335,27 +4423,6 @@ static int dispatch(struct user_client *client,
 		}
 	}
 
-	if (!client->is_vf) {
-		/* Userspace commands must not exceed MAX_REQ_SIZE */
-		if (cmd_in_len > MAX_REQ_SIZE) {
-			rc = -EINVAL;
-			goto out_free;
-		}
-
-		if (unlikely(cmd_in_len > sizeof(tmp_req_stack))) {
-			tmp_req_heap = kmalloc(cmd_in_len, GFP_KERNEL);
-			if (!tmp_req_heap)
-				return -ENOMEM;
-			tmp_req = tmp_req_heap;
-		}
-
-		req = (const struct cxi_common_cmd *)tmp_req;
-		if (copy_from_user(tmp_req, cmd_in, cmd_in_len)) {
-			rc = -EFAULT;
-			goto out_free;
-		}
-	}
-
 	if (info->admin_only && !capable(CAP_SYS_ADMIN)) {
 		rc = -EPERM;
 		goto out_free;
@@ -4377,9 +4444,15 @@ static int dispatch(struct user_client *client,
 		/* Forced cast necessary here since the userspace path treats
 		 * the response pointer as void * const *, but the VF path
 		 * treats it as void **, so we cannot make the function
-		 * signature const.
+		 * signature const. Commands with no resp field (i.e. smaller
+		 * than cxi_common_cmd) will have user_resp set to NULL.
 		 */
-		void *user_resp = (__force void *)req->resp;
+		void *user_resp;
+
+		if (cmd_in_len >= sizeof(*req))
+			user_resp = (__force void *)req->resp;
+		else
+			user_resp = NULL;
 
 		rc = info->handler(client, req, cmd_in_len, &user_resp, 0, NULL);
 	}
@@ -4822,9 +4895,6 @@ static int msg_relay(void *data, unsigned int vf_num,
 		}
 		return 0;
 	}
-
-	pr_debug("Got message %u from VF %d, len %zu\n",
-		 ((const struct cxi_common_cmd *)req)->op, vf_num, req_len);
 
 	client = ucxi->vf_clients[vf_num];
 	if (!client) {
