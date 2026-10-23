@@ -155,6 +155,9 @@ enum cxi_command_opcode {
 		CXI_OP_SVC_ALLOC_PARENT,
 		CXI_OP_SVC_IS_PARENT_GET,
 
+		CXI_OP_LNI_ALLOC_V2,
+		CXI_OP_EQ_ADJUST_RESERVED_FC_V2,
+
 		CXI_OP_MAX,
 };
 
@@ -163,7 +166,17 @@ struct cxi_common_cmd {
 	void __user *resp;
 };
 
+/* Legacy command format, inconsistent with cxi_common_cmd, retained for ABI
+ * compatibility. Use cxi_lni_alloc_v2_cmd with CXI_OP_LNI_ALLOC_V2 opcode
+ * instead.
+ */
 struct cxi_lni_alloc_cmd {
+	enum cxi_command_opcode op;
+	unsigned int svc_id;
+	void __user  *resp;
+};
+
+struct cxi_lni_alloc_v2_cmd {
 	enum cxi_command_opcode op;
 	void __user  *resp;
 	unsigned int svc_id;
@@ -1455,7 +1468,18 @@ struct cxi_get_dev_properties_cmd {
 	void __user *resp;
 };
 
+/* Legacy command format, inconsistent with cxi_common_cmd, retained for ABI
+ * compatibility. Use cxi_eq_adjust_reserved_fc_v2_cmd with
+ * CXI_OP_EQ_ADJUST_RESERVED_FC_V2 opcode instead.
+ */
 struct cxi_eq_adjust_reserved_fc_cmd {
+	enum cxi_command_opcode op;
+	unsigned int eq_hndl;
+	int value;
+	void __user *resp;
+};
+
+struct cxi_eq_adjust_reserved_fc_v2_cmd {
 	enum cxi_command_opcode op;
 	void __user *resp;
 	unsigned int eq_hndl;

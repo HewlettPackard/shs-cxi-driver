@@ -225,6 +225,14 @@ int test_main(char *device, int service)
 	}
 	printf("LNI allocated: %d\n", lni);
 
+	rc = alloc_lni_legacy(dev, svc_desc.svc_id);
+	if (rc < 0) {
+		fprintf(stderr, "Legacy LNI allocation failed: %d\n", rc);
+		return 1;
+	}
+	destroy_lni(dev, lni);
+	lni = rc;
+
 	/* Get a domain */
 	domain = alloc_domain(dev, lni, svc_desc.vnis[0], 40, 1024);
 	if (domain < 0) {
@@ -366,6 +374,18 @@ int test_main(char *device, int service)
 		fprintf(stderr,
 			"%d: Bad adjust_eq_reserved_fq rc: expected=%d got=%d\n",
 			__LINE__, reserved_fc, rc);
+		return 1;
+	}
+
+	rc = adjust_eq_reserved_fq_legacy(dev, eq, 10);
+	if (rc != 10 || adjust_eq_reserved_fq(dev, eq, 0) != rc) {
+		fprintf(stderr, "Legacy EQ increment differs from v2\n");
+		return 1;
+	}
+
+	rc = adjust_eq_reserved_fq_legacy(dev, eq, -10);
+	if (rc != 0 || adjust_eq_reserved_fq(dev, eq, 0) != rc) {
+		fprintf(stderr, "Legacy EQ decrement differs from v2\n");
 		return 1;
 	}
 

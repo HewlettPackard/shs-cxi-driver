@@ -39,8 +39,8 @@ static struct cxi_lni *cxi_lni_alloc_vf(struct cxi_dev *dev,
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_lni_priv_vf *lni_priv_vf;
-	const struct cxi_lni_alloc_cmd lni_alloc_cmd = {
-		.op = CXI_OP_LNI_ALLOC,
+	const struct cxi_lni_alloc_v2_cmd lni_alloc_cmd = {
+		.op = CXI_OP_LNI_ALLOC_V2,
 		.svc_id = svc_id,
 	};
 	struct cxi_phys_lac_alloc_cmd lac_alloc_cmd = {

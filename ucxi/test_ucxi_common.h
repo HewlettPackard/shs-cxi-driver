@@ -98,6 +98,7 @@ extern int cq_get_ack_counter(struct cass_dev *dev, struct ucxi_cq *cq,
 			      unsigned int *ack_counter);
 
 extern int alloc_lni(struct cass_dev *dev, unsigned int svc_id);
+extern int alloc_lni_legacy(struct cass_dev *dev, unsigned int svc_id);
 
 extern void destroy_lni(struct cass_dev *dev, unsigned int lni);
 
@@ -117,6 +118,8 @@ extern void write_pattern(int *to, int length);
 
 extern int adjust_eq_reserved_fq(struct cass_dev *dev, struct ucxi_eq *eq,
 				 int value);
+extern int adjust_eq_reserved_fq_legacy(struct cass_dev *dev, struct ucxi_eq *eq,
+					int value);
 extern struct ucxi_eq *create_eq(struct cass_dev *dev, unsigned int lni,
 				 struct ucxi_wait *wait,
 				 unsigned int reserved_slots);

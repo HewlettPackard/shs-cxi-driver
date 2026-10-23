@@ -322,13 +322,30 @@ int get_svc_lpr(struct cass_dev *dev, unsigned int svc_id)
 
 int alloc_lni(struct cass_dev *dev, unsigned int svc_id)
 {
-	struct cxi_lni_alloc_cmd cmd = {};
+	struct cxi_lni_alloc_v2_cmd cmd = {};
 	struct cxi_lni_alloc_resp resp;
 	int rc;
 
-	cmd.op = CXI_OP_LNI_ALLOC;
+	cmd.op = CXI_OP_LNI_ALLOC_V2;
 	cmd.svc_id = svc_id;
 	cmd.resp = &resp;
+	rc = write(dev->fd, &cmd, sizeof(cmd));
+	if (rc != sizeof(cmd))
+		return -1;
+
+	return resp.lni;
+}
+
+int alloc_lni_legacy(struct cass_dev *dev, unsigned int svc_id)
+{
+	struct cxi_lni_alloc_resp resp;
+	struct cxi_lni_alloc_cmd cmd = {
+		.op = CXI_OP_LNI_ALLOC,
+		.svc_id = svc_id,
+		.resp = &resp,
+	};
+	int rc;
+
 	rc = write(dev->fd, &cmd, sizeof(cmd));
 	if (rc != sizeof(cmd))
 		return -1;
@@ -542,6 +559,26 @@ void destroy_wait_obj(struct cass_dev *dev, struct ucxi_wait *wait)
 }
 
 int adjust_eq_reserved_fq(struct cass_dev *dev, struct ucxi_eq *eq, int value)
+{
+	struct cxi_eq_adjust_reserved_fc_resp resp = {};
+	struct cxi_eq_adjust_reserved_fc_v2_cmd cmd = {
+		.op = CXI_OP_EQ_ADJUST_RESERVED_FC_V2,
+		.eq_hndl = eq->eq,
+		.value = value,
+		.resp = &resp,
+	};
+	int rc;
+
+	rc = write(dev->fd, &cmd, sizeof(cmd));
+	if (rc < 0)
+		return -errno;
+	else if (rc != sizeof(cmd))
+		return -EINVAL;
+	return resp.reserved_fc;
+}
+
+int adjust_eq_reserved_fq_legacy(struct cass_dev *dev, struct ucxi_eq *eq,
+				 int value)
 {
 	struct cxi_eq_adjust_reserved_fc_resp resp = {};
 	struct cxi_eq_adjust_reserved_fc_cmd cmd = {
