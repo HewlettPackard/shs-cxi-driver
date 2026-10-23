@@ -33,6 +33,9 @@ Key prerequisites include:
 - Linux kernel build environment compatible with your target kernel.
 - Sibling repositories: slingshot_base_link, sl-driver, nic-emu, virtme, cassini-qemu, hms-artifacts
 - Tooling: bash, make, gcc/clang, qemu, perl/prove
+- Optional: `abidiff` from libabigail (>= 2.3) for `make check-abi`
+  (`libabigail-tools` on SLES/openSUSE via PackageHub, `libabigail` on RHEL/Fedora,
+  `abigail-tools` on Debian/Ubuntu)
 
 ## Build
 
@@ -114,6 +117,31 @@ Install the pre-commit hook:
 
 The hook checks branch policy and runs `checkpatch.pl` against staged changes.
 
+### UAPI Compatibility
+
+`include/uapi/ethernet/cxi-abi.h` is the kernel/userspace ABI. Userspace built
+against one release (for example a container image) must keep working against
+the driver from another, so existing structs must never change size, member
+offsets or enumerator values. Add a new command/struct (e.g. a `*_v2` form)
+instead of editing an existing one.
+
+CI enforces this on every PR commit with `make check-abi`, which compiles the
+header at the PR base and at the commit under test and compares them with
+`abidiff` (libabigail), following the Linux kernel's `scripts/check-uapi.sh`.
+Run it locally before pushing:
+
+```bash
+make check-abi                                       # against the PR base
+make check-abi UAPI_REF=<remote>/release/shs-14.0    # against a shipped release
+```
+
+`<remote>` is whatever your clone calls the upstream repository (`git remote -v`).
+The PR base defaults to `origin/main`; if your upstream remote has another name,
+set it, e.g. `UPSTREAM_BRANCH=github/main make check-abi`.
+
+Legitimate exceptions (sentinel enumerators such as `CXI_OP_MAX`) are listed in
+`contrib/check-uapi.suppr`.
+
 ## Pull Request Expectations
 
 Follow [.github/pull_request_template.md](.github/pull_request_template.md):
@@ -135,6 +163,7 @@ release notes. For significant changes, add a summary to the PR description.
 
 - Fast preflight passes with `make check-smoke`.
 - Style checks pass with `make check-style` (or install the pre-commit hook).
+- UAPI header changes pass `make check-abi`.
 - Build succeeds with `make`.
 - Relevant tests pass (`make check` and/or focused tests under `tests/`).
 - No obvious dmesg oops/regressions in VM runs.

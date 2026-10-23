@@ -186,15 +186,17 @@ echo 'file cass_atu.c +p' > /proc/dynamic_debug/control
 ### Pre-Commit Checklist (from CONTRIBUTING.md)
 1. Run `make check-style` - no checkpatch violations
 2. Run `make check-smoke` - builds drivers/ss1 and ucxi
-3. Run full `make check` if modifying tests (requires VM)
-4. Verify CONTRIBUTING.md and SECURITY.md are in place
-5. Validate with `scripts/dev-setup.sh` (should show "All critical checks passed!")
+3. Run `make check-abi` if `include/uapi/ethernet/cxi-abi.h` changed - no UAPI breaks
+4. Run full `make check` if modifying tests (requires VM)
+5. Verify CONTRIBUTING.md and SECURITY.md are in place
+6. Validate with `scripts/dev-setup.sh` (should show "All critical checks passed!")
 
 ## Build System & Tooling
 
 ### New Makefile Targets
 - `make check-smoke` - Builds driver modules and ucxi only (no VM required, ~30 sec)
 - `make check-style` - Runs checkpatch validation on git diff (platform-independent)
+- `make check-abi` - Compares `cxi-abi.h` against the PR base (or `UAPI_REF=<ref>`) with `abidiff`; existing UAPI structs/enums must not change (requires libabigail >= 2.3)
 - `make check` - Full test suite with VM (requires virtme/qemu/cassini-qemu)
 
 ### Bootstrap & Prerequisites
@@ -227,9 +229,10 @@ echo 'file cass_atu.c +p' > /proc/dynamic_debug/control
 
 ### Expected PR Gates
 1. Code style validation (checkpatch.pl)
-2. Build verification (check-smoke)
-3. Full test suite (make check with VM)
-4. Documentation requirements (CONTRIBUTING.md, SECURITY.md present)
+2. UAPI compatibility (check-abi — `cxi-abi.h` compared against PR base with abidiff)
+3. Build verification (check-smoke)
+4. Full test suite (make check with VM)
+5. Documentation requirements (CONTRIBUTING.md, SECURITY.md present)
 
 ## Documentation Reference
 
