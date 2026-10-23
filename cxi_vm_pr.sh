@@ -1,4 +1,8 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+#
+# Stop at the first failing gate so its exit status is what the job reports.
+set -e
 git checkout -b rebase-test-branch
 
 # Build only first as it's fast
