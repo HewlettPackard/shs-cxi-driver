@@ -8,12 +8,19 @@
 
 # Sentinel enumerators that legitimately move when values are appended.
 # Listed by exact name because changed_enumerators_regexp requires
-# libabigail >= 2.4 and SLE 15 PackageHub ships 2.3. A sentinel used as an
-# array bound (e.g. CXI_RSRC_TYPE_MAX in cxi_svc_desc) still triggers a
-# struct-size change, which this rule does not hide.
+# libabigail >= 2.4 and SLE 15 PackageHub ships 2.3.
+#
+# Only sentinels that no consumer uses as a value or array bound may be
+# listed. CXI_TC_MAX and CXI_RSRC_TYPE_MAX are deliberately NOT listed: they
+# size struct members (tcs[], limits.type[], in_use[], rsrc_avail[]), are
+# compiled into inline helpers in this header, and are used by workload
+# managers (PALS sizes arrays and loops with both; Slurm falls back to a
+# hardcoded copy of CXI_RSRC_TYPE_MAX), so changing them breaks existing
+# binaries. Before adding a name here, check that PALS, Slurm, libcxi and
+# libfabric do not use it.
 [suppress_type]
   type_kind = enum
-  changed_enumerators = CXI_OP_MAX, CXI_TC_MAX, CXI_TC_TYPE_MAX, CXI_RSRC_TYPE_MAX, CXI_SVC_MEMBER_MAX, CXIERR_GENL_ATTR_MAX
+  changed_enumerators = CXI_OP_MAX, CXI_TC_TYPE_MAX, CXI_SVC_MEMBER_MAX, CXIERR_GENL_ATTR_MAX
 
 # NOTE: the kernel also allows filling explicitly reserved/padding members
 # (has_data_member_inserted_at = offset_of_first_data_member_regexp(...)).
