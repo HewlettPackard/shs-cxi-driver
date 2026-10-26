@@ -1918,12 +1918,17 @@ static irqreturn_t cass_pri_int_cb(int irq, void *context)
 	return IRQ_HANDLED;
 }
 
+/* Some drivers (e.g. amdgpu) return SG entries covering more than the
+ * registered range. Never mirror past the MD. Use olen: md.len shrinks
+ * when cxi_update_iov() maps fewer pages.
+ */
 int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 {
 	int i;
 	int ret;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
+	size_t md_len = md_priv->olen;
 	struct cass_ac *cac = md_priv->cac;
 	size_t plen = BIT(cac->page_shift); /* page_size */
 	size_t hlen = BIT(cac->huge_shift); /* huge_size */
@@ -1943,10 +1948,11 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 		 * be safely used whenever the base address, the IOVA and the
 		 * remaining length are all huge page aligned/large enough.
 		 */
-		while (len > 0) {
+		while (len > 0 && md_len > 0) {
 			is_huge_page = is_huge_page &&
 					IS_ALIGNED(dma_addr, hlen) &&
 					IS_ALIGNED(iova, hlen) &&
+					md_len >= hlen &&
 					len >= hlen;
 			inc = is_huge_page ? hlen : plen;
 
@@ -1958,6 +1964,7 @@ int cass_nta_mirror_sgt(struct cxi_md_priv *md_priv, bool need_lock)
 			dma_addr += inc;
 			iova += inc;
 			len -= inc;
+			md_len -= inc;
 		}
 	}
 
