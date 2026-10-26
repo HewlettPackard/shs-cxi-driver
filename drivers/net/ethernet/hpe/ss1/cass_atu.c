@@ -1442,7 +1442,9 @@ free_pages:
  *
  * @lni: The Logical Network Interface
  * @sgt: The sg_table object. It is expected to be dma mapped.
- * @m_opts: huge_shift/page_shift/ptg_mode options and flags
+ * @m_opts: huge_shift/page_shift/ptg_mode options and flags. If va_len is
+ *          set, it is the registered length and bounds the mapping when the
+ *          sgt covers more than that (e.g. amdgpu).
  *
  * @return: memory descriptor or error code
  */
@@ -1462,6 +1464,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	int i;
 	int rc;
 	size_t sgt_len;
+	size_t map_len;
 	u32 flags = m_opts->flags;
 
 	if (!sgt)
@@ -1469,6 +1472,10 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 
 	if (!cass_sgtable_is_valid(hw, sgt, m_opts->page_shift, &sgt_len))
 		return ERR_PTR(-EINVAL);
+
+	map_len = sgt_len;
+	if (m_opts->va_len)
+		map_len = m_opts->va_len;
 
 	sg = sgt->sgl;
 
@@ -1479,8 +1486,8 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 	md_priv_vf->lni_priv = container_of(lni, struct cxi_lni_priv, lni);
 	md_priv_vf->device = &hw->cdev.pdev->dev;
 	md_priv_vf->md.va = 0;
-	md_priv_vf->md.len = sgt_len;
-	md_priv_vf->olen = sgt_len;
+	md_priv_vf->md.len = map_len;
+	md_priv_vf->olen = map_len;
 	md_priv_vf->md.page_shift = m_opts->page_shift;
 	md_priv_vf->md.huge_shift = m_opts->huge_shift;
 	md_priv_vf->flags = flags & ~(CXI_MAP_FAULT | CXI_MAP_PREFETCH);
@@ -1490,7 +1497,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 
 	pr_debug("VF map: md:%p lni:%u rgid:%u nents:%u len:0x%lx flags:0x%x\n",
 		 md_priv_vf, lni_priv_vf->lni.id, lni_priv_vf->lni.rgid,
-		 sgt->nents, sgt_len, flags);
+		 sgt->nents, map_len, flags);
 
 	cmd_len = struct_size(cmd, sge, sgt->nents);
 	if (cmd_len > MAX_VFMSG_SIZE) {
@@ -1505,6 +1512,7 @@ static struct cxi_md *cxi_map_sgtable_vf(struct cxi_lni *lni,
 
 	cmd->op = CXI_OP_ATU_MAP_SGT;
 	cmd->lni = lni_priv_vf->lni.id;
+	cmd->len = map_len;
 	cmd->flags = flags;
 	cmd->nents = sgt->nents;
 
@@ -1880,7 +1888,7 @@ static int cass_unmap_sgtable_vf(struct cxi_dev *dev,
 struct cxi_md *cxi_map_sgtable(struct cxi_lni *lni,
 			       struct sg_table *sgt, u32 flags)
 {
-	return cxi_map_sgtable_internal(lni, sgt, flags, NULL);
+	return cxi_map_sgtable_internal(lni, sgt, flags, NULL, 0);
 }
 EXPORT_SYMBOL(cxi_map_sgtable);
 
@@ -1891,12 +1899,16 @@ EXPORT_SYMBOL(cxi_map_sgtable);
  * @sgt: The sg_table object. It is expected to be dma mapped.
  * @flags: Various options affecting the map
  * @hints: Optional hints carrying huge page information
+ * @map_len: Length to map, or 0 to map everything @sgt covers. The sgt may
+ *           cover more than the registered range (e.g. amdgpu); only
+ *           @map_len bytes are mirrored.
  *
  * @return: memory descriptor or error code
  */
 struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 					struct sg_table *sgt, u32 flags,
-					const struct cxi_md_hints *hints)
+					const struct cxi_md_hints *hints,
+					size_t map_len)
 {
 	int ret;
 	size_t len;
@@ -1927,8 +1939,16 @@ struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 	if (!cass_sgtable_is_valid(hw, sgt, m_opts.page_shift, &len))
 		return ERR_PTR(-EINVAL);
 
-	if (!cdev->is_physfn)
+	if (map_len) {
+		if (map_len > len || !IS_ALIGNED(map_len, BIT(m_opts.page_shift)))
+			return ERR_PTR(-EINVAL);
+		len = map_len;
+	}
+
+	if (!cdev->is_physfn) {
+		m_opts.va_len = map_len;
 		return cxi_map_sgtable_vf(lni, sgt, &m_opts);
+	}
 
 	m_opts.va_start = 0;
 	m_opts.va_len = len;

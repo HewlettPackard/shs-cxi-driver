@@ -66,6 +66,7 @@ int cxi_svc_rsrc_list_get_internal(struct cxi_dev *dev, int count,
 				   struct cxi_rsrc_use *rsrc_list, bool vf_en, u8 vf_num);
 struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 					struct sg_table *sgt, u32 flags,
-					const struct cxi_md_hints *hints);
+					const struct cxi_md_hints *hints,
+					size_t map_len);
 
 #endif /* _CXI_INTERNAL_H */

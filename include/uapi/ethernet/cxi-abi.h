@@ -752,10 +752,11 @@ struct cxi_sgt_entry {
 
 struct cxi_atu_map_sgt_cmd {
 	enum cxi_command_opcode op;
+	unsigned int lni;
 	void __user *resp;
 
 	struct cxi_md_hints hints;
-	unsigned int lni;
+	__u64 len;
 	__u32 flags;
 	__u32 nents;
 	struct cxi_sgt_entry sge[];

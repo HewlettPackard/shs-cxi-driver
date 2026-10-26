@@ -2291,10 +2291,10 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 	if (!client->is_vf)
 		return -EOPNOTSUPP;
 
-	if (!cmd->nents)
+	if (cmd_len < sizeof(*cmd))
 		return -EINVAL;
 
-	if (cmd_len < sizeof(*cmd))
+	if (!cmd->nents || !cmd->len)
 		return -EINVAL;
 
 	payload_len = cmd_len - sizeof(*cmd);
@@ -2358,7 +2358,8 @@ static int cxi_user_atu_map_sgt(struct user_client *client,
 		sg = sg_next(sg);
 	}
 
-	md = cxi_map_sgtable_internal(lni_obj->lni, sgt, cmd->flags, &hints);
+	md = cxi_map_sgtable_internal(lni_obj->lni, sgt, cmd->flags, &hints,
+				      cmd->len);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto free_sgt_table;
