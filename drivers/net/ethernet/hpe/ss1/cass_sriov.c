@@ -472,6 +472,11 @@ static int pf_vf_msghandler(void *data)
 		} else if (rc == -EINTR) {
 			/* Expected when thread is asked to terminate */
 			continue;
+		} else if (rc == -ECONNRESET) {
+			/* Expected when VF shuts down */
+			cxidev_info(&hw->cdev, "vf %d: disconnected",
+				    vf->vf_idx);
+			break;
 		} else if (rc < 0) {
 			cxidev_err(&hw->cdev, "vf %d: error reading request: %d",
 				   vf->vf_idx, rc);
