@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright 2025 Hewlett Packard Enterprise Development LP */
+/* Copyright 2025-2026 Hewlett Packard Enterprise Development LP */
 
 #ifndef _CXI_CONFIGURATION_H_
 #define _CXI_CONFIGURATION_H_
@@ -76,10 +76,11 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 					       uint16_t vni);
 struct cxi_rx_profile *cxi_dev_get_rx_profile(struct cxi_dev *dev,
 					      unsigned int vni);
-void cxi_rx_profile_update_pid_table(struct cxi_rx_profile *rx_profile, int pid,
-				     int count, bool set);
-void cxi_rx_profile_andnot_pid_table(struct cxi_reserved_pids *pids,
-				     int len);
+void cxi_rx_profile_update_pid_table(struct cxi_dev *dev,
+				     struct cxi_rx_profile *rx_profile,
+				     int pid, int count, bool set);
+void cxi_rx_profile_andnot_pid_table(struct cxi_dev *dev,
+				     struct cxi_reserved_pids *pids, int len);
 int cxi_rx_profile_alloc_pid(struct cxi_lni_priv *lni_priv,
 			     struct cxi_rx_profile *rx_profile,
 			     int pid, int vni, int count, bool reserve);

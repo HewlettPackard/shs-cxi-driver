@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2024 Hewlett Packard Enterprise Development LP */
+/* Copyright (C) 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* VNI Entry manipulation routines for Cassini Device */
 
@@ -43,6 +43,8 @@ void cass_dev_rx_tx_profiles_init(struct cass_dev *hw)
 
 	mutex_init(&hw->rx_profile_get_lock);
 	mutex_init(&hw->tx_profile_get_lock);
+	spin_lock_init(&hw->rmu_obj_lock);
+	INIT_LIST_HEAD(&hw->rmu_objs);
 }
 
 struct profile_destroy_data {
@@ -54,7 +56,6 @@ static void rx_profile_destroy(struct cxi_rxtx_profile *rxtx_profile,
 {
 	struct profile_destroy_data *data = user_arg;
 
-	refcount_dec(&rxtx_profile->state.refcount);
 	cxi_rx_profile_dec_refcount(data->cxi_dev, co_rx_profile(rxtx_profile));
 }
 
@@ -84,7 +85,10 @@ void cass_dev_rx_tx_profiles_fini(struct cass_dev *hw)
 void cass_rx_profile_init(struct cass_dev *hw,
 				struct cxi_rx_profile *rx_profile)
 {
-	spin_lock_init(&rx_profile->config.pid_lock);
+	struct cxi_rx_profile_priv *rx_profile_priv =
+		container_of(rx_profile, struct cxi_rx_profile_priv, profile);
+
+	INIT_LIST_HEAD(&rx_profile_priv->profile_list);
 	rx_profile->config.rmu_index = DEF_RMU_INDEX;
 }
 
