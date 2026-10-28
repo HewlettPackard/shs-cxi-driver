@@ -1010,10 +1010,9 @@ void disable_rx_queue(struct rx_queue *rx)
 
 #define DEFAULT_RESERVED_LES 1024U
 
-static unsigned int get_reserved_les(unsigned int rx_queues)
+static unsigned int get_reserved_les(unsigned int total_rx_queues)
 {
 	int reserved_les;
-	int total_rx_queues = rx_queues + 1; /* Include the PTP queue. */
 	int max_les_per_queue;
 
 	reserved_les = cxi_get_lpe_append_credits(lpe_cdt_thresh_id);
@@ -1055,6 +1054,7 @@ int hw_setup(struct cxi_eth *dev)
 	};
 	unsigned int rx_channels;
 	unsigned int primary_filter_count;
+	unsigned int ptp_queues = dev->cxi_dev->is_physfn ? 1 : 0;
 	u8 shared_cp_pcp;
 
 	/* Negotiate scarce filter and RSS resources before sizing the service. */
@@ -1070,7 +1070,7 @@ int hw_setup(struct cxi_eth *dev)
 		goto err;
 	}
 
-	rx_channels = min(max_rss_queues,
+	rx_channels = min(dev->max_rxqs,
 			  max(1U, dev->rmu_eth->max_indir_entries));
 	rx_channels = rounddown_pow_of_two(rx_channels);
 
@@ -1080,7 +1080,7 @@ int hw_setup(struct cxi_eth *dev)
 			.res = 1,
 		},
 		.eqs = {
-			.max = 1 + rx_channels + (max_tx_queues * 2),
+			.max = 1 + rx_channels + (dev->max_txqs * 2),
 			.res = 1,
 		},
 		.cts = {
@@ -1088,15 +1088,15 @@ int hw_setup(struct cxi_eth *dev)
 			.res = 0,
 		},
 		.ptes = {
-			.max = 1 + rx_channels,
-			.res = min(1 + rx_channels, CXI_ETH_SVC_PTE_RES),
+			.max = ptp_queues + rx_channels,
+			.res = min(ptp_queues + rx_channels, CXI_ETH_SVC_PTE_RES),
 		},
 		.txqs = {
-			.max = max_tx_queues * 2,
+			.max = dev->max_txqs * 2,
 			.res = 1,
 		},
 		.tgqs = {
-			.max = 1 + 1 + rx_channels,
+			.max = 1 + ptp_queues + rx_channels,
 			.res = 1,
 		},
 		.tles = {
@@ -1106,7 +1106,7 @@ int hw_setup(struct cxi_eth *dev)
 		/* Will actually have 4 * res value for les */
 		.les = {
 			.max = MAX_LE_LIMIT,
-			.res = get_reserved_les(rx_channels),
+			.res = get_reserved_les(rx_channels + ptp_queues),
 		},
 	};
 	svc_desc = (struct cxi_svc_desc) {
@@ -1271,7 +1271,7 @@ int hw_setup(struct cxi_eth *dev)
 
 	cq_alloc_opts.policy = CXI_CQ_UPDATE_HIGH_FREQ_EMPTY;
 	cq_alloc_opts.count =
-		(small_pkts_buf_count * (max_rss_queues + 1)) +	TGT_CQ_OVERHEAD_COUNT;
+		(small_pkts_buf_count * (dev->max_rxqs + ptp_queues)) +	TGT_CQ_OVERHEAD_COUNT;
 	dev->cq_tgt_req = cxi_cq_alloc(dev->lni, dev->err_eq, &cq_alloc_opts,
 				       dev_to_node(&dev->cxi_dev->pdev->dev));
 	if (IS_ERR(dev->cq_tgt_req)) {

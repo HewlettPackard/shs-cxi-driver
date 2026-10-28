@@ -309,6 +309,12 @@ struct cxi_eth {
 	 */
 	struct rx_queue *rxqs;
 
+	/* RX queue limit: max_rss_queues for the PF, max_rss_queues_vf for VFs. */
+	unsigned int max_rxqs;
+
+	/* TX queue limit: max_tx_queues for the PF, max_tx_queues_vf for VFs. */
+	unsigned int max_txqs;
+
 	/* Number of RX buffers */
 	unsigned int num_prio_buffers;
 	unsigned int num_req_buffers;
@@ -368,7 +374,9 @@ struct cxi_eth {
 
 extern unsigned int rss_indir_size;
 extern unsigned int max_rss_queues;
+extern unsigned int max_rss_queues_vf;
 extern unsigned int max_tx_queues;
+extern unsigned int max_tx_queues_vf;
 extern unsigned int small_pkts_buf_size;
 extern unsigned int idc_dma_threshold;
 extern unsigned int lpe_cdt_thresh_id;
