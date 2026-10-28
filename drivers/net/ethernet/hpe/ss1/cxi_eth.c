@@ -33,9 +33,17 @@ unsigned int max_rss_queues = 16;
 module_param(max_rss_queues, int, 0444);
 MODULE_PARM_DESC(max_rss_queues, "Maximum number of RSS queues (power of 2)");
 
+unsigned int max_rss_queues_vf;
+module_param(max_rss_queues_vf, uint, 0444);
+MODULE_PARM_DESC(max_rss_queues_vf, "Maximum number of RSS queues for VFs (power of 2, up to max_rss_queues). 0 uses max_rss_queues");
+
 unsigned int max_tx_queues = 16;
 module_param(max_tx_queues, int, 0444);
 MODULE_PARM_DESC(max_tx_queues, "Maximum number of TX queues");
+
+unsigned int max_tx_queues_vf;
+module_param(max_tx_queues_vf, uint, 0444);
+MODULE_PARM_DESC(max_tx_queues_vf, "Maximum number of TX queues for VFs (up to max_tx_queues). 0 uses max_tx_queues");
 
 unsigned int small_pkts_buf_size = CXI_ETH_1_MB;
 module_param(small_pkts_buf_size, uint, 0444);
@@ -144,6 +152,11 @@ static int add_device(struct cxi_dev *cxi_dev)
 
 	dev = netdev_priv(ndev);
 
+	dev->max_rxqs = cxi_dev->is_physfn ? max_rss_queues :
+		(max_rss_queues_vf ?: max_rss_queues);
+	dev->max_txqs = cxi_dev->is_physfn ? max_tx_queues :
+		(max_tx_queues_vf ?: max_tx_queues);
+
 	dev->txqs = kcalloc(max_tx_queues, sizeof(*dev->txqs), GFP_KERNEL);
 	if (!dev->txqs) {
 		rc = -ENOMEM;
@@ -217,8 +230,8 @@ static int add_device(struct cxi_dev *cxi_dev)
 	ndev->vlan_features = ndev->hw_features;
 	ndev->priv_flags |= IFF_UNICAST_FLT | IFF_LIVE_ADDR_CHANGE;
 
-	netif_set_real_num_rx_queues(ndev, 8);
-	netif_set_real_num_tx_queues(ndev, 8);
+	netif_set_real_num_rx_queues(ndev, min(8U, dev->max_rxqs));
+	netif_set_real_num_tx_queues(ndev, min(8U, dev->max_txqs));
 
 	rc = register_netdev(ndev);
 	if (rc)
@@ -450,9 +463,24 @@ static int __init init(void)
 		pr_info("Adjusting max_rss_queues to %d\n", max_rss_queues);
 	}
 
+	if (max_rss_queues_vf &&
+	    (max_rss_queues_vf > max_rss_queues ||
+	     !is_power_of_2(max_rss_queues_vf))) {
+		max_rss_queues_vf = min_t(unsigned int,
+					  roundup_pow_of_two(max_rss_queues_vf),
+					  max_rss_queues);
+		pr_info("Adjusting max_rss_queues_vf to %u\n",
+			max_rss_queues_vf);
+	}
+
 	if (max_tx_queues > CXI_ETH_MAX_TX_QUEUES) {
 		max_tx_queues = CXI_ETH_MAX_TX_QUEUES;
 		pr_info("Adjusting max_tx_queues to %d\n", max_tx_queues);
+	}
+
+	if (max_tx_queues_vf > max_tx_queues) {
+		max_tx_queues_vf = max_tx_queues;
+		pr_info("Adjusting max_tx_queues_vf to %u\n", max_tx_queues_vf);
 	}
 
 	if (small_pkts_buf_size < PAGE_SIZE) {

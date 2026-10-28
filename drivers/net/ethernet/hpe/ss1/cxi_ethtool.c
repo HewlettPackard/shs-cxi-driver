@@ -111,8 +111,10 @@ static void cxi_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 static void cxi_get_channels(struct net_device *ndev,
 			     struct ethtool_channels *channels)
 {
-	channels->max_rx = max_rss_queues;
-	channels->max_tx = max_tx_queues;
+	const struct cxi_eth *dev = netdev_priv(ndev);
+
+	channels->max_rx = dev->max_rxqs;
+	channels->max_tx = dev->max_txqs;
 	channels->max_combined = 0;
 	channels->max_other = 0;
 	channels->rx_count = ndev->real_num_rx_queues;
@@ -230,10 +232,11 @@ static void cxi_shrink_rx_channels(struct cxi_eth *dev,
 		free_rx_queue(&dev->rxqs[i]);
 }
 
-static bool valid_rx_channel_count(unsigned int num_rx_channels)
+static bool valid_rx_channel_count(const struct cxi_eth *dev,
+				   unsigned int num_rx_channels)
 {
 	if (!is_power_of_2(num_rx_channels) || num_rx_channels < 1 ||
-	    num_rx_channels > max_rss_queues)
+	    num_rx_channels > dev->max_rxqs)
 		return false;
 	return true;
 }
@@ -245,7 +248,7 @@ int cxi_set_rx_channels(struct cxi_eth *dev, unsigned int num_rx_channels)
 	int rc;
 	int i;
 
-	if (!valid_rx_channel_count(num_rx_channels))
+	if (!valid_rx_channel_count(dev, num_rx_channels))
 		return -EINVAL;
 	if (num_rx_channels > 1 &&
 	    num_rx_channels > dev->rmu_eth->max_indir_entries)
@@ -335,7 +338,7 @@ static int cxi_set_channels(struct net_device *ndev,
 	 * hardware setup.
 	 */
 	if (!netif_running(dev->ndev)) {
-		if (!valid_rx_channel_count(ch->rx_count))
+		if (!valid_rx_channel_count(dev, ch->rx_count))
 			return -EINVAL;
 
 		rc = netif_set_real_num_rx_queues(ndev, ch->rx_count);
