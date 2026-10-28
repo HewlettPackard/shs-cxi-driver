@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Hewlett Packard Enterprise Development LP */
+/* Copyright (C) 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* RX Profile and TX Profile List Implementations */
 
@@ -53,8 +53,11 @@ void cxi_rxtx_profile_list_destroy(struct cxi_rxtx_profile_list *list,
 
 	xa_for_each(&list->xarray, index, profile) {
 		__xa_erase(&list->xarray, index);
+		/* Unlock so that cleanup function can take lock if needed */
+		xa_unlock(&list->xarray);
 		if (cleanup)
 			cleanup(profile, user_arg);
+		xa_lock(&list->xarray);
 	}
 
 	xa_unlock(&list->xarray);

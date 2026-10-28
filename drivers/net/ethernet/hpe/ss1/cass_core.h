@@ -1122,6 +1122,8 @@ struct cass_dev {
 	struct cxi_rxtx_profile_list tx_profile_list;
 	struct mutex tx_profile_get_lock;
 	struct mutex rx_profile_get_lock;
+	spinlock_t rmu_obj_lock;	/* protects rmu_objs list */
+	struct list_head rmu_objs;
 
 	/* Services */
 	struct mutex svc_lock;

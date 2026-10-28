@@ -488,6 +488,21 @@ struct cxi_pte_priv {
 	int le_pool;
 };
 
+struct cxi_rmu_obj {
+	struct list_head rmu_list;
+	struct list_head profiles;
+	struct cxi_rxtx_vni_attr attr;
+	DECLARE_BITMAP(pid_table, 1 << MAX_PID_BITS);
+	unsigned int enabled;
+	int index;
+};
+
+struct cxi_rx_profile_priv {
+	struct cxi_rx_profile profile;
+	struct cxi_rmu_obj *rmu_entry;
+	struct list_head profile_list;
+};
+
 void cxi_free_resource(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,
 		       enum cxi_rsrc_type type);
 int cxi_alloc_resource(struct cxi_dev *dev, struct cxi_svc_priv *svc_priv,

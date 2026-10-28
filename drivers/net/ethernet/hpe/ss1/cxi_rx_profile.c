@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2024 Hewlett Packard Enterprise Development LP */
+/* Copyright (C) 2024-2026 Hewlett Packard Enterprise Development LP */
 
 /* RX Profile Implementation */
 
@@ -10,6 +10,28 @@
 #include "cxi_rxtx_profile_list.h"
 
 #define RX_PROFILE_GFP_OPTS  (GFP_KERNEL)
+
+/* rx_profile_list lock, when needed, precedes rmu_obj_lock. */
+static void rmu_obj_detach_locked(struct cass_dev *hw,
+				  struct cxi_rx_profile *profile)
+__must_hold(&hw->rmu_obj_lock)
+{
+	struct cxi_rx_profile_priv *profile_priv =
+		container_of(profile, struct cxi_rx_profile_priv, profile);
+	struct cxi_rmu_obj *rmu_entry = profile_priv->rmu_entry;
+
+	if (!rmu_entry)
+		return;
+
+	list_del_init(&profile_priv->profile_list);
+	profile_priv->rmu_entry = NULL;
+	profile->config.rmu_index = DEF_RMU_INDEX;
+	if (list_empty(&rmu_entry->profiles)) {
+		list_del(&rmu_entry->rmu_list);
+		ida_free(&hw->rmu_index_table, rmu_entry->index);
+		kfree(rmu_entry);
+	}
+}
 
 static struct cass_dev *get_cass_dev(struct cxi_dev *dev)
 {
@@ -30,71 +52,88 @@ static void cxi_rx_profile_update_pid_table_locked(
 					struct cxi_rx_profile *rx_profile,
 					int pid, int nbits, bool set)
 {
+	struct cxi_rx_profile_priv *rx_profile_priv =
+		container_of(rx_profile, struct cxi_rx_profile_priv, profile);
+	struct cxi_rmu_obj *rmu_entry = rx_profile_priv->rmu_entry;
+
 	if (set)
-		bitmap_set(rx_profile->config.pid_table, pid, nbits);
+		bitmap_set(rmu_entry->pid_table, pid, nbits);
 	else
-		bitmap_clear(rx_profile->config.pid_table, pid, nbits);
+		bitmap_clear(rmu_entry->pid_table, pid, nbits);
 }
 
 /**
  * cxi_rx_profile_update_pid_table() - Set/clear pids from rx profile pid_table
  *
+ * @dev: CXI device
  * @rx_profile: RX profile object
  * @pid: Pid to allocate
  * @nbits: Number of entries to clear
  * @set: Set or clear
  */
-void cxi_rx_profile_update_pid_table(struct cxi_rx_profile *rx_profile, int pid,
-				     int nbits, bool set)
+void cxi_rx_profile_update_pid_table(struct cxi_dev *dev,
+				     struct cxi_rx_profile *rx_profile,
+				     int pid, int nbits, bool set)
 {
-	spin_lock(&rx_profile->config.pid_lock);
+	struct cass_dev *hw = get_cass_dev(dev);
+
+	spin_lock(&hw->rmu_obj_lock);
 	cxi_rx_profile_update_pid_table_locked(rx_profile, pid, nbits, set);
-	spin_unlock(&rx_profile->config.pid_lock);
+	spin_unlock(&hw->rmu_obj_lock);
 }
 
 /**
  * cxi_rx_profile_andnot_pid_table() - Update rx profile pid_table based on
  *                                     pids table.
  *
+ * @dev: CXI device
  * @pids: pids object
  * @len: Number of entries to clear.
  */
-void cxi_rx_profile_andnot_pid_table(struct cxi_reserved_pids *pids,
-				     int len)
+void cxi_rx_profile_andnot_pid_table(struct cxi_dev *dev,
+				     struct cxi_reserved_pids *pids, int len)
 {
 	struct cxi_rx_profile *rx_profile = pids->rx_profile;
+	struct cxi_rx_profile_priv *rx_profile_priv =
+		container_of(rx_profile, struct cxi_rx_profile_priv, profile);
+	struct cass_dev *hw = get_cass_dev(dev);
 
-	spin_lock(&rx_profile->config.pid_lock);
-	bitmap_andnot(rx_profile->config.pid_table,
-		      rx_profile->config.pid_table,
+	spin_lock(&hw->rmu_obj_lock);
+	bitmap_andnot(rx_profile_priv->rmu_entry->pid_table,
+		      rx_profile_priv->rmu_entry->pid_table,
 		      pids->table, len);
-	spin_unlock(&rx_profile->config.pid_lock);
+	spin_unlock(&hw->rmu_obj_lock);
 }
 
 /* Return true if the PID is reserved to the LNI. If so, mark the PID as
  * "allocated" and do some house-keeping.
  */
-static bool pid_reserved(struct cxi_lni_priv *lni_priv, unsigned int vni,
-			 unsigned int pid)
+static bool pid_reserved(struct cxi_lni_priv *lni_priv,
+			 struct cxi_rx_profile *profile, unsigned int vni,
+			 unsigned int pid, struct cxi_reserved_pids **empty)
 {
 	bool match;
 	bool rc = false;
 	struct cxi_reserved_pids *pids;
+	struct cxi_rx_profile_priv *profile_priv =
+		container_of(profile, struct cxi_rx_profile_priv, profile);
+	struct cxi_rx_profile_priv *reserved;
 	struct cxi_rxtx_vni_attr vni_attr = {.match = vni};
 
 	spin_lock(&lni_priv->res_lock);
 
 	list_for_each_entry(pids, &lni_priv->reserved_pids, entry) {
+		reserved = container_of(pids->rx_profile,
+					struct cxi_rx_profile_priv, profile);
 		match = vni_overlap(&vni_attr,
 				    &pids->rx_profile->profile_common.vni_attr);
 
-		if (match && test_and_clear_bit(pid, pids->table)) {
+		if (match && reserved->rmu_entry == profile_priv->rmu_entry &&
+		    test_and_clear_bit(pid, pids->table)) {
 			if (bitmap_empty(pids->table,
 					 lni_priv->dev->prop.pid_count)) {
 				list_del(&pids->entry);
-				cxi_rx_profile_dec_refcount(lni_priv->dev,
-							    pids->rx_profile);
-				kfree(pids);
+				*empty = pids;
 			}
 
 			rc = true;
@@ -125,34 +164,44 @@ int cxi_rx_profile_alloc_pid(struct cxi_lni_priv *lni_priv,
 			     struct cxi_rx_profile *rx_profile,
 			     int pid, int vni, int count, bool reserve)
 {
-	unsigned long *pid_table = rx_profile->config.pid_table;
+	struct cxi_reserved_pids *empty = NULL;
+	struct cxi_rx_profile_priv *rx_profile_priv =
+		container_of(rx_profile, struct cxi_rx_profile_priv, profile);
+	struct cxi_rmu_obj *rmu_entry;
 	struct cxi_dev *dev = lni_priv->dev;
+	struct cass_dev *hw = get_cass_dev(dev);
 	int start = (pid == C_PID_ANY) ? 0 : pid;
 	int new_pid = pid;
 
-	if (!count || count > lni_priv->dev->prop.pid_count)
+	if (count <= 0 || count > dev->prop.pid_count ||
+	    (pid != C_PID_ANY && (pid < 0 || pid > dev->prop.pid_count - count)))
 		return -EINVAL;
 
-	spin_lock(&rx_profile->config.pid_lock);
+	spin_lock(&hw->rmu_obj_lock);
+	if (!rx_profile_priv->rmu_entry) {
+		new_pid = -EINVAL;
+		goto unlock;
+	}
+	rmu_entry = rx_profile_priv->rmu_entry;
 
 	if (reserve || pid == C_PID_ANY) {
-		new_pid = bitmap_find_next_zero_area(pid_table,
+		new_pid = bitmap_find_next_zero_area(rmu_entry->pid_table,
 						     dev->prop.pid_count,
 						     start, count, 0);
 		if (pid == C_PID_ANY) {
-			if (new_pid + count >= dev->prop.pid_count) {
+			if (new_pid + count > dev->prop.pid_count) {
 				new_pid = -ENOSPC;
 				goto unlock;
 			}
 		} else {
-			if (new_pid >= (pid + count)) {
+			if (new_pid != pid) {
 				new_pid = -EEXIST;
 				goto unlock;
 			}
 		}
 	} else {
-		if (test_bit(new_pid, pid_table) &&
-		    !pid_reserved(lni_priv, vni, new_pid)) {
+		if (test_bit(new_pid, rmu_entry->pid_table) &&
+		    !pid_reserved(lni_priv, rx_profile, vni, new_pid, &empty)) {
 			new_pid = -EEXIST;
 			goto unlock;
 		}
@@ -162,7 +211,11 @@ int cxi_rx_profile_alloc_pid(struct cxi_lni_priv *lni_priv,
 					       true);
 
 unlock:
-	spin_unlock(&rx_profile->config.pid_lock);
+	spin_unlock(&hw->rmu_obj_lock);
+	if (empty) {
+		cxi_rx_profile_dec_refcount(dev, empty->rx_profile);
+		kfree(empty);
+	}
 
 	return new_pid;
 }
@@ -180,34 +233,89 @@ unlock:
 int cxi_rx_profile_enable(struct cxi_dev *dev,
 			   struct cxi_rx_profile *rx_profile)
 {
-	int index;
 	struct cass_dev *hw = get_cass_dev(dev);
+	struct cxi_rx_profile_priv *rx_profile_priv;
+	struct cxi_rmu_obj *rmu_entry, *candidate = NULL;
 	struct cxi_rxtx_vni_attr *attr;
+	int index = DEF_RMU_INDEX;
+	int rc = 0;
+	bool allocated = false;
 
 	if (!rx_profile)
 		return -EINVAL;
 
-	if (cxi_rx_profile_is_enabled(rx_profile))
-		return 0;
-
+	rx_profile_priv = container_of(rx_profile, struct cxi_rx_profile_priv,
+				       profile);
 	attr = &rx_profile->profile_common.vni_attr;
+
+retry:
+	spin_lock(&hw->rmu_obj_lock);
+	if (cxi_rx_profile_is_enabled(rx_profile))
+		goto unlock;
 
 	if (zero_vni(attr)) {
 		pr_debug("Cannot enable profile with invalid VNI\n");
-		return -EINVAL;
+		rc = -EINVAL;
+		goto unlock;
 	}
 
-	index = ida_alloc_range(&hw->rmu_index_table, 0,
-				C_RMU_CFG_VNI_LIST_ENTRIES - 1, GFP_KERNEL);
-	if (index < 0)
-		return index;
+	rmu_entry = rx_profile_priv->rmu_entry;
+	/* If an exact-match RMU entry already exists for our VNI, use it. */
+	if (!rmu_entry && !attr->ignore) {
+		list_for_each_entry(rmu_entry, &hw->rmu_objs, rmu_list)
+			if (!rmu_entry->attr.ignore && rmu_entry->attr.match == attr->match)
+				goto attach;
+		rmu_entry = NULL;
+	}
+	/* Otherwise allocate a new RMU entry for this profile. Since kzalloc
+	 * may sleep, we release the lock, and then retry our search for
+	 * matching entries. If one got allocated while we were sleeping, we'll
+	 * use that instead, otherwise we'll proceed with the entry that we
+	 * allocated ourselves. An unused speculative allocation gets cleaned up
+	 * before returning.
+	 */
+	if (!rmu_entry) {
+		if (!allocated) {
+			spin_unlock(&hw->rmu_obj_lock);
+			candidate = kzalloc(sizeof(*candidate), GFP_KERNEL);
+			if (candidate)
+				index = ida_alloc_range(&hw->rmu_index_table, 0,
+							C_RMU_CFG_VNI_LIST_ENTRIES - 1,
+							GFP_KERNEL);
+			allocated = true;
+			goto retry;
+		}
+		if (!candidate || index < 0) {
+			rc = candidate ? index : -ENOMEM;
+			goto unlock;
+		}
+		rmu_entry = candidate;
+		candidate = NULL;
+		rmu_entry->index = index;
+		index = DEF_RMU_INDEX;
+		rmu_entry->attr = *attr;
+		INIT_LIST_HEAD(&rmu_entry->profiles);
+		list_add_tail(&rmu_entry->rmu_list, &hw->rmu_objs);
+	}
 
-	cass_config_matching_vni_list(hw, index, attr->match, attr->ignore);
+attach:
+	if (!rx_profile_priv->rmu_entry) {
+		list_add_tail(&rx_profile_priv->profile_list, &rmu_entry->profiles);
+		rx_profile_priv->rmu_entry = rmu_entry;
+		rx_profile->config.rmu_index = rmu_entry->index;
+	}
+	/* Only program the RMU entry if we're the first user of it. */
+	if (!rmu_entry->enabled++)
+		cass_config_matching_vni_list(hw, rmu_entry->index,
+					      attr->match, attr->ignore);
 
-	rx_profile->profile_common.state.enable = true;
-	rx_profile->config.rmu_index = index;
-
-	return 0;
+	WRITE_ONCE(rx_profile->profile_common.state.enable, true);
+unlock:
+	spin_unlock(&hw->rmu_obj_lock);
+	if (index >= 0)
+		ida_free(&hw->rmu_index_table, index);
+	kfree(candidate);
+	return rc;
 }
 EXPORT_SYMBOL(cxi_rx_profile_enable);
 
@@ -221,17 +329,22 @@ void cxi_rx_profile_disable(struct cxi_dev *dev,
 			   struct cxi_rx_profile *rx_profile)
 {
 	struct cass_dev *hw = get_cass_dev(dev);
+	struct cxi_rx_profile_priv *rx_profile_priv;
+	struct cxi_rmu_obj *rmu_entry;
 
 	if (!rx_profile)
 		return;
 
-	if (!cxi_rx_profile_is_enabled(rx_profile))
-		return;
-
-	ida_free(&hw->rmu_index_table, rx_profile->config.rmu_index);
-	cass_invalidate_vni_list(hw, rx_profile->config.rmu_index);
-
-	rx_profile->profile_common.state.enable = false;
+	rx_profile_priv = container_of(rx_profile, struct cxi_rx_profile_priv,
+				       profile);
+	spin_lock(&hw->rmu_obj_lock);
+	if (cxi_rx_profile_is_enabled(rx_profile)) {
+		rmu_entry = rx_profile_priv->rmu_entry;
+		if (!--rmu_entry->enabled)
+			cass_invalidate_vni_list(hw, rmu_entry->index);
+		WRITE_ONCE(rx_profile->profile_common.state.enable, false);
+	}
+	spin_unlock(&hw->rmu_obj_lock);
 }
 EXPORT_SYMBOL(cxi_rx_profile_disable);
 
@@ -245,7 +358,7 @@ bool cxi_rx_profile_is_enabled(const struct cxi_rx_profile *rx_profile)
 	if (!rx_profile)
 		return false;
 
-	return rx_profile->profile_common.state.enable;
+	return READ_ONCE(rx_profile->profile_common.state.enable);
 }
 EXPORT_SYMBOL(cxi_rx_profile_is_enabled);
 
@@ -263,9 +376,10 @@ int cxi_dev_set_rx_profile_attr(struct cxi_dev *dev,
 				const struct cxi_rx_attr *rx_attr)
 {
 	struct cass_dev *hw = get_cass_dev(dev);
-
-	if (rx_profile->profile_common.state.enable)
-		return -EBUSY;
+	struct cxi_rxtx_profile requested = {
+		.vni_attr = rx_attr->vni_attr,
+	};
+	int rc;
 
 	if (!vni_well_formed(&rx_attr->vni_attr)) {
 		pr_debug("VNI not well formed match:%d ignore:%d\n",
@@ -273,12 +387,24 @@ int cxi_dev_set_rx_profile_attr(struct cxi_dev *dev,
 		return -EINVAL;
 	}
 
-	if (!unique_vni_space(hw, &hw->rx_profile_list, &rx_attr->vni_attr)) {
-		pr_debug("VNI not unique match:%d ignore:%d\n",
-			 rx_attr->vni_attr.match, rx_attr->vni_attr.ignore);
-		return -EINVAL;
+	cxi_rxtx_profile_list_lock(&hw->rx_profile_list);
+	spin_lock(&hw->rmu_obj_lock);
+	if (rx_profile->profile_common.state.enable ||
+	    refcount_read(&rx_profile->profile_common.state.refcount) != 1) {
+		rc = -EBUSY;
+		goto unlock_attr;
 	}
 
+	rc = cxi_rxtx_profile_list_iterate(&hw->rx_profile_list,
+					   vni_overlap_test, &requested);
+	if (rc) {
+		pr_debug("VNI not unique match:%d ignore:%d\n",
+			 rx_attr->vni_attr.match, rx_attr->vni_attr.ignore);
+		rc = -EINVAL;
+		goto unlock_attr;
+	}
+
+	rmu_obj_detach_locked(hw, rx_profile);
 	rx_profile->profile_common.vni_attr.match = rx_attr->vni_attr.match;
 	rx_profile->profile_common.vni_attr.ignore = rx_attr->vni_attr.ignore;
 
@@ -287,7 +413,10 @@ int cxi_dev_set_rx_profile_attr(struct cxi_dev *dev,
 			rx_attr->vni_attr.name,
 			ARRAY_SIZE(rx_attr->vni_attr.name));
 
-	return 0;
+unlock_attr:
+	spin_unlock(&hw->rmu_obj_lock);
+	cxi_rxtx_profile_list_unlock(&hw->rx_profile_list);
+	return rc;
 }
 EXPORT_SYMBOL(cxi_dev_set_rx_profile_attr);
 
@@ -304,6 +433,7 @@ struct cxi_rx_profile *cxi_dev_alloc_rx_profile(struct cxi_dev *dev,
 {
 	int                    ret = 0;
 	struct cass_dev        *hw = get_cass_dev(dev);
+	struct cxi_rx_profile_priv *rx_profile_priv;
 	struct cxi_rx_profile  *rx_profile;
 
 	if (!zero_vni(&rx_attr->vni_attr) &&
@@ -311,9 +441,10 @@ struct cxi_rx_profile *cxi_dev_alloc_rx_profile(struct cxi_dev *dev,
 		return ERR_PTR(-EDOM);
 
 	/* Allocate memory */
-	rx_profile = kzalloc(sizeof(*rx_profile), RX_PROFILE_GFP_OPTS);
-	if (!rx_profile)
+	rx_profile_priv = kzalloc(sizeof(*rx_profile_priv), RX_PROFILE_GFP_OPTS);
+	if (!rx_profile_priv)
 		return ERR_PTR(-ENOMEM);
+	rx_profile = &rx_profile_priv->profile;
 
 	/* initialize common profile and cassini config members */
 	rx_profile_init(rx_profile, hw, rx_attr);
@@ -351,7 +482,7 @@ unlock_free_return:
 	cxi_rxtx_profile_list_unlock(&hw->rx_profile_list);
 
 free_return:
-	kfree(rx_profile);
+	kfree(rx_profile_priv);
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL(cxi_dev_alloc_rx_profile);
@@ -380,7 +511,7 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 
 	cxi_rxtx_profile_list_lock(list);
 	xa_for_each(&list->xarray, index, profile) {
-		if (!profile->state.enable)
+		if (!READ_ONCE(profile->state.enable))
 			continue;
 
 		if ((vni & ~profile->vni_attr.ignore) == profile->vni_attr.match) {
@@ -392,12 +523,11 @@ struct cxi_rx_profile *cxi_dev_find_rx_profile(struct cxi_dev *dev,
 						&rx_profile->profile_common,
 						uid, gid, netns, CXI_AC_ANY,
 						&ac_entry_id);
-			if (!rc) {
-				refcount_inc(&profile->state.refcount);
-				break;
-			}
 
-			rx_profile = ERR_PTR(rc);
+			if (!rc && refcount_inc_not_zero(&profile->state.refcount))
+				break;
+
+			rx_profile = ERR_PTR(rc ? rc : -ENOENT);
 		}
 	}
 
@@ -479,22 +609,28 @@ int cxi_rx_profile_dec_refcount(struct cxi_dev *dev,
 				struct cxi_rx_profile *rx_profile)
 {
 	struct cass_dev *hw = get_cass_dev(dev);
+	struct cxi_rx_profile_priv *rx_profile_priv;
 	int    ret;
 
 	if (!rx_profile)
 		return 0;
+	rx_profile_priv = container_of(rx_profile, struct cxi_rx_profile_priv,
+				       profile);
 
 	ret = refcount_dec_and_test(&rx_profile->profile_common.state.refcount);
 	if (!ret)
 		return -EBUSY;
 
 	cxi_rx_profile_disable(dev, rx_profile);
+	spin_lock(&hw->rmu_obj_lock);
+	rmu_obj_detach_locked(hw, rx_profile);
+	spin_unlock(&hw->rmu_obj_lock);
 	cxi_rx_profile_remove_ac_entries(rx_profile);
 	refcount_dec(&hw->refcount);
 	cxi_rxtx_profile_list_remove(&hw->rx_profile_list,
 				     rx_profile->profile_common.id);
 
-	kfree(rx_profile);
+	kfree(rx_profile_priv);
 	return 0;
 }
 EXPORT_SYMBOL(cxi_rx_profile_dec_refcount);

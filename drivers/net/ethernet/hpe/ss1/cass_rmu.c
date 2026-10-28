@@ -99,6 +99,8 @@ int cxi_domain_reserve(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
 		return -EINVAL;
 
 	rx_profile = cxi_dev_find_rx_profile(cdev, vni);
+	if (IS_ERR(rx_profile))
+		return PTR_ERR(rx_profile);
 	if (!rx_profile)
 		return -ENOENT;
 
@@ -125,7 +127,7 @@ int cxi_domain_reserve(struct cxi_lni *lni, unsigned int vni, unsigned int pid,
 	return pid;
 
 clear_pids:
-	cxi_rx_profile_update_pid_table(rx_profile, pid, count, false);
+	cxi_rx_profile_update_pid_table(cdev, rx_profile, pid, count, false);
 put_rx_profile:
 	cxi_rx_profile_dec_refcount(cdev, rx_profile);
 
@@ -142,7 +144,7 @@ void cxi_domain_lni_cleanup(struct cxi_lni_priv *lni_priv)
 						struct cxi_reserved_pids,
 						entry))) {
 		list_del(&pids->entry);
-		cxi_rx_profile_andnot_pid_table(pids,
+		cxi_rx_profile_andnot_pid_table(lni_priv->dev, pids,
 						lni_priv->dev->prop.pid_count);
 		cxi_rx_profile_dec_refcount(lni_priv->dev, pids->rx_profile);
 		kfree(pids);
@@ -289,7 +291,7 @@ free_dom_id:
 free_domain:
 	kfree(domain_priv);
 free_pid:
-	cxi_rx_profile_update_pid_table(rx_profile, pid, 1, false);
+	cxi_rx_profile_update_pid_table(cdev, rx_profile, domain_pid, 1, false);
 put_rx_profile:
 	cxi_rx_profile_dec_refcount(cdev, rx_profile);
 
@@ -349,7 +351,7 @@ void cxi_domain_free(struct cxi_domain *domain)
 	rb_erase(&domain_priv->node, &hw->domain_tree);
 	spin_unlock(&hw->domain_lock);
 
-	cxi_rx_profile_update_pid_table(domain_priv->rx_profile,
+	cxi_rx_profile_update_pid_table(cdev, domain_priv->rx_profile,
 					domain->pid, 1, false);
 	cxi_rx_profile_dec_refcount(cdev, domain_priv->rx_profile);
 

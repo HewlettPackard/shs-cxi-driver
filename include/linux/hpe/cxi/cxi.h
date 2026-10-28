@@ -183,8 +183,6 @@ struct cxi_rxtx_profile {
 /* Struct to hold HW configuration */
 struct cxi_rx_config {
 	int rmu_index;
-	DECLARE_BITMAP(pid_table, 1 << MAX_PID_BITS);
-	spinlock_t pid_lock;
 };
 
 /* Struct for creation and listing */
