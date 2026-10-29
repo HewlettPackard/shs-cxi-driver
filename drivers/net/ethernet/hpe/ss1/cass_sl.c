@@ -429,23 +429,25 @@ void cass_sl_mode_set(struct cass_dev *cass_dev, const struct cxi_link_info *lin
 		break;
 	}
 
-	cxidev_dbg(&cass_dev->cdev, "sl mode set (ald = %u)\n",
-		   !!(link_info->flags & CXI_ETH_PF_ALD));
-	switch (link_info->flags & CXI_ETH_PF_ALD) {
-	case 0:
-		if (!(link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE))
+	if (!cass_version(cass_dev, CASSINI_2)) {
+		cxidev_dbg(&cass_dev->cdev, "sl mode set (ald = %u)\n",
+			   !!(link_info->flags & CXI_ETH_PF_ALD));
+		switch (link_info->flags & CXI_ETH_PF_ALD) {
+		case 0:
+			if (!(link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE))
+				break;
+			cxidev_dbg(&cass_dev->cdev, "sl mode set ald to no\n");
+			link_config->options &= ~SL_LINK_CONFIG_OPT_ALD_ENABLE;
+			is_mode_changed = true;
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set ald to no\n");
-		link_config->options &= ~SL_LINK_CONFIG_OPT_ALD_ENABLE;
-		is_mode_changed = true;
-		break;
-	case CXI_ETH_PF_ALD:
-		if (link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE)
+		case CXI_ETH_PF_ALD:
+			if (link_config->options & SL_LINK_CONFIG_OPT_ALD_ENABLE)
+				break;
+			cxidev_dbg(&cass_dev->cdev, "sl mode set ald to yes\n");
+			link_config->options |= SL_LINK_CONFIG_OPT_ALD_ENABLE;
+			is_mode_changed = true;
 			break;
-		cxidev_dbg(&cass_dev->cdev, "sl mode set ald to yes\n");
-		link_config->options |= SL_LINK_CONFIG_OPT_ALD_ENABLE;
-		is_mode_changed = true;
-		break;
+		}
 	}
 
 	/* if anything changed bounce the link */
@@ -467,6 +469,9 @@ void cass_sl_flags_set(struct cass_dev *cass_dev, u32 clr_flags, u32 set_flags)
 
 void cass_sl_pml_recovery_set(struct cass_dev *cass_dev, bool set)
 {
+	if (cass_version(cass_dev, CASSINI_2))
+		return;
+
 	cxidev_dbg(&cass_dev->cdev, "pml recovery set (set = %s)\n", set ? "enable" : "disable");
 
 	if (cass_dev->sl.link_config.options & SL_LINK_CONFIG_OPT_PML_REC_ENABLE) {
@@ -1037,8 +1042,7 @@ static void cass_sl_config_init(struct cass_dev *cass_dev)
 	cass_dev->sl.link_config.pml_rec_rate_limit_max_time_ms    = cass_sl_pml_rec_rate_limit_max_time_ms;
 	cass_dev->sl.link_config.pml_rec_rate_limit_window_size_ms = cass_sl_pml_rec_rate_limit_win_size_ms;
 	cass_dev->sl.link_config.pause_map                         = 0;
-	cass_dev->sl.link_config.options                           = SL_LINK_CONFIG_OPT_PML_REC_ENABLE |
-								     SL_LINK_CONFIG_OPT_ALD_ENABLE;
+	cass_dev->sl.link_config.options                           = 0;
 	cass_dev->sl.link_config.hpe_map                           = SL_LINK_CONFIG_HPE_C2;
 	cass_dev->sl.link_config.hpe_map                          |= SL_LINK_CONFIG_HPE_LINKTRAIN;
 	if (cass_dev->sl.enable_llr)
