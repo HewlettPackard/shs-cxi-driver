@@ -1580,6 +1580,11 @@ int cass_vf_init(struct cass_dev *hw)
 			    sizeof(addr), 0);
 	if (rc < 0) {
 		cxidev_err(&hw->cdev, "vf socket connect failed: %d", rc);
+		/* A failure here is likely due to the vsock device not being
+		 * ready yet. -EPROBE_DEFER tells the kernel to try probing this
+		 * device again later.
+		 */
+		rc = -EPROBE_DEFER;
 		goto release_vf_sock;
 	}
 

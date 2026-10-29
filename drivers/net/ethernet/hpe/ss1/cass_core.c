@@ -1483,6 +1483,9 @@ free_eth_mc_sw:
 hw_free:
 	kfree(hw);
 
+	if (rc == -EPROBE_DEFER)
+		return rc;
+
 	return -ENODEV;
 }
 
