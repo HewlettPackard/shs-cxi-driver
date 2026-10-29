@@ -979,6 +979,7 @@ int register_error_handlers(struct cass_dev *hw)
 	bitmask.pi_ipd_ext.ip_cfg_replay_timer_timeout_err_sts = 1;
 	bitmask.pi_ipd_ext.ip_cfg_replay_number_rollover_err_sts = 1;
 	bitmask.pi_ipd_ext.pri_rbyp_abort = 1;
+	bitmask.pi_ipd_ext.msix_disabled_error = 1;
 	bitmap_copy(sfs->no_print_mask.mask, bitmask.mask, sfs->bitlen);
 	cxi_disable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, bitmask.mask);
 
