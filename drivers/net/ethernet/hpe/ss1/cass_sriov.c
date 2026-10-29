@@ -1216,20 +1216,12 @@ static void sriov_pf_teardown(struct cass_dev *hw)
 static void disable_sriov(struct pci_dev *pdev)
 {
 	struct cass_dev *hw = pci_get_drvdata(pdev);
-	union err_flags f = {
-		.pi_ipd_ext.msix_disabled_error = 1,
-	};
 	bool registered;
 
 	/* Wait out proofs, but keep sessions up: VF removal needs them. */
 	registered = sriov_pf_quiesce(hw);
 
-	/* Hardware raises a spurious pi_ipd_ext.msix_disabled_error when
-	 * disabling VFs. Temporarily disable this interrupt during teardown
-	 */
-	cxi_disable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
 	pci_disable_sriov(pdev);
-	cxi_enable_hw_errors(hw, C_PI_IPD_IRQA_MSIX_INT, true, f.mask);
 
 	if (registered)
 		sriov_pf_teardown(hw);
