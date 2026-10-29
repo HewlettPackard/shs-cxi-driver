@@ -704,6 +704,13 @@ static int mc_sw_rxfout_thread(void *data)
 				goto free_item;
 			}
 
+			/* Complete the checksum before fanning out to the VFs. */
+			if (skb->ip_summed == CHECKSUM_PARTIAL &&
+			    skb_checksum_help(skb)) {
+				atomic64_inc(&state->rx_fanout_drop);
+				goto free_item;
+			}
+
 			if (unlikely(!pskb_may_pull(skb, ETH_HLEN)) ||
 			    !skb_mac_header_was_set(skb)) {
 				atomic64_inc(&state->rx_fanout_drop);
@@ -1303,6 +1310,13 @@ static int mc_sw_txfwd_thread(void *data)
 			int rc;
 
 			if (!skb) {
+				atomic64_inc(&state->tx_fwd_drop);
+				goto free_item;
+			}
+
+			/* Complete the checksum before it is sent to the PF. */
+			if (skb->ip_summed == CHECKSUM_PARTIAL &&
+			    skb_checksum_help(skb)) {
 				atomic64_inc(&state->tx_fwd_drop);
 				goto free_item;
 			}
