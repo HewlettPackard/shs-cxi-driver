@@ -184,6 +184,7 @@ struct cxi_md_priv *cass_device_md(struct cxi_lni_priv *lni_priv, u64 va,
 	m_opts.md_priv = md_priv;
 	cass_align_start_len(&m_opts, va, len, m_opts.page_shift);
 
+	md_priv->dmabuf_fd = INVALID_DMABUF_FD;
 	md_priv->lni_priv = lni_priv;
 	md_priv->md.va = m_opts.va_start;
 	md_priv->md.len = m_opts.va_len;
