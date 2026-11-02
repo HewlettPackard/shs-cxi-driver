@@ -1426,6 +1426,7 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 	size_t inc;
 	struct scatterlist *sg;
 	u64 iova = md_priv->md.iova;
+	size_t md_len = md_priv->md.len;
 	struct cass_ac *cac = md_priv->cac;
 	size_t plen = BIT(cac->page_shift);
 	size_t hlen = BIT(cac->huge_shift);
@@ -1440,10 +1441,11 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 
 		atu_debug("dma_addr:%llx len:%lx\n", dma_addr, len);
 
-		while (len > 0) {
+		while (len > 0 && md_len > 0) {
 			is_huge_page = is_huge_page &&
 					ffsl(dma_addr) >= cac->huge_shift &&
 					ffsl(iova) >= cac->huge_shift &&
+					md_len >= hlen &&
 					len >= hlen;
 			inc = is_huge_page ? hlen : plen;
 
@@ -1457,6 +1459,7 @@ int cass_mirror_device(struct cxi_md_priv *md_priv,
 			iova += inc;
 			dma_addr += inc;
 			len -= inc;
+			md_len -= inc;
 			i += KPFN_INC(cac, is_huge_page);
 		}
 	}
