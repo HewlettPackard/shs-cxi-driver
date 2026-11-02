@@ -41,8 +41,19 @@ do {						\
 static void cxi_dma_buf_move_notify(struct dma_buf_attachment *attach)
 {
 	struct cxi_md_priv *md_priv = attach->importer_priv;
-	struct cass_ac *cac = md_priv->cac;
+	struct cass_ac *cac;
 
+	/* TODO: If a gpu backed CQ buffer is moved or freed, we could possibly
+	 * get this callback. The application may have just aborted. When the
+	 * gpu drivers support moving pages we will need to reinit the CQ.
+	 * A CQ md_priv does not have a cac. For now just report and return.
+	 */
+	if (!md_priv->cac) {
+		pr_warn("Device CQ buffer has been moved/freed\n");
+		return;
+	}
+
+	cac = md_priv->cac;
 	DMABUF_MD_ERROR(md_priv, "DMA buf move notify not supported\n");
 
 	/* TODO: Properly support move_notify by taking DMA resv lock and
