@@ -8,9 +8,9 @@
 #include <linux/hpe/cxi/cxi.h>
 #include <sbl/sbl_mb.h>
 #include <linux/hpe/sbl/sbl.h>
-#include <ethernet/sbl-abi.h>
-#include <ethernet/sbl_serdes.h>
-#include <ethernet/sbl_cassini.h>
+#include <uapi/ethernet/sbl-abi.h>
+#include <uapi/ethernet/sbl_serdes.h>
+#include <uapi/ethernet/sbl_cassini.h>
 
 #include "cass_core.h"
 #include "cass_cable.h"
