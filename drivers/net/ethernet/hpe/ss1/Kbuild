@@ -79,7 +79,6 @@ SL_DIR                  ?= $(src)/../../../../../../sl-driver/staging_dir/usr/in
 INCLUDE_DIRS =  $(src) \
                 $(src)/../../../../../include \
                 $(SLINGSHOT_BASE_LINK_DIR) \
-                $(SLINGSHOT_BASE_LINK_DIR)/uapi \
                 $(SL_DIR) \
                 $(CASSINI_HEADERS_DIR) \
                 $(FIRMWARE_CASSINI_DIR_CASUC) \
