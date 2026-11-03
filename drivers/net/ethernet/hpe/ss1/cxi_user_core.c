@@ -37,19 +37,6 @@ static int free_cp_obj(int id, void *obj_, void *data);
 static int free_svc_obj(int id, void *obj_, void *data);
 static int free_rmu_eth_obj(int id, void *obj_, void *data);
 
-#ifdef CONFIG_ARM64
-/* Provide a workaround for avoiding writecombine on platforms where it is broken
- * and for which the Linux kernel does not already provide a workaround, such as the
- * Ampere Altra, used in the RL300.
- */
-DEFINE_STATIC_KEY_FALSE(avoid_writecombine);
-
-static const struct pci_device_id ampere_altra[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_AMPERE, 0xe100) },
-	{ },
-};
-#endif
-
 /* /dev entries. Allow for up to 256 devices, which includes SRVIO
  * devices.
  */
@@ -1885,6 +1872,9 @@ static int cxi_user_cq_alloc_buf(struct user_client *client,
 		resp.wp_addr = mminfo[0].mminfo;
 		mminfo[0].obj = obj;
 		mminfo[0].wc = true;
+		mminfo[0].avoid_wc = srcu_dereference(client->ucxi->dev,
+						      &client->ucxi->srcu)->quirks &
+				     CXI_PLATFORM_QUIRK_AVOID_WC;
 
 		if (!opts_b.buf) {
 			fill_mmap_info(client, &mminfo[1], (uintptr_t)queue_pages,
@@ -3889,6 +3879,20 @@ out:
 	return rc;
 }
 
+static int cxi_user_platform_quirks_get(struct user_client *client,
+					const void *cmd_in, size_t cmd_len,
+					void **resp_out, size_t resp_buf_size,
+					size_t *resp_out_len)
+{
+	struct cxi_platform_quirks_resp resp = {
+		.quirks = srcu_dereference(client->ucxi->dev,
+					  &client->ucxi->srcu)->quirks,
+	};
+
+	return copy_response(client, &resp, sizeof(resp), resp_out,
+			     resp_buf_size, resp_out_len);
+}
+
 static int cxi_user_query_version(struct user_client *client,
 				  const void *cmd_in, size_t cmd_len,
 				  void **resp_out, size_t resp_buf_size,
@@ -4287,6 +4291,10 @@ static const struct cmd_info cmds_info[CXI_OP_MAX] = {
 		.req_size   = sizeof(struct cxi_eq_adjust_reserved_fc_v2_cmd),
 		.name       = "EQ_ADJUST_RESERVED_FC_V2",
 		.handler    = cxi_user_eq_adjust_reserved_fc, },
+	[CXI_OP_PLATFORM_QUIRKS_GET] = {
+		.req_size   = sizeof(struct cxi_platform_quirks_cmd),
+		.name       = "PLATFORM_QUIRKS_GET",
+		.handler    = cxi_user_platform_quirks_get, },
 };
 
 union cxi_compat_cmd {
@@ -5176,11 +5184,6 @@ static int __init init(void)
 		pr_err("Couldn't register client\n");
 		goto cl_unreg;
 	}
-
-#ifdef CONFIG_ARM64
-	if (pci_dev_present(ampere_altra))
-		static_branch_enable(&avoid_writecombine);
-#endif
 
 	return 0;
 

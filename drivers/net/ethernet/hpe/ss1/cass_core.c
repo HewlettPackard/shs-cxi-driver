@@ -585,6 +585,73 @@ int cxi_get_dev_properties(struct cxi_dev *cdev, struct cxi_properties_info *pro
 }
 EXPORT_SYMBOL(cxi_get_dev_properties);
 
+#ifdef CONFIG_ARM64
+/* Ampere Altra (RL300) has broken PCIe write-combine, and the kernel does not
+ * always provide a workaround.
+ */
+static const struct pci_device_id ampere_altra[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMPERE, 0xe100) },
+	{ },
+};
+#endif
+
+static bool force_avoid_writecombine;
+module_param(force_avoid_writecombine, bool, 0444);
+MODULE_PARM_DESC(force_avoid_writecombine,
+		 "Avoid write-combine mappings of CQ MMIO (e.g. Ampere Altra host seen from a VM)");
+
+/**
+ * cxi_get_platform_quirks - Get the platform quirks from the PF.
+ * @hw: Cassini device (VF)
+ *
+ * A VF cannot see the host bridge, so it takes the quirks of its PF.
+ */
+static int cxi_get_platform_quirks(struct cass_dev *hw)
+{
+	const struct cxi_platform_quirks_cmd cmd = {
+		.op = CXI_OP_PLATFORM_QUIRKS_GET,
+	};
+	struct cxi_platform_quirks_resp resp = {};
+	size_t resp_len = sizeof(resp);
+	int rc;
+
+	rc = cxi_send_msg_to_pf(&hw->cdev, &cmd, sizeof(cmd), &resp, &resp_len);
+	if (rc) {
+		cxidev_err(&hw->cdev, "failed to get platform quirks from PF: %d\n", rc);
+		return rc;
+	}
+
+	if (resp_len != sizeof(resp)) {
+		cxidev_err(&hw->cdev, "unexpected platform quirks reply length: %zu\n",
+			   resp_len);
+		return -EIO;
+	}
+
+	hw->cdev.quirks = resp.quirks;
+
+	if (hw->cdev.quirks & CXI_PLATFORM_QUIRK_AVOID_WC)
+		cxidev_info(&hw->cdev, "avoiding write-combine for CQ MMIO\n");
+
+	return 0;
+}
+
+/* Detect the quirks of the host the PF is running on. */
+static void cass_platform_quirks_init(struct cass_dev *hw)
+{
+	hw->cdev.quirks = 0;
+
+	if (force_avoid_writecombine)
+		hw->cdev.quirks |= CXI_PLATFORM_QUIRK_AVOID_WC;
+
+#ifdef CONFIG_ARM64
+	if (pci_dev_present(ampere_altra))
+		hw->cdev.quirks |= CXI_PLATFORM_QUIRK_AVOID_WC;
+#endif
+
+	if (hw->cdev.quirks & CXI_PLATFORM_QUIRK_AVOID_WC)
+		cxidev_info(&hw->cdev, "avoiding write-combine for CQ MMIO\n");
+}
+
 void cxi_set_nid(struct cxi_dev *cdev, u32 nid)
 {
 	struct cass_dev *hw = container_of(cdev, struct cass_dev, cdev);
@@ -1378,7 +1445,13 @@ static int cass_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (rc)
 		goto svc_fini;
 
-	if (!is_physfn) {
+	if (is_physfn) {
+		cass_platform_quirks_init(hw);
+	} else {
+		rc = cxi_get_platform_quirks(hw);
+		if (rc)
+			goto svc_fini;
+
 		rc = cxi_get_properties_vf(&hw->cdev, &hw->cdev.prop);
 		if (rc)
 			goto svc_fini;
