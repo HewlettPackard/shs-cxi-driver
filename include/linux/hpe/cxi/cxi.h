@@ -59,6 +59,9 @@ struct cxi_dev {
 
 	struct cxi_properties_info prop;
 
+	/* CXI_PLATFORM_QUIRK_* bits; a VF gets them from its PF. */
+	u32 quirks;
+
 	/* System info (mix or homogeneous) */
 	enum system_type_identifier system_type_identifier;
 };

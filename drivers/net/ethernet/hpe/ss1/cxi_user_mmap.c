@@ -124,10 +124,10 @@ found_it:
 	case MMAP_PHYSICAL:
 		if (ip->wc)
 #ifdef CONFIG_ARM64
-			if (static_branch_unlikely(&avoid_writecombine)) {
+			if (ip->avoid_wc) {
 				vma->vm_page_prot =
 					pgprot_device(vma->vm_page_prot);
-				pr_warn("Broken PCIe write-combine detected on this platform, LL_RING will use slow workaround and should be avoided in userspace.");
+				pr_warn_once("Broken PCIe write-combine detected on this platform, LL_RING will use slow workaround and should be avoided in userspace.\n");
 			} else
 #endif
 			vma->vm_page_prot =

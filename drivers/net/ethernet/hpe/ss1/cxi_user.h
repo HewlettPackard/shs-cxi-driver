@@ -13,10 +13,6 @@
 /* Size of the biggest command */
 #define MAX_REQ_SIZE 22432
 
-#ifdef CONFIG_ARM64
-extern struct static_key_false avoid_writecombine;
-#endif
-
 /* Keep track of known devices. Protected by dev_list_mutex. There is
  * one instance per Cassini device.
  */
@@ -186,6 +182,9 @@ struct cxi_mmap_info {
 	};
 
 	bool wc;
+
+	/* Map with Device attributes instead of write-combine. */
+	bool avoid_wc;
 
 	/*
 	 * The start and end vm addresses from struct vm_area_struct to

@@ -158,6 +158,8 @@ enum cxi_command_opcode {
 		CXI_OP_LNI_ALLOC_V2,
 		CXI_OP_EQ_ADJUST_RESERVED_FC_V2,
 
+		CXI_OP_PLATFORM_QUIRKS_GET,
+
 		CXI_OP_MAX,
 };
 
@@ -1669,6 +1671,18 @@ struct cxi_query_version_cmd {
 
 struct cxi_query_version_resp {
 	unsigned int version;
+};
+
+/* Host platform quirks the PF reports to VFs, which cannot detect them. */
+#define CXI_PLATFORM_QUIRK_AVOID_WC	(1U << 0)
+
+struct cxi_platform_quirks_cmd {
+	enum cxi_command_opcode op;
+	void __user *resp;
+};
+
+struct cxi_platform_quirks_resp {
+	__u32 quirks;
 };
 
 #define CXIERR_GENL_FAMILY_NAME "cxierr"

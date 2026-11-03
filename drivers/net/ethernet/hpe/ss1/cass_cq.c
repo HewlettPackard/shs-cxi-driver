@@ -14,19 +14,6 @@
 #include "cass_ss1_debugfs.h"
 #include "cxi_vf_cmd.h"
 
-#ifdef CONFIG_ARM64
-/* Provide a workaround for avoiding writecombine on platforms where it is broken
- * and for which the Linux kernel does not already provide a workaround, such as the
- * Ampere Altra, used in the RL300.
- */
-DEFINE_STATIC_KEY_FALSE(avoid_writecombine);
-
-static const struct pci_device_id ampere_altra[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_AMPERE, 0xe100) },
-	{ },
-};
-#endif
-
 /* Lower bound for number of 64 byte commands. */
 #define MIN_CQ_COUNT (PAGE_SIZE / C_CQ_CMD_SIZE)
 
@@ -63,11 +50,6 @@ void cass_cq_init(struct cass_dev *hw)
 
 	/* Zero FQ allocation settings. */
 	cass_clear(hw, C_CQ_CFG_FQ_RESRV(0), C_CQ_CFG_FQ_RESRV_SIZE);
-
-#ifdef CONFIG_ARM64
-	if (pci_dev_present(ampere_altra))
-		static_branch_enable(&avoid_writecombine);
-#endif
 }
 
 static phys_addr_t
@@ -638,12 +620,11 @@ static struct cxi_cq *cxi_cq_alloc_buf_vf(struct cxi_lni *lni, struct cxi_eq *ev
 
 	if (!is_user) {
 		phys_addr_t mmio_phys = cq_mmio_phys_addr(hw, resp.cq);
-#ifdef CONFIG_ARM64
-		if (static_branch_unlikely(&avoid_writecombine))
+
+		if (cdev->quirks & CXI_PLATFORM_QUIRK_AVOID_WC)
 			cq->cq_mmio = ioremap(mmio_phys, PAGE_SIZE);
 		else
-#endif
-		cq->cq_mmio = ioremap_wc(mmio_phys, PAGE_SIZE);
+			cq->cq_mmio = ioremap_wc(mmio_phys, PAGE_SIZE);
 		if (!cq->cq_mmio) {
 			cxidev_warn_once(cdev, "ioremap_wc failed\n");
 			rc = -EFAULT;
@@ -847,12 +828,11 @@ struct cxi_cq *cxi_cq_alloc_buf_internal(struct cxi_lni *lni, struct cxi_eq *evt
 
 	if (!is_user && !lni_priv->is_vf) {
 		phys_addr_t mmio_phys = cq_mmio_phys_addr(hw, cq_idx);
-#ifdef CONFIG_ARM64
-		if (static_branch_unlikely(&avoid_writecombine))
+
+		if (cdev->quirks & CXI_PLATFORM_QUIRK_AVOID_WC)
 			cq->cq_mmio = ioremap(mmio_phys, PAGE_SIZE);
 		else
-#endif
-		cq->cq_mmio = ioremap_wc(mmio_phys, PAGE_SIZE);
+			cq->cq_mmio = ioremap_wc(mmio_phys, PAGE_SIZE);
 		if (!cq->cq_mmio) {
 			cxidev_warn_once(cdev, "ioremap_wc failed\n");
 			rc = -EFAULT;
