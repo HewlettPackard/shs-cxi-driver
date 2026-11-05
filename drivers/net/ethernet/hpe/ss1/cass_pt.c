@@ -999,38 +999,56 @@ static int cxi_pte_status_vf(struct cxi_pte *pt,
 		},
 		.status = *status,
 	};
-	struct cxi_pte_status_resp resp = {};
-	size_t resp_size = sizeof(resp);
+	u64 __user *ule_offsets = status->ule_offsets;
+	size_t cap = ule_offsets ? status->ule_count : 0;
+	struct cxi_pte_status_resp_vf *resp;
+	size_t resp_size = sizeof(*resp) + cap * sizeof(u64);
+	size_t n;
 	int rc;
 
-	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), &resp, &resp_size);
-	if (rc)
-		return rc;
+	resp = kvzalloc(resp_size, GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
 
-	*status = resp.status;
-	return 0;
+	rc = cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), resp, &resp_size);
+	if (rc)
+		goto out;
+
+	n = min_t(size_t, cap, resp->base.status.ule_count);
+	if (resp_size < sizeof(*resp) + n * sizeof(u64)) {
+		rc = -EPROTO;
+		goto out;
+	}
+
+	if (n && copy_to_user(ule_offsets, resp->ule_offsets,
+			      n * sizeof(u64))) {
+		rc = -EFAULT;
+		goto out;
+	}
+
+	*status = resp->base.status;
+	status->ule_offsets = ule_offsets;
+out:
+	kvfree(resp);
+	return rc;
 }
 
 #define ULE_START_OFFSET 24
 
 /**
- * cxi_pte_status() - Return collection of PTE stats
+ * cxi_pte_status_internal() - PF PTE status, ULE offsets into a kernel buffer
  *
  * @pt: Portal table entry.
- * @status: Pointer to struct where PTE stats will be written
+ * @status: Pointer to struct where PTE stats will be written. ule_count is the
+ *          capacity of @ule_offsets on input; status->ule_offsets is ignored.
+ * @walk_ule: Walk the unexpected list.
+ * @ule_offsets: Kernel buffer for up to status->ule_count offsets. May be NULL
+ *               if status->ule_count is 0.
  *
- * status->ule_offsets and status->ule_count are used as inputs. ule_offsets
- * is an array where ULE information is stored on output. ule_count is the
- * size in entries of ule_offsets.
- *
- * If ule_offsets is set, the PTE unexpected list is walked. The remote
- * offset field of each ULE is written into ule_offsets (if space is
- * available). The total number of ULEs found is returned in ule_count. If
- * ule_offsets is unset, the Unexpected list walk is skipped. This interface
- * is used to query ULE remote offset information needed for Rendezvous Puts
- * that are dequeued using a SearchAndDelete command.
+ * The total number of ULEs found is returned in status->ule_count.
  */
-int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
+int cxi_pte_status_internal(struct cxi_pte *pt, struct cxi_pte_status *status,
+			    bool walk_ule, u64 *ule_offsets)
 {
 	struct cxi_pte_priv *pt_priv =
 		container_of(pt, struct cxi_pte_priv, pte);
@@ -1042,9 +1060,6 @@ int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
 	union c_lpe_sts_pe_le_alloc le_alloc;
 	size_t ule_count = 0;
 	unsigned int idx;
-
-	if (!cdev->is_physfn)
-		return cxi_pte_status_vf(pt, status);
 
 	spin_lock(&hw->lpe_shadow_lock);
 	cass_read_pte(hw, pt_priv->pte.id, &ptl_table);
@@ -1064,21 +1079,11 @@ int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
 	status->les_allocated = le_alloc.num_allocated;
 	ule_list = ptl_table.l[C_PTL_LIST_UNEXPECTED];
 
-	if (status->ule_offsets && ule_list.list_vld) {
+	if (walk_ule && ule_list.list_vld) {
 		unsigned int le_idx = ule_list.head;
 		u64 ule_offset;
 		struct c_ule_entry ule;
 		void *ule_ptr = (void *)&ule + ULE_START_OFFSET;
-
-#if KERNEL_VERSION(4, 18, 0) > LINUX_VERSION_CODE
-		if (!user_access_begin(VERIFY_WRITE, status->ule_offsets,
-				       status->ule_count * sizeof(u64)))
-			return -EFAULT;
-#else
-		if (!user_access_begin(status->ule_offsets,
-				       status->ule_count * sizeof(u64)))
-			return -EFAULT;
-#endif
 
 		while (true) {
 			/* Read only the last 3 QWs of the ULE */
@@ -1089,13 +1094,8 @@ int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
 			cass_read(hw, ule_offset, ule_ptr,
 				  sizeof(ule) - ULE_START_OFFSET);
 
-			if (ule_count < status->ule_count) {
-				u64 offset = ule.start_or_offset;
-
-				unsafe_put_user(offset,
-						&status->ule_offsets[ule_count],
-						err_put_user);
-			}
+			if (ule_count < status->ule_count)
+				ule_offsets[ule_count] = ule.start_or_offset;
 			ule_count++;
 
 			if (ule.vld) {
@@ -1105,19 +1105,64 @@ int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
 				break;
 			}
 		}
-
-		user_access_end();
 	}
 
 	/* Return the real number of ULEs */
 	status->ule_count = ule_count;
 
 	return 0;
+}
+EXPORT_SYMBOL(cxi_pte_status_internal);
 
-err_put_user:
-	user_access_end();
+/**
+ * cxi_pte_status() - Return collection of PTE stats
+ *
+ * @pt: Portal table entry.
+ * @status: Pointer to struct where PTE stats will be written
+ *
+ * status->ule_offsets and status->ule_count are used as inputs. ule_offsets
+ * is a user array where ULE information is stored on output. ule_count is the
+ * size in entries of ule_offsets.
+ *
+ * If ule_offsets is set, the PTE unexpected list is walked. The remote
+ * offset field of each ULE is written into ule_offsets (if space is
+ * available). The total number of ULEs found is returned in ule_count. If
+ * ule_offsets is unset, the Unexpected list walk is skipped. This interface
+ * is used to query ULE remote offset information needed for Rendezvous Puts
+ * that are dequeued using a SearchAndDelete command.
+ */
+int cxi_pte_status(struct cxi_pte *pt, struct cxi_pte_status *status)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_dev *cdev = pt_priv->lni_priv->dev;
+	size_t cap = status->ule_count;
+	u64 *kbuf = NULL;
+	int rc;
 
-	return -EFAULT;
+	if (!cdev->is_physfn)
+		return cxi_pte_status_vf(pt, status);
+
+	if (status->ule_offsets && cap) {
+		kbuf = kvmalloc_array(cap, sizeof(u64), GFP_KERNEL);
+		if (!kbuf)
+			return -ENOMEM;
+	}
+
+	rc = cxi_pte_status_internal(pt, status, !!status->ule_offsets, kbuf);
+	if (rc)
+		goto out;
+
+	if (kbuf) {
+		size_t n = min_t(size_t, cap, status->ule_count);
+
+		if (n && copy_to_user(status->ule_offsets, kbuf,
+				      n * sizeof(u64)))
+			rc = -EFAULT;
+	}
+out:
+	kvfree(kbuf);
+	return rc;
 }
 EXPORT_SYMBOL(cxi_pte_status);
 

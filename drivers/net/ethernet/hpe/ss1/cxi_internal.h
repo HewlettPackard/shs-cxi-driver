@@ -68,5 +68,7 @@ struct cxi_md *cxi_map_sgtable_internal(struct cxi_lni *lni,
 					struct sg_table *sgt, u32 flags,
 					const struct cxi_md_hints *hints,
 					size_t map_len);
+int cxi_pte_status_internal(struct cxi_pte *pt, struct cxi_pte_status *status,
+			    bool walk_ule, u64 *ule_offsets);
 
 #endif /* _CXI_INTERNAL_H */
