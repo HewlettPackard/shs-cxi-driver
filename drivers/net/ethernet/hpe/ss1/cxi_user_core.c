@@ -3272,17 +3272,77 @@ static int cxi_user_pte_le_invalidate(struct user_client *client,
 	return 0;
 }
 
+static int cxi_user_pte_status_vf(struct user_client *client,
+				  const void *cmd_in, size_t cmd_len,
+				  void **resp_out, size_t resp_buf_size,
+				  size_t *resp_out_len)
+{
+	const struct cxi_pte_status_cmd_vf *cmd = cmd_in;
+	struct cxi_pte_status_resp_vf *resp;
+	struct cxi_pte_status status = cmd->status;
+	bool walk_ule = !!status.ule_offsets;
+	size_t cap = walk_ule ? status.ule_count : 0;
+	struct ucxi_obj *pte_obj;
+	size_t resp_len;
+	int rc;
+
+	/* The offsets pointer belongs to the VF's address space. */
+	status.ule_offsets = NULL;
+
+	resp = kvzalloc(sizeof(*resp) + cap * sizeof(u64), GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
+
+	/* Take reference to prevent PtlTE from disappearing during cleanup. */
+	write_lock(&client->res_lock);
+	pte_obj = idr_find(&client->pte_idr, cmd->base.pte_index);
+	if (!pte_obj) {
+		write_unlock(&client->res_lock);
+		rc = -EINVAL;
+		goto free_resp;
+	}
+	atomic_inc(&pte_obj->refs);
+	write_unlock(&client->res_lock);
+
+	rc = cxi_pte_status_internal(pte_obj->pte, &status, walk_ule,
+				     resp->ule_offsets);
+
+	atomic_dec(&pte_obj->refs);
+
+	if (rc)
+		goto free_resp;
+
+	resp->base.status = status;
+	resp_len = sizeof(*resp) +
+		   min_t(size_t, cap, status.ule_count) * sizeof(u64);
+
+	if (copy_response(client, resp, resp_len, resp_out, resp_buf_size,
+			  resp_out_len))
+		rc = -EFAULT;
+
+free_resp:
+	kvfree(resp);
+	return rc;
+}
+
 static int cxi_user_pte_status(struct user_client *client,
 			       const void *cmd_in, size_t cmd_len,
 			       void **resp_out, size_t resp_buf_size,
 			       size_t *resp_out_len)
 {
 	const struct cxi_pte_status_cmd *cmd = cmd_in;
-	const struct cxi_pte_status_cmd_vf *cmd_vf = cmd_in;
 	struct cxi_pte_status_resp resp = {};
 	struct cxi_pte_status status = {};
 	struct ucxi_obj *pte_obj;
 	int rc;
+
+	if (client->is_vf)
+		return cxi_user_pte_status_vf(client, cmd_in, cmd_len, resp_out,
+					      resp_buf_size, resp_out_len);
+
+	/* Response fields are also used for input */
+	if (copy_from_user(&status, cmd->resp, sizeof(status)))
+		return -EFAULT;
 
 	/* Take reference to prevent PtlTE from disappearing during cleanup. */
 	write_lock(&client->res_lock);
@@ -3293,14 +3353,6 @@ static int cxi_user_pte_status(struct user_client *client,
 	}
 	atomic_inc(&pte_obj->refs);
 	write_unlock(&client->res_lock);
-
-	/* Response fields are also used for input */
-	if (client->is_vf) {
-		status = cmd_vf->status;
-	} else {
-		if (copy_from_user(&status, cmd->resp, sizeof(status)))
-			return -EFAULT;
-	}
 
 	rc = cxi_pte_status(pte_obj->pte, &status);
 

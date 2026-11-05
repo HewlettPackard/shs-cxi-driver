@@ -51,7 +51,15 @@ struct cxi_eq_resize_cmd_vf {
 
 struct cxi_pte_status_cmd_vf {
 	struct cxi_pte_status_cmd base;
+	/* status.ule_offsets is only a "walk the ULE list" flag; the PF never
+	 * dereferences it.
+	 */
 	struct cxi_pte_status status;
+};
+
+struct cxi_pte_status_resp_vf {
+	struct cxi_pte_status_resp base;
+	u64 ule_offsets[];
 };
 
 struct cxi_svc_alloc_cmd_vf {
