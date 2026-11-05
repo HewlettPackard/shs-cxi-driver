@@ -1166,6 +1166,22 @@ out:
 }
 EXPORT_SYMBOL(cxi_pte_status);
 
+static int cxi_pte_transition_sm_vf(struct cxi_pte *pt,
+				    unsigned int drop_count)
+{
+	struct cxi_pte_priv *pt_priv =
+		container_of(pt, struct cxi_pte_priv, pte);
+	struct cxi_dev *cdev = pt_priv->lni_priv->dev;
+	const struct cxi_pte_transition_sm_cmd cmd = {
+		.op = CXI_OP_PTE_TRANSITION_SM,
+		.pte_index = pt->id,
+		.drop_count = drop_count,
+	};
+	size_t resp_len = 0;
+
+	return cxi_send_msg_to_pf(cdev, &cmd, sizeof(cmd), NULL, &resp_len);
+}
+
 /**
  * cxi_pte_transition_sm() - Transition a disabled PTE to software managed.
  *
@@ -1199,7 +1215,7 @@ int cxi_pte_transition_sm(struct cxi_pte *pt, unsigned int drop_count)
 	int ret;
 
 	if (!cdev->is_physfn)
-		return -EOPNOTSUPP;
+		return cxi_pte_transition_sm_vf(pt, drop_count);
 
 	spin_lock(&hw->lpe_shadow_lock);
 	cass_read_pte(hw, pt_priv->pte.id, &ptl_table);
