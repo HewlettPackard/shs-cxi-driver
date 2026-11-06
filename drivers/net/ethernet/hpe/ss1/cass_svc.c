@@ -1330,14 +1330,17 @@ static int cxi_svc_destroy_vf(struct cxi_dev *dev, u32 svc_id)
 }
 
 /**
- * cxi_svc_destroy() - Destroy a service
+ * cxi_svc_destroy_internal() - Destroy a service with optional VF ownership check
  *
  * @dev: Cassini Device
  * @svc_id: Service ID of service to be destroyed.
+ * @vf_en: when true, only destroy a service owned by @vf_num
+ * @vf_num: VF number filter (only meaningful when @vf_en is true)
  *
  * Return: 0 on success. Else a negative errno value.
  */
-int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
+int cxi_svc_destroy_internal(struct cxi_dev *dev, u32 svc_id, bool vf_en,
+			     u8 vf_num)
 {
 	struct cass_dev *hw = container_of(dev, struct cass_dev, cdev);
 	struct cxi_svc_priv *svc_priv;
@@ -1356,6 +1359,20 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 	if (!svc_priv) {
 		mutex_unlock(&hw->svc_lock);
 		return -EINVAL;
+	}
+
+	/* A VF's local ID map only ever holds services that VF owns. */
+	if (vf_en && WARN_ON_ONCE(!svc_priv->is_vf ||
+				  svc_priv->vf_num != vf_num)) {
+		mutex_unlock(&hw->svc_lock);
+		return -EINVAL;
+	}
+
+	if (!vf_en && svc_priv->is_vf) {
+		cxidev_warn(dev, "Refused to destroy service %u owned by VF %u; unbind the VF instead\n",
+			    svc_id, svc_priv->vf_num);
+		mutex_unlock(&hw->svc_lock);
+		return -EPERM;
 	}
 
 	/* Don't delete if an LNI is still using this SVC */
@@ -1380,6 +1397,20 @@ int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
 	mutex_unlock(&hw->svc_lock);
 
 	return 0;
+}
+EXPORT_SYMBOL(cxi_svc_destroy_internal);
+
+/**
+ * cxi_svc_destroy() - Destroy a service
+ *
+ * @dev: Cassini Device
+ * @svc_id: Service ID of service to be destroyed.
+ *
+ * Return: 0 on success. Else a negative errno value.
+ */
+int cxi_svc_destroy(struct cxi_dev *dev, u32 svc_id)
+{
+	return cxi_svc_destroy_internal(dev, svc_id, false, 0);
 }
 EXPORT_SYMBOL(cxi_svc_destroy);
 
@@ -1870,7 +1901,8 @@ int cxi_svc_get_internal(struct cxi_dev *dev, unsigned int svc_id,
 	mutex_lock(&hw->svc_lock);
 
 	svc_priv = idr_find(&hw->svc_ids, svc_id);
-	if (!svc_priv) {
+	if (!svc_priv || (vf_en && (!svc_priv->is_vf ||
+				    svc_priv->vf_num != vf_num))) {
 		mutex_unlock(&hw->svc_lock);
 		return -EINVAL;
 	}

@@ -851,10 +851,19 @@ static int test_vf_child_policy(struct cxi_dev *dev)
 		goto out;
 	}
 
+	/* The PF must not be able to destroy a VF-owned service. */
+	rc = cxi_svc_destroy(dev, child_id);
+	if (rc != -EPERM) {
+		test_err("PF destroy of VF child returned %d\n", rc);
+		rc = -EINVAL;
+		goto out;
+	}
+
 	rc = 0;
 out:
 	if (child_id >= 0) {
-		int destroy_rc = cxi_svc_destroy(dev, child_id);
+		int destroy_rc = cxi_svc_destroy_internal(dev, child_id, true,
+							  vf_num);
 
 		if (!rc && destroy_rc)
 			rc = destroy_rc;
@@ -1042,7 +1051,7 @@ out:
 		cxi_lni_free(lni);
 
 	if (child_id >= 0) {
-		tmp = cxi_svc_destroy(dev, child_id);
+		tmp = cxi_svc_destroy_internal(dev, child_id, true, vf_num);
 		if (!rc && tmp)
 			rc = tmp;
 	}
