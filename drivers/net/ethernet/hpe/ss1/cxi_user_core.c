@@ -1136,7 +1136,9 @@ static int cxi_user_svc_alloc(struct user_client *client,
 			write_unlock(&client->res_lock);
 			idr_preload_end();
 			if (rc < 0) {
-				cxi_svc_destroy(client->ucxi->dev, pf_svc_id);
+				cxi_svc_destroy_internal(client->ucxi->dev,
+							 pf_svc_id, true,
+							 client->vf_num);
 				ret = rc;
 			} else {
 				resp.svc_id = rc; /* VF-local ID */
@@ -1232,7 +1234,8 @@ static int cxi_user_svc_destroy(struct user_client *client,
 
 		if (pf_id < 0)
 			return pf_id;
-		rc = cxi_svc_destroy(client->ucxi->dev, pf_id);
+		rc = cxi_svc_destroy_internal(client->ucxi->dev, pf_id, true,
+					      client->vf_num);
 		if (!rc) {
 			write_lock(&client->res_lock);
 			idr_remove(&client->svc_idr, cmd->svc_id);
@@ -4692,9 +4695,16 @@ static int free_svc_obj(int id, void *obj_, void *data)
 {
 	struct user_client *client = data;
 	unsigned int pf_id = (unsigned int)(uintptr_t)obj_;
+	int rc;
 
-	if (client->ucxi)
-		cxi_svc_destroy(client->ucxi->dev, pf_id);
+	if (client->ucxi) {
+		rc = cxi_svc_destroy_internal(client->ucxi->dev, pf_id, true,
+					      client->vf_num);
+		if (rc)
+			cxidev_warn(client->ucxi->dev,
+				    "VF %u: failed to destroy service %u: %d\n",
+				    client->vf_num, pf_id, rc);
+	}
 
 	return 0;
 }

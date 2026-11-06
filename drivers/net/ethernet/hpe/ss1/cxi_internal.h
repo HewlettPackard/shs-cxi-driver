@@ -60,6 +60,8 @@ int cxi_svc_alloc_internal(struct cxi_dev *dev, const struct cxi_svc_desc *svc_d
 			   bool is_vf, u8 vf_num, bool is_parent);
 int cxi_svc_get_internal(struct cxi_dev *dev, unsigned int svc_id,
 			 struct cxi_svc_desc *svc_desc, bool vf_en, u8 vf_num);
+int cxi_svc_destroy_internal(struct cxi_dev *dev, u32 svc_id, bool vf_en,
+			     u8 vf_num);
 int cxi_svc_list_get_internal(struct cxi_dev *dev, int count,
 			      struct cxi_svc_desc *svc_list, bool vf_en, u8 vf_num);
 int cxi_svc_rsrc_list_get_internal(struct cxi_dev *dev, int count,
