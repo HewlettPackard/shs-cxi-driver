@@ -10,6 +10,7 @@
 #include <linux//hpe/sbl/sbl.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 
 /*
  * The link has asynchronously gone down

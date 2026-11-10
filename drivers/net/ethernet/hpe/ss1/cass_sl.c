@@ -6,6 +6,7 @@
 #include <linux/delay.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cass_sl.h"
 #include "cass_sl_io.h"
 #include "cass_cable.h"

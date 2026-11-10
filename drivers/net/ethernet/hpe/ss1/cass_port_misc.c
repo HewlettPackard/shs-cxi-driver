@@ -8,6 +8,7 @@
 #include <linux/hpe/sbl/sbl.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 
 /*
  * create and initialise the port array

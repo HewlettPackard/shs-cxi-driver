@@ -13,6 +13,7 @@
 #include <uapi/ethernet/sbl_serdes.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cassini-telemetry-items.h"
 
 /*

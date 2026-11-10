@@ -6,6 +6,7 @@
 #include <linux/seq_file.h>
 #include <linux/hpe/sbl/sbl.h>
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cass_ss1_debugfs.h"
 
 #define DEBUGFS_BUFSIZE        800

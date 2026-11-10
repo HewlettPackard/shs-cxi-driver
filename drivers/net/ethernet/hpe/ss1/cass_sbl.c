@@ -13,6 +13,7 @@
 #include <uapi/ethernet/sbl_cassini.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cass_cable.h"
 #include "cxi_ethtool.h"
 #include "cass_ss1_debugfs.h"

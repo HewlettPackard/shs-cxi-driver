@@ -3,6 +3,7 @@
 
 /* Traffic Class (TC) Management */
 
+#include "cass_sbl.h"
 #include "cass_core.h"
 #include "cass_ss1_debugfs.h"
 

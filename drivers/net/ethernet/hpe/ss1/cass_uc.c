@@ -22,6 +22,7 @@
 #include <linux/etherdevice.h>
 #include <linux/iopoll.h>
 
+#include "cass_sbl.h"
 #include "cass_core.h"
 #include "cass_cable.h"
 #include "cass_ss1_debugfs.h"

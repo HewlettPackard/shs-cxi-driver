@@ -7,6 +7,7 @@
 #include <linux/etherdevice.h>
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cxi_internal.h"
 
 /**

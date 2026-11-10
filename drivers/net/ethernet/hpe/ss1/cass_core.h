@@ -25,7 +25,7 @@
 #include "cxi_link.h"
 #include "cxi_core.h"
 #include "cuc_cxi.h"	/* from firmware_cassini/ */
-#include "cass_sbl.h"
+#include "cass_port.h"
 #include "pldm_cxi.h"
 #include "cass_sl.h"
 #include "cxi_qos_profiles.h"

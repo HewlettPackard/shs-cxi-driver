@@ -11,7 +11,7 @@
 #include <linux/workqueue.h>
 #include <linux/ctype.h>
 
-#include "cass_core.h"
+struct cass_dev;
 
 #define PE_LE_MAX (C_LPE_STS_LIST_ENTRIES_ENTRIES / C_PE_COUNT)
 #define CONFIGFS_DIR_LEN 64

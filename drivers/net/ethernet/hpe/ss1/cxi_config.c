@@ -7,6 +7,7 @@
  * configfs Filesystem Interface
  */
 
+#include "cass_core.h"
 #include "cxi_config.h"
 
 static enum cxi_resource_type cxi_resource_str_to_type(const char *name)

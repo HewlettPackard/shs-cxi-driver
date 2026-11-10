@@ -2,6 +2,7 @@
 /* Copyright 2024 Hewlett Packard Enterprise Development LP */
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 
 int cxi_dev_info_get(struct cxi_dev *dev,
 		     struct cxi_dev_info_use *devinfo)

@@ -7,7 +7,9 @@
 #define _CXI_RGROUP_H_
 
 #include <linux/xarray.h>
-#include "cass_core.h"
+#include <linux/hpe/cxi/cxi.h>
+
+struct cass_dev;
 
 /* Resource Groups contigurables */
 

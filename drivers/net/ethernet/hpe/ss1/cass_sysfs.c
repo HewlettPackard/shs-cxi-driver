@@ -2,6 +2,7 @@
 /* Copyright 2022, 2024-2026 Hewlett Packard Enterprise Development LP */
 
 #include "cass_core.h"
+#include "cass_sbl.h"
 
 #define PROP_ATTR_RO(_name) \
 	static struct kobj_attribute dev_attr_##_name = __ATTR_RO(_name)

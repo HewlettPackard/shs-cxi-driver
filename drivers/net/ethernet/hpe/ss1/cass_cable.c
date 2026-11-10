@@ -5,6 +5,7 @@
 
 #include <linux/hpe/sbl/sbl.h>
 #include "cass_core.h"
+#include "cass_sbl.h"
 #include "cass_cable.h"
 
 static int cass_hdsh_get_format(struct cass_dev *hw, u8 *qsfp_format);
