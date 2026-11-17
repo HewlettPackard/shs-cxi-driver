@@ -2072,7 +2072,7 @@ int cass_tc_init(struct cass_dev *hw)
 	int tc;
 
 	if (!active_qos_profile ||
-	    active_qos_profile > CXI_QOS_NUM_PROF) {
+	    active_qos_profile >= CXI_QOS_NUM_PROF) {
 		pr_err("Invalid active_qos_profile: %d\n",
 		       active_qos_profile);
 		return -EINVAL;
